@@ -1,0 +1,179 @@
+import { mkdir, writeFile, rename, open, appendFile, stat, realpath, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, resolve, sep, basename } from "node:path";
+export type CaptureInput = {
+  /** Raw transcript. Untrusted. Never becomes a path, never touches a shell. */
+  text: string;
+  /** Which device caused this write. Goes in the journal. */
+  source: string;
+  /** When the user actually spoke. See capture-time.ts. */
+  at: Date;
+};
+
+export type WriteResult = { path: string; relPath: string; bytes: number; dryRun: boolean };
+
+/**
+ * Local folder adapter. A plain directory on local disk, git-tracked.
+ *
+ * Deliberately NOT a cloud-sync folder. iCloud, Dropbox and OneDrive serve
+ * placeholder stubs for files that have not materialised, race the writer,
+ * and produce conflict copies. git is the sync and backup story instead.
+ *
+ * This is the ONLY module allowed to touch the vault. Every invariant lives here
+ * so it is enforced in one place rather than scattered across callers.
+ */
+export class Vault {
+  constructor(
+    private root: string,
+    private inbox: string,
+    private dryRun = false,
+    private allowUnbacked = false,
+  ) {}
+
+  /** Invariant 3: refuse to run against an unprotected vault. */
+  async preflight(): Promise<void> {
+    if (!existsSync(this.root)) throw new Error(`vault does not exist: ${this.root}`);
+    const s = await stat(this.root);
+    if (!s.isDirectory()) throw new Error(`vault is not a directory: ${this.root}`);
+
+    const backed = existsSync(join(this.root, ".git"));
+    if (!backed && !this.allowUnbacked) {
+      throw new Error(
+        `vault at ${this.root} is not git-tracked and no backup is configured.\n` +
+          `  fix it:      git -C "${this.root}" init\n` +
+          `  or override: set safety.allowUnbackedVault = true (you accept the risk)`,
+      );
+    }
+
+    // prove we can actually write before accepting any traffic
+    const probe = join(this.root, `.tama-probe-${process.pid}`);
+    await writeFile(probe, "");
+    await unlink(probe);
+  }
+
+  /**
+   * Resolve a vault-relative directory and prove it cannot escape the root.
+   *
+   * Two passes, in this order and not the other:
+   *   1. lexical, BEFORE creating anything, so a traversal path never gets to
+   *      mkdir its way out of the vault before being rejected.
+   *   2. symlink-resolved, after, because the lexical pass cannot see that an
+   *      existing Inbox is a symlink to somewhere else entirely.
+   */
+  private async confineDir(relDir: string): Promise<string> {
+    const realRoot = await realpath(this.root);
+
+    const target = resolve(realRoot, relDir);
+    if (target !== realRoot && !target.startsWith(realRoot + sep)) {
+      throw new Error(`path escapes vault root: ${relDir}`);
+    }
+
+    await mkdir(target, { recursive: true });
+
+    const realTarget = await realpath(target);
+    if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) {
+      throw new Error(`path escapes vault root: ${relDir}`);
+    }
+    return realTarget;
+  }
+
+  /**
+   * Filenames are generated from the clock, never from the transcript.
+   * This defends anyway, because later features will want titles.
+   */
+  private safeName(name: string): string {
+    const cleaned = basename(name)
+      .replace(/[\u0000-\u001F\u007F]/g, "")
+      .replace(/[/\\:*?"<>|]/g, "-")
+      .replace(/^\.+/, "")
+      .slice(0, 120)
+      .trim();
+    if (!cleaned || cleaned === "." || cleaned === "..") throw new Error("unsafe filename");
+    return cleaned;
+  }
+
+  async capture(input: CaptureInput): Promise<WriteResult> {
+    const dir = await this.confineDir(this.inbox);
+    const stamp = localStamp(input.at);
+
+    let name = this.safeName(`${stamp}-voice.md`);
+    let n = 1;
+    while (existsSync(join(dir, name))) {
+      name = this.safeName(`${stamp}-voice-${++n}.md`);
+    }
+
+    const body = renderNote(input);
+    const abs = join(dir, name);
+    const relPath = join(this.inbox, name);
+    const bytes = Buffer.byteLength(body, "utf8");
+
+    if (this.dryRun) {
+      console.log(`[dry-run] would write ${bytes}B to ${relPath}`);
+      return { path: abs, relPath, bytes, dryRun: true };
+    }
+
+    // Atomic write: temp file in the SAME directory, fsync, then rename.
+    // A syncing daemon or Obsidian must never observe a half-written note.
+    const tmp = join(dir, `.tama-tmp-${process.pid}-${Date.now()}`);
+    const fh = await open(tmp, "w");
+    try {
+      await fh.writeFile(body, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, abs);
+
+    await this.journal({ at: input.at, relPath, bytes, source: input.source });
+    return { path: abs, relPath, bytes, dryRun: false };
+  }
+
+  /** Invariant 4: every write is auditable without reading source code. */
+  private async journal(e: { at: Date; relPath: string; bytes: number; source: string }) {
+    const dir = await this.confineDir(".tama");
+    const line = JSON.stringify({
+      ts: e.at.toISOString(),
+      op: "capture",
+      path: e.relPath,
+      bytes: e.bytes,
+      source: e.source,
+    });
+    await appendFile(join(dir, "write-journal.jsonl"), line + "\n", "utf8");
+  }
+}
+
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/** Local time, not UTC. A note taken at 11pm belongs to that day. */
+function localStamp(d: Date) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function tzOffset(d: Date) {
+  const m = -d.getTimezoneOffset();
+  const s = m >= 0 ? "+" : "-";
+  return `${s}${pad(Math.floor(Math.abs(m) / 60))}:${pad(Math.abs(m) % 60)}`;
+}
+
+/**
+ * The transcript is written verbatim into the body. It is never parsed,
+ * never interpolated into a path, and never reaches a shell.
+ */
+function renderNote(input: CaptureInput): string {
+  const d = input.at;
+  const iso =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${tzOffset(d)}`;
+  return [
+    "---",
+    "source: voice",
+    `captured: ${iso}`,
+    `client: ${JSON.stringify(input.source)}`,
+    "---",
+    "",
+    input.text.trim(),
+    "",
+  ].join("\n");
+}

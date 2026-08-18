@@ -1,0 +1,16 @@
+{
+  "name": "tama-server",
+  "version": "0.1.0",
+  "description": "Self-hosted voice capture into a markdown vault you own. No account, no key, no bill.",
+  "license": "Apache-2.0",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --compile --outfile dist/tama-server"
+  },
+  "devDependencies": { "@types/bun": "latest", "typescript": "^5" }
+}

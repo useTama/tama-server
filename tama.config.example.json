@@ -1,0 +1,11 @@
+{
+  "vault":  { "path": "~/tama-vault", "inbox": "Inbox" },
+  "stt":    { "url": "http://127.0.0.1:8081" },
+  "server": { "port": 8080, "adminToken": "RUN: openssl rand -hex 24" },
+  "notify": {
+    "provider": "console",
+    "ntfy": { "url": "https://ntfy.sh", "topic": "change-me-to-something-unguessable" },
+    "digestAt": "08:00"
+  },
+  "safety": { "allowUnbackedVault": false, "dryRun": false }
+}

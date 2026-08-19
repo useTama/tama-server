@@ -168,7 +168,14 @@ const server = Bun.serve({
       if (key) {
         const c = idem.claim(db, key);
         if (c.state === "duplicate") return json(c.response as object);
-        if (c.state === "in-flight") return json({ error: "already in flight" }, 409);
+        if (c.state === "in-flight") {
+          const w = await idem.waitForCompletion(db, key);
+          if (w.state === "done") return json(w.response as object);
+          // Either still genuinely in flight past the wait, or the original
+          // request failed and released the key. Neither is safe to tell the
+          // client to dequeue, so this always means "retry, same key."
+          return json({ error: "busy, retry shortly" }, 503);
+        }
       }
       if (inflight >= MAX_INFLIGHT) {
         if (key) idem.release(db, key);

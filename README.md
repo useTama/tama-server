@@ -91,7 +91,6 @@ something posting in real time.
 | `2xx` | dequeue |
 | `401` | stop, re-pair. never retry |
 | `413` `422` | drop, tell the user |
-| `409` | already in flight, dequeue |
 | `429` `503` `5xx` timeout | retry with backoff, **same idempotency key** |
 
 ## Notifications

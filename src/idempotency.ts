@@ -13,6 +13,12 @@ import type { Database } from "bun:sqlite";
  */
 
 const TTL_MS = 24 * 60 * 60 * 1000;
+// A "pending" row this old belonged to a request that crashed before
+// completing or releasing its own claim (the process died mid-transcription,
+// for example). Worst case is MAX_SECONDS of audio plus slow STT, so this is
+// a generous multiple of that, not the full 24h reserved for deduping a
+// genuinely completed capture.
+const PENDING_TTL_MS = 15 * 60 * 1000;
 
 export type Claim =
   | { state: "fresh" }
@@ -26,14 +32,50 @@ export function claim(db: Database, key: string): Claim {
       .run(key, new Date().toISOString());
     return { state: "fresh" };
   } catch {
-    const row = db.query("SELECT status, response FROM idempotency WHERE key = ?")
-      .get(key) as { status: string; response: string | null } | null;
+    const row = db.query("SELECT status, response, created_at FROM idempotency WHERE key = ?")
+      .get(key) as { status: string; response: string | null; created_at: string } | null;
     if (!row) return { state: "fresh" }; // swept between insert and read; let it through
     if (row.status === "done" && row.response) {
       return { state: "duplicate", response: JSON.parse(row.response) };
     }
+    if (Date.now() - Date.parse(row.created_at) > PENDING_TTL_MS) {
+      // Abandoned, not merely slow: reclaim it rather than blocking every
+      // retry with "in-flight" until the next hourly sweep, or worse, the
+      // 24h TTL that was meant for completed dedup, not crash recovery.
+      db.query("DELETE FROM idempotency WHERE key = ?").run(key);
+      return claim(db, key);
+    }
     return { state: "in-flight" };
   }
+}
+
+/**
+ * Wait for a genuinely in-flight request to resolve instead of telling the
+ * caller "already in flight" and inviting a retry policy to dequeue an
+ * answer that was never actually confirmed. "gone" means the original
+ * request failed and released its claim — callers must treat that as safe
+ * to retry, never as delivered.
+ */
+export function waitForCompletion(
+  db: Database,
+  key: string,
+  timeoutMs = 30_000,
+  intervalMs = 250,
+): Promise<{ state: "done"; response: unknown } | { state: "gone" } | { state: "timeout" }> {
+  return new Promise((done) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      const row = db.query("SELECT status, response FROM idempotency WHERE key = ?")
+        .get(key) as { status: string; response: string | null } | null;
+      if (!row) return done({ state: "gone" });
+      if (row.status === "done" && row.response) {
+        return done({ state: "done", response: JSON.parse(row.response) });
+      }
+      if (Date.now() >= deadline) return done({ state: "timeout" });
+      setTimeout(poll, intervalMs);
+    };
+    poll();
+  });
 }
 
 /** Record the result so a later retry replays it instead of writing again. */

@@ -22,9 +22,15 @@ export async function toWav16k(input: Uint8Array, maxSeconds = 300): Promise<Uin
   );
 
   proc.stdin.write(input);
-  await proc.stdin.end();
 
-  const [out, err, code] = await Promise.all([
+  // stdin must finish writing CONCURRENTLY with stdout/stderr being read, not
+  // before: ffmpeg blocks writing to a full stdout pipe once nothing is
+  // draining it yet, which stalls it reading further stdin, which stalls
+  // `stdin.end()` from ever resolving. 16 kHz PCM output overflows a typical
+  // 64 KB pipe buffer within 1-2 seconds of decoded audio, so this deadlocks
+  // on any non-trivial recording, not just large ones.
+  const [, out, err, code] = await Promise.all([
+    proc.stdin.end(),
     new Response(proc.stdout).arrayBuffer(),
     new Response(proc.stderr).text(),
     proc.exited,

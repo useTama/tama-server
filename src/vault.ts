@@ -123,26 +123,45 @@ export class Vault {
   async capture(input: CaptureInput): Promise<WriteResult> {
     const dir = await this.confineDir(this.inbox);
     const stamp = localStamp(input.at);
-
-    let name = this.safeName(`${stamp}-voice.md`);
-    let n = 1;
-    while (existsSync(join(dir, name))) {
-      name = this.safeName(`${stamp}-voice-${++n}.md`);
-    }
-
     const body = renderNote(input);
-    const abs = join(dir, name);
-    const relPath = join(this.inbox, name);
     const bytes = Buffer.byteLength(body, "utf8");
 
     if (this.dryRun) {
+      let previewName = this.safeName(`${stamp}-voice.md`);
+      let pn = 1;
+      while (existsSync(join(dir, previewName))) {
+        previewName = this.safeName(`${stamp}-voice-${++pn}.md`);
+      }
+      const relPath = join(this.inbox, previewName);
       console.log(`[dry-run] would write ${bytes}B to ${relPath}`);
-      return { path: abs, relPath, bytes, dryRun: true };
+      return { path: join(dir, previewName), relPath, bytes, dryRun: true };
     }
 
-    // Atomic write: temp file in the SAME directory, fsync, then rename.
-    // A syncing daemon or Obsidian must never observe a half-written note.
-    const tmp = join(dir, `.tama-tmp-${process.pid}-${Date.now()}`);
+    // Reserve a filename with an O_EXCL create: two concurrent captures in
+    // the same clock-minute race to create the same name, and the create
+    // itself is atomic at the OS level, so the loser is guaranteed to move
+    // on to the next name instead of silently overwriting the winner's note
+    // at rename time (which an existsSync-then-rename check cannot promise).
+    let name = this.safeName(`${stamp}-voice.md`);
+    let n = 1;
+    let abs = join(dir, name);
+    for (;;) {
+      try {
+        const fh = await open(abs, "wx");
+        await fh.close();
+        break;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        name = this.safeName(`${stamp}-voice-${++n}.md`);
+        abs = join(dir, name);
+      }
+    }
+    const relPath = join(this.inbox, name);
+
+    // Atomic write: temp file in the SAME directory, fsync, then rename over
+    // the reservation above. A syncing daemon or Obsidian must never observe
+    // a half-written note.
+    const tmp = join(dir, `.tama-tmp-${process.pid}-${crypto.randomUUID()}`);
     const fh = await open(tmp, "w");
     try {
       await fh.writeFile(body, "utf8");
@@ -152,7 +171,14 @@ export class Vault {
     }
     await rename(tmp, abs);
 
-    await this.journal({ at: input.at, relPath, bytes, source: input.source });
+    try {
+      await this.journal({ at: input.at, relPath, bytes, source: input.source });
+    } catch (e) {
+      // The note is already durably written. Losing the audit line is a
+      // lesser failure than rejecting here: the caller's idempotency key
+      // would be released and a retry would write a second, duplicate note.
+      console.error(`journal write failed for ${relPath}:`, e);
+    }
     return { path: abs, relPath, bytes, dryRun: false };
   }
 

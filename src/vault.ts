@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rename, open, appendFile, stat, realpath, unlink } from "node:fs/promises";
+import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, sep, basename } from "node:path";
 export type CaptureInput = {
@@ -68,9 +68,37 @@ export class Vault {
       throw new Error(`path escapes vault root: ${relDir}`);
     }
 
-    await mkdir(target, { recursive: true });
+    // Walk one path segment at a time instead of mkdir(recursive: true) on
+    // the whole thing: a symlink planted at any intermediate segment is
+    // caught here before anything is created past it. A single recursive
+    // mkdir follows such a symlink and creates real directories outside the
+    // vault before the final check below ever runs.
+    const relParts = relDir.split(sep).filter(Boolean);
+    let cur = realRoot;
+    for (const part of relParts) {
+      const next = join(cur, part);
+      try {
+        const st = await lstat(next);
+        if (st.isSymbolicLink()) {
+          const resolved = await realpath(next);
+          if (resolved !== realRoot && !resolved.startsWith(realRoot + sep)) {
+            throw new Error(`path escapes vault root: ${relDir}`);
+          }
+          cur = resolved;
+          continue;
+        }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        try {
+          await mkdir(next);
+        } catch (e2) {
+          if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2;
+        }
+      }
+      cur = next;
+    }
 
-    const realTarget = await realpath(target);
+    const realTarget = await realpath(cur);
     if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) {
       throw new Error(`path escapes vault root: ${relDir}`);
     }

@@ -1,3 +1,5 @@
+<img src="assets/icon.png" width="88" alt="">
+
 # tama-server
 
 Talk into a small device, and a markdown note appears in a folder you own.

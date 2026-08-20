@@ -85,6 +85,14 @@ async function doCapture(req: Request, device: string): Promise<Response> {
     }
     const wav = await toWav16k(bytes, MAX_SECONDS);
     seconds = wavSeconds(wav);
+    // DEBUG-TEMP: dump what the device actually sent so the audio itself can be
+    // inspected when a transcript comes back empty. Remove once bring-up is done.
+    if (process.env.TAMA_DUMP_AUDIO) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-raw.bin`, bytes);
+      await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-ffmpeg.wav`, wav);
+      console.log(`[dump] ${bytes.byteLength}B raw -> ${wav.byteLength}B wav (${seconds.toFixed(1)}s)`);
+    }
     text = await stt.transcribe(wav);
   }
 

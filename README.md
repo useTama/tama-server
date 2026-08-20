@@ -71,6 +71,7 @@ For a board you are about to flash, mint a token directly instead:
 | `POST /capture` | device token | audio or text in, note path out |
 | `POST /pair/code` | admin | mint a pairing code |
 | `GET/POST /tokens`, `DELETE /tokens/:id` | admin | list, mint, revoke |
+| `POST /ask` | device token | ask a question, get an answer from your notes |
 | `GET /digest` | admin | today's digest without waiting for the scheduled one |
 
 ### POST /capture
@@ -94,6 +95,44 @@ something posting in real time.
 | `401` | stop, re-pair. never retry |
 | `413` `422` | drop, tell the user |
 | `429` `503` `5xx` timeout | retry with backoff, **same idempotency key** |
+
+### POST /ask
+
+Optional. **Capture never touches a language model, so with no `ask` block configured
+everything above keeps working with no account and no key** — `/ask` just answers 501. This is
+the opt-in half.
+
+    curl -X POST localhost:8080/ask -H "Authorization: Bearer $DEVICE_TOKEN" \
+      -H 'content-type: application/json' \
+      -d '{"question":"what did I say about the mic gain?"}'
+
+    # -> { "ok": true, "answer": "...", "sources": [{"path":"Inbox/...","score":11.8}], "ms": 2400 }
+
+Add `"stream": true` to get server-sent events instead: one JSON object per `data:` line,
+typed `sources` (emitted first, before the model has said anything), then `delta`, then `done`.
+
+Two provider slots, one interface:
+
+| `ask.provider` | Covers | Needs |
+|---|---|---|
+| `anthropic` | Claude models | `model`, plus `apiKey` or `$ANTHROPIC_API_KEY` |
+| `openai-compatible` | Ollama, llama.cpp, LM Studio, vLLM, OpenAI, Groq, OpenRouter, Together | `baseUrl` + `model`; local servers need no key |
+
+Two adapters rather than one because the Anthropic Messages API is not OpenAI-shaped — the
+system prompt is a top-level parameter there, a message with `role: "system"` everywhere else.
+One OpenAI-compatible client covers nine providers for a single implementation.
+
+**Retrieval is grep, not embeddings.** It walks the vault, scores notes by how many distinct
+query terms they match with a nudge for filename hits and recency, and returns excerpts.
+There is no index to build, corrupt, or rebuild. It genuinely works at a few hundred notes,
+and it sits behind a `Retriever` interface so replacing it with FTS5 or vectors later is a
+one-file change — worth doing when a real question comes back wrong, not before.
+
+**Retrieved notes are framed as data, never as instruction.** A note is free text that may
+contain something shaped like a command, and a vault can be synced from elsewhere or filled by
+anyone who can reach `/capture`. Excerpts are fenced with explicit begin/end markers inside a
+user message, never given system authority, and the system prompt states plainly that they are
+data. This matters more the moment the model gains append tools over the same vault.
 
 ## Notifications
 
@@ -125,15 +164,15 @@ ffmpeg is spawned with an argv array reading stdin.
 
 ## Test
 
-    bun test        # 29 tests
+    bun test        # 43 tests
     bun run typecheck
 
 ## Not here yet
 
-Asking questions of your notes, retrieval, any language model, a websocket, the phone
-app. Each is a later step and none of them changes what is above.
+A websocket, the phone app, embeddings-based retrieval, and an MCP surface exposing retrieval
+as a tool. Each is a later step and none of them changes what is above.
 
-Firmware lives in `tama-firmware`.
+Firmware lives in [tama-firmware](https://github.com/useTama/tama-firmware).
 
 ## Licence
 

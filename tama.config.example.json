@@ -7,5 +7,21 @@
     "ntfy": { "url": "https://ntfy.sh", "topic": "change-me-to-something-unguessable" },
     "digestAt": "08:00"
   },
-  "safety": { "allowUnbackedVault": false, "dryRun": false }
+  "safety": { "allowUnbackedVault": false, "dryRun": false },
+
+  "//ask": [
+    "OPTIONAL. Delete this whole block and capture still works with no account and no key;",
+    "POST /ask just returns 501. Adding it turns on question answering over your notes.",
+    "",
+    "anthropic:         model e.g. claude-sonnet-5. Key here or in $ANTHROPIC_API_KEY.",
+    "openai-compatible: one adapter covering Ollama, llama.cpp, LM Studio, vLLM, OpenAI,",
+    "                   Groq, OpenRouter, Together. Needs baseUrl. Local needs no key.",
+    "  Ollama: { provider: openai-compatible, baseUrl: http://127.0.0.1:11434/v1, model: qwen2.5:7b }",
+    "  OpenAI: { provider: openai-compatible, baseUrl: https://api.openai.com/v1, model: gpt-4o-mini, apiKey: sk-... }"
+  ],
+  "ask": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-5",
+    "maxChunks": 8
+  }
 }

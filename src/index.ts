@@ -12,6 +12,9 @@ import {
 } from "./auth.ts";
 import { ConsoleNotifier, NtfyNotifier, safeNotify, type Notifier } from "./notify.ts";
 import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest } from "./digest.ts";
+import { GrepRetriever } from "./retrieval.ts";
+import { makeLlm, type Llm } from "./llm.ts";
+import { ask } from "./ask.ts";
 
 export const VERSION = "0.1.0";
 /** Clients older than this are refused rather than left to fail mysteriously. */
@@ -42,6 +45,30 @@ if (!(await stt.health())) {
     title: "Tama: speech-to-text is down",
     message: `whisper unreachable at ${config.stt.url}. Captures will fail until it is up.`,
   });
+}
+
+// Retrieval reads the vault directly and needs no model, so it exists whether or
+// not anyone configured an LLM. The LLM is the optional half.
+const retriever = new GrepRetriever(config.vault.path);
+let llm: Llm | null = null;
+if (config.ask) {
+  try {
+    llm =
+      config.ask.provider === "anthropic"
+        ? makeLlm({ provider: "anthropic", apiKey: config.ask.apiKey, model: config.ask.model })
+        : makeLlm({
+            provider: "openai-compatible",
+            baseUrl: config.ask.baseUrl!,
+            apiKey: config.ask.apiKey,
+            model: config.ask.model,
+          });
+    console.log(`  ask     ${llm.name}`);
+  } catch (e) {
+    // A broken ask config must not take capture down with it. Capture is the
+    // free tier and has no dependency on any of this.
+    console.error(`ask disabled: ${e instanceof Error ? e.message : String(e)}`);
+    llm = null;
+  }
 }
 
 let inflight = 0;
@@ -154,6 +181,9 @@ const server = Bun.serve({
         stt: await stt.health(),
         vault: config.vault.path,
         notify: notifier.name,
+        // Advertised so a client can hide or show an ask affordance instead of
+        // discovering the answer by getting a 501 mid-question.
+        ask: llm ? { available: true, provider: llm.name } : { available: false },
       });
     }
 
@@ -209,6 +239,71 @@ const server = Bun.serve({
       } finally {
         inflight--;
       }
+    }
+
+    // Ask sits behind the same device token as capture. No new auth surface:
+    // anything that can write to the vault can already read it back.
+    if (url.pathname === "/ask" && req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { question?: string; stream?: boolean };
+      const question = (b.question ?? "").trim();
+      if (!question) return json({ error: "question is required" }, 400);
+
+      // Retrieval works with no model configured, so say which half is missing
+      // rather than pretending the whole endpoint does not exist.
+      if (!llm) {
+        const chunks = await retriever.search(question, config.ask?.maxChunks ?? 8);
+        return json(
+          {
+            error: "no language model configured, so questions cannot be answered",
+            hint: "add an \"ask\" block to tama.config.json (see tama.config.example.json)",
+            retrievalWorks: true,
+            wouldHaveUsed: chunks.map((c) => ({ path: c.path, score: c.score })),
+          },
+          501,
+        );
+      }
+
+      if (b.stream) {
+        // Server-sent events, one JSON object per event, so a client can show
+        // sources immediately and text as it arrives.
+        const stream = new ReadableStream({
+          async start(controller) {
+            const enc = new TextEncoder();
+            try {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks })) {
+                controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
+              }
+            } catch (e) {
+              const message = e instanceof Error ? e.message : String(e);
+              controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message })}\n\n`));
+            } finally {
+              controller.close();
+            }
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          },
+        });
+      }
+
+      const started = performance.now();
+      let answer = "";
+      let sources: Array<{ path: string; score: number }> = [];
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks })) {
+        if (ev.type === "sources") sources = ev.sources;
+        else if (ev.type === "done") answer = ev.answer;
+        else if (ev.type === "error") {
+          console.error("ask failed:", ev.message);
+          return json({ error: ev.message }, 502);
+        }
+      }
+      const ms = Math.round(performance.now() - started);
+      console.log(`ask "${question.slice(0, 60)}" -> ${sources.length} sources ${ms}ms <${device.deviceName}>`);
+      return json({ ok: true, question, answer, sources, ms });
     }
 
     // --- admin only ---

@@ -12,5 +12,11 @@
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.ts --compile --outfile dist/tama-server"
   },
-  "devDependencies": { "@types/bun": "latest", "typescript": "^5" }
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0"
+  }
 }

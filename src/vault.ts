@@ -46,9 +46,11 @@ export class Vault {
     }
 
     // prove we can actually write before accepting any traffic
-    const probe = join(this.root, `.tama-probe-${process.pid}`);
-    await writeFile(probe, "");
-    await unlink(probe);
+    if (!this.dryRun) {
+      const probe = join(this.root, `.tama-probe-${process.pid}`);
+      await writeFile(probe, "");
+      await unlink(probe);
+    }
   }
 
   /**

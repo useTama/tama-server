@@ -83,6 +83,18 @@ nothing to say".
 
 ### Providers
 
+The setup wizard can connect to an existing chat server, discover its models, and test a
+selected model. Keys entered in setup are stored in owner-readable files referenced by
+`apiKeyFile`; manual configurations can use `apiKeyEnv`. Credentials are sent as Bearer
+authentication on both paths.
+
+| `stt.provider` | Talks to | Needs |
+| --- | --- | --- |
+| `whisper-cpp` | whisper.cpp's `whisper-server`, local or remote | `url` |
+| `openai-compatible` | `POST {url}/audio/transcriptions` — Groq, OpenAI | `url`, `model` |
+
+Formats outside those two, Sarvam's among them, are not supported.
+
 | `ask.provider` | Covers | Needs |
 |---|---|---|
 | `openai-compatible` | Ollama, llama.cpp, LM Studio, vLLM, OpenAI, Groq, OpenRouter, Together, Gemini | `baseUrl` + `model`. Local servers need no key |

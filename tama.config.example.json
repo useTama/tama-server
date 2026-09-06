@@ -1,6 +1,14 @@
 {
   "vault":  { "path": "~/tama-vault", "inbox": "Inbox" },
-  "stt":    { "url": "http://127.0.0.1:8081" },
+  "//stt": [
+    "whisper-cpp:       whisper.cpp's whisper-server, on this machine or another. Needs url.",
+    "openai-compatible: POST {url}/audio/transcriptions. Needs url and model.",
+    "  Groq:   { provider: openai-compatible, url: https://api.groq.com/openai/v1, model: whisper-large-v3 }",
+    "  OpenAI: { provider: openai-compatible, url: https://api.openai.com/v1, model: whisper-1 }",
+    "Either provider may carry a credential, sent as Bearer: apiKey, apiKeyEnv, or apiKeyFile.",
+    "apiKeyFile is a path relative to this file; setup writes those with mode 0600."
+  ],
+  "stt":    { "provider": "whisper-cpp", "url": "http://127.0.0.1:8081" },
   "server": { "port": 8080, "adminToken": "RUN: openssl rand -hex 24" },
   "notify": {
     "provider": "console",
@@ -17,7 +25,7 @@
     "openai-compatible: one adapter covering Ollama, llama.cpp, LM Studio, vLLM, OpenAI,",
     "                   Groq, OpenRouter, Together. Needs baseUrl. Local needs no key.",
     "  Ollama: { provider: openai-compatible, baseUrl: http://127.0.0.1:11434/v1, model: qwen2.5:7b }",
-    "  OpenAI: { provider: openai-compatible, baseUrl: https://api.openai.com/v1, model: gpt-4o-mini, apiKey: sk-... }"
+    "  OpenRouter: { provider: openai-compatible, baseUrl: https://openrouter.ai/api/v1, model: openrouter/free, apiKeyEnv: OPENROUTER_API_KEY }"
   ],
   "ask": {
     "provider": "anthropic",

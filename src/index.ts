@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadConfig } from "./config.ts";
+import { loadConfig, configPathFromArgs } from "./config.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
@@ -15,6 +15,7 @@ import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
 import { ask } from "./ask.ts";
+import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
 export const VERSION = "0.1.0";
 /** Clients older than this are refused rather than left to fail mysteriously. */
@@ -24,18 +25,10 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SECONDS = 300;
 const MAX_INFLIGHT = 2;
 
-function configPathFromArgs(args: string[]): string {
-  const flag = args.indexOf("--config");
-  if (flag === -1) return process.env.TAMA_CONFIG ?? "tama.config.json";
-  const path = args[flag + 1];
-  if (!path || path.startsWith("--")) throw new Error("--config requires a path");
-  return path;
-}
-
 const config = loadConfig(configPathFromArgs(Bun.argv));
 const db = openDb(join(config.dataDir, "tama.db"));
 const vault = new Vault(config.vault.path, config.vault.inbox, config.safety.dryRun, config.safety.allowUnbackedVault);
-const stt = new Stt(config.stt.url);
+const stt = new Stt(config.stt);
 
 const notifier: Notifier =
   config.notify.provider === "ntfy"
@@ -47,11 +40,11 @@ sweepExpiredCodes(db);
 idem.sweep(db);
 
 if (!(await stt.health())) {
-  recordFailure(db, { kind: "stt-down", detail: `unreachable at ${config.stt.url} at startup` });
+  recordFailure(db, { kind: "stt-down", detail: `unreachable at ${stt.endpoint} at startup` });
   safeNotify(notifier, {
     level: "error",
     title: "Tama: speech-to-text is down",
-    message: `whisper unreachable at ${config.stt.url}. Captures will fail until it is up.`,
+    message: `transcription unreachable at ${stt.endpoint}. Captures will fail until it is up.`,
   });
 }
 
@@ -70,7 +63,7 @@ if (config.ask) {
             apiKey: config.ask.apiKey,
             model: config.ask.model,
           });
-    console.log(`  ask     ${llm.name}`);
+    console.log(`${grey("  ask    ")} ${llm.name}`);
   } catch (e) {
     // A broken ask config must not take capture down with it. Capture is the
     // free tier and has no dependency on any of this.
@@ -137,7 +130,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-raw.bin`, bytes);
       await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-ffmpeg.wav`, wav);
-      console.log(`[dump] ${bytes.byteLength}B raw -> ${wav.byteLength}B wav (${seconds.toFixed(1)}s)`);
+      console.log(`${grey("[dump]")} ${bytes.byteLength}B raw -> ${wav.byteLength}B wav (${seconds.toFixed(1)}s)`);
     }
     text = await stt.transcribe(wav);
   }
@@ -166,7 +159,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
     source: device,
   });
 
-  console.log(`capture ${result.relPath} ${result.bytes}B ${seconds.toFixed(1)}s ${ms}ms [${t.basis}] <${device}>`);
+  console.log(`${green("capture")} ${result.relPath} ${grey(`${result.bytes}B ${seconds.toFixed(1)}s ${ms}ms [${t.basis}] <${device}>`)}`);
 
   // The delivery confirmation. This response IS the "did it go through" answer,
   // and the device drives its screen straight off it.
@@ -321,7 +314,7 @@ const server = Bun.serve({
         }
       }
       const ms = Math.round(performance.now() - started);
-      console.log(`ask "${question.slice(0, 60)}" -> ${sources.length} sources ${ms}ms <${device.deviceName}>`);
+      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms <${device.deviceName}>`)}`);
       return json({ ok: true, question, answer, sources, ms });
     }
 
@@ -330,7 +323,7 @@ const server = Bun.serve({
 
     if (url.pathname === "/pair/code" && req.method === "POST") {
       const { code, expiresAt } = newPairingCode(db);
-      console.log(`pairing code ${code} (expires ${expiresAt})`);
+      console.log(`${grey("pairing code")} ${red(code)} ${grey(`(expires ${expiresAt})`)}`);
       return json({ code, expiresAt });
     }
     if (url.pathname === "/tokens" && req.method === "GET") return json({ tokens: listTokens(db) });
@@ -355,11 +348,11 @@ const server = Bun.serve({
 const stopDigest = scheduleDigest(db, notifier, config.notify.digestAt);
 setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
 
-console.log(`tama-server ${VERSION}   http://127.0.0.1:${server.port}`);
-console.log(`  vault   ${config.vault.path} -> ${config.vault.inbox}/`);
-console.log(`  stt     ${config.stt.url}`);
-console.log(`  notify  ${notifier.name}, digest at ${config.notify.digestAt}`);
-if (config.safety.dryRun) console.log("  DRY RUN - nothing will be written");
+console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
+console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
+console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
+console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
+if (config.safety.dryRun) console.log(amber("  DRY RUN - nothing will be written"));
 
 let stopping = false;
 const shutdown = () => {

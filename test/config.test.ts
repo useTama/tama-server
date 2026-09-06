@@ -35,3 +35,54 @@ test("ntfy requires a topic", async () => {
   const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, notify: { provider: "ntfy" } });
   expect(() => loadConfig(path)).toThrow(/ntfy.topic is required/);
 });
+
+test("stt defaults to whisper.cpp and rejects a provider it cannot speak to", async () => {
+  const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
+  expect(loadConfig(bare).stt).toEqual({ provider: "whisper-cpp", url: "http://127.0.0.1:8081", model: undefined, apiKey: undefined });
+
+  const sarvam = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, stt: { provider: "sarvam", url: "https://api.sarvam.ai" } });
+  expect(() => loadConfig(sarvam)).toThrow(/stt.provider must be/);
+});
+
+test("a hosted stt provider must name a model, and baseUrl reads the same as url", async () => {
+  const modelless = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "openai-compatible", baseUrl: "https://api.groq.com/openai/v1" } });
+  expect(() => loadConfig(modelless)).toThrow(/stt.model is required/);
+
+  const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "openai-compatible", baseUrl: "https://api.groq.com/openai/v1", model: "whisper-large-v3" } });
+  expect(loadConfig(path).stt).toEqual({
+    provider: "openai-compatible",
+    url: "https://api.groq.com/openai/v1",
+    model: "whisper-large-v3",
+    apiKey: undefined,
+  });
+});
+
+test("separate key files resolve relative to config for both providers", async () => {
+  await writeFile(join(dir, "provider.key"), "fixture-key", { mode: 0o600 });
+  const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { apiKeyFile: "provider.key" },
+    ask: { provider: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "fixture", apiKeyFile: "provider.key" } });
+  expect(loadConfig(path).stt.apiKey).toBe("fixture-key");
+  expect(loadConfig(path).ask?.apiKey).toBe("fixture-key");
+});
+
+test("ask can resolve a credential from the environment without storing it in config", async () => {
+  process.env.TAMA_TEST_PROVIDER_KEY = "test-secret";
+  try {
+    const path = await config({
+      vault: { path: "/vault" },
+      server: { adminToken: "secret" },
+      ask: {
+        provider: "openai-compatible",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "openrouter/free",
+        apiKeyEnv: "TAMA_TEST_PROVIDER_KEY",
+      },
+    });
+    expect(loadConfig(path).ask?.apiKey).toBe("test-secret");
+  } finally {
+    delete process.env.TAMA_TEST_PROVIDER_KEY;
+  }
+});

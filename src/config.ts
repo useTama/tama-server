@@ -1,9 +1,10 @@
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import type { SttConfig } from "./stt.ts";
 
 export type Config = {
   vault: { path: string; inbox: string };
-  stt: { url: string };
+  stt: SttConfig;
   server: { port: number; adminToken: string };
   notify: {
     provider: "console" | "ntfy";
@@ -20,19 +21,39 @@ export type Config = {
     provider: "anthropic" | "openai-compatible";
     model: string;
     apiKey?: string;
+    /** Name of an environment variable containing the provider credential. */
+    apiKeyEnv?: string;
     baseUrl?: string;
     maxChunks: number;
   };
   dataDir: string;
 };
 
-export function loadConfig(path = "tama.config.json"): Config {
+export function defaultConfigPath(): string {
+  return process.env.TAMA_CONFIG ?? (existsSync("tama.config.json") ? resolve("tama.config.json") : resolve(process.env.HOME ?? ".", ".config/tama/tama.config.json"));
+}
+
+/** Shared by the server and the wizard, so `--config` means one thing in both. */
+export function configPathFromArgs(args: string[]): string {
+  const flag = args.indexOf("--config");
+  if (flag === -1) return defaultConfigPath();
+  const path = args[flag + 1];
+  if (!path || path.startsWith("--")) throw new Error("--config requires a path");
+  return resolve(path);
+}
+
+export function loadConfig(path = defaultConfigPath()): Config {
   if (!existsSync(path)) {
     throw new Error(`no config at ${path}\n  cp tama.config.example.json tama.config.json\n  then set vault.path and server.adminToken`);
   }
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const home = process.env.HOME ?? "~";
   const expand = (p: string) => resolve(p.replace(/^~/, home));
+  const credential = (section: any, fallback?: string): string | undefined => {
+    if (section?.apiKeyFile) return readFileSync(resolve(dirname(path), section.apiKeyFile), "utf8").trim();
+    if (section?.apiKeyEnv) return process.env[section.apiKeyEnv];
+    return section?.apiKey ?? (fallback ? process.env[fallback] : undefined);
+  };
 
   if (!raw?.vault?.path) throw new Error("config: vault.path is required");
   if (!raw?.server?.adminToken || String(raw.server.adminToken).includes("openssl")) {
@@ -42,6 +63,16 @@ export function loadConfig(path = "tama.config.json"): Config {
   const provider = raw.notify?.provider ?? "console";
   if (provider === "ntfy" && !raw.notify?.ntfy?.topic) {
     throw new Error("config: notify.ntfy.topic is required when provider is ntfy");
+  }
+
+  // stt.provider selects a wire format, so an unrecognized value has to fail
+  // here and not as an opaque 404 on the first capture of the day.
+  const sttProvider = raw.stt?.provider ?? "whisper-cpp";
+  if (sttProvider !== "whisper-cpp" && sttProvider !== "openai-compatible") {
+    throw new Error(`config: stt.provider must be "whisper-cpp" or "openai-compatible", got ${JSON.stringify(sttProvider)}`);
+  }
+  if (sttProvider === "openai-compatible" && !raw.stt?.model) {
+    throw new Error("config: stt.model is required for the openai-compatible provider (e.g. whisper-large-v3)");
   }
 
   // Absent `ask` is the normal case, not an error. Only validate once someone
@@ -62,7 +93,7 @@ export function loadConfig(path = "tama.config.json"): Config {
     ask = {
       provider,
       model: String(raw.ask.model),
-      apiKey: raw.ask.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY,
+      apiKey: credential(raw.ask, provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
       baseUrl: raw.ask.baseUrl,
       maxChunks: Number(raw.ask.maxChunks ?? 8),
     };
@@ -71,7 +102,13 @@ export function loadConfig(path = "tama.config.json"): Config {
   return {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
-    stt: { url: raw.stt?.url ?? "http://127.0.0.1:8081" },
+    stt: {
+      provider: sttProvider,
+      // `baseUrl` is what the ask block calls the same thing, so accept either.
+      url: raw.stt?.baseUrl ?? raw.stt?.url ?? "http://127.0.0.1:8081",
+      model: raw.stt?.model ? String(raw.stt.model) : undefined,
+      apiKey: credential(raw.stt),
+    },
     server: { port: raw.server?.port ?? 8080, adminToken: String(raw.server.adminToken) },
     notify: {
       provider,

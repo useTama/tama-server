@@ -6,11 +6,12 @@
   "private": false,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
+    "dev": "bun run --watch src/tama.ts",
+    "start": "bun run src/tama.ts",
+    "setup": "bun run src/tama.ts setup",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/index.ts --compile --outfile dist/tama-server"
+    "build": "bun build src/tama.ts --compile --outfile dist/tama-server"
   },
   "devDependencies": {
     "@types/bun": "latest",

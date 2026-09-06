@@ -28,10 +28,13 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | Module | Owns |
 |---|---|
 | `index.ts` | routes, the bearer check, the inflight limit |
+| `tama.ts`, `setup.ts` | command entry point and interactive first-run setup |
+| `whisper.ts` | bringing whisper.cpp up locally: model download, per-user service |
+| `ui.ts` | terminal colour, dropped whenever stdout is not a colour-capable tty |
 | `auth.ts` | device tokens (hashed at rest), single-use pairing codes |
 | `idempotency.ts` | claim, replay, release. A retry must not write a second note |
 | `audio.ts` | ffmpeg to 16 kHz mono, spawned with an argv array reading stdin |
-| `stt.ts` | whisper.cpp client, model stays resident between requests |
+| `stt.ts` | whisper.cpp client (model stays resident) and the hosted `/audio/transcriptions` shape |
 | `capture-time.ts` | when the user actually spoke, from client headers within sanity bounds |
 | `vault.ts` | **every** read and write, and all seven invariants below |
 | `retrieval.ts` | grep over the vault, ranked, behind a `Retriever` interface |
@@ -39,6 +42,16 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `ask.ts` | retrieve, frame as data, stream |
 | `digest.ts` | counts and failures, daily. Needs no model, a digest is arithmetic |
 | `notify.ts` | console or ntfy |
+
+## Setup is an explicit, local-first choice
+
+`tama-server setup` creates a new empty git-backed vault only after confirmation and writes a
+private config outside the repository. It starts with local whisper.cpp and lets the owner
+leave `/ask` disabled, select a local Ollama-compatible server, or opt into OpenRouter.
+Provider credentials are referenced through separate private key files or environment variables
+rather than embedded in the generated config. Setup preserves the admin token and unrelated
+settings when reconfigured. A setup wizard must never silently route audio or vault excerpts to a
+cloud service, and it must never modify a non-empty vault.
 
 ## Only the vault adapter touches files
 

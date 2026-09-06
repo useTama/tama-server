@@ -23,6 +23,8 @@ route behavior, vault handling, authentication, or the public API.
 - `src/vault.ts`: all vault reads/writes and their safety invariants.
 - `src/auth.ts`, `src/idempotency.ts`: device access and retry safety.
 - `src/audio.ts`, `src/stt.ts`, `src/capture-time.ts`: capture pipeline.
+- `src/whisper.ts`: local whisper.cpp bring-up. Mechanics only; setup owns the prompts.
+- `src/ui.ts`: terminal colour. Never let colour be the only thing carrying a meaning.
 - `src/retrieval.ts`, `src/llm.ts`, `src/ask.ts`: optional question-answering path.
 - `src/config.ts`: config loading and validation.
 - `test/`: Bun tests; add coverage alongside behavior changes.

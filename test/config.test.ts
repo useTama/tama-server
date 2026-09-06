@@ -36,6 +36,29 @@ test("ntfy requires a topic", async () => {
   expect(() => loadConfig(path)).toThrow(/ntfy.topic is required/);
 });
 
+test("stt defaults to whisper.cpp and rejects a provider it cannot speak to", async () => {
+  const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
+  expect(loadConfig(bare).stt).toEqual({ provider: "whisper-cpp", url: "http://127.0.0.1:8081", model: undefined, apiKey: undefined });
+
+  const sarvam = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, stt: { provider: "sarvam", url: "https://api.sarvam.ai" } });
+  expect(() => loadConfig(sarvam)).toThrow(/stt.provider must be/);
+});
+
+test("a hosted stt provider must name a model, and baseUrl reads the same as url", async () => {
+  const modelless = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "openai-compatible", baseUrl: "https://api.groq.com/openai/v1" } });
+  expect(() => loadConfig(modelless)).toThrow(/stt.model is required/);
+
+  const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "openai-compatible", baseUrl: "https://api.groq.com/openai/v1", model: "whisper-large-v3" } });
+  expect(loadConfig(path).stt).toEqual({
+    provider: "openai-compatible",
+    url: "https://api.groq.com/openai/v1",
+    model: "whisper-large-v3",
+    apiKey: undefined,
+  });
+});
+
 test("separate key files resolve relative to config for both providers", async () => {
   await writeFile(join(dir, "provider.key"), "fixture-key", { mode: 0o600 });
   const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },

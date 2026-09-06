@@ -1,9 +1,10 @@
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import type { SttConfig } from "./stt.ts";
 
 export type Config = {
   vault: { path: string; inbox: string };
-  stt: { provider: "whisper-cpp"; url: string; apiKey?: string };
+  stt: SttConfig;
   server: { port: number; adminToken: string };
   notify: {
     provider: "console" | "ntfy";
@@ -55,6 +56,16 @@ export function loadConfig(path = defaultConfigPath()): Config {
     throw new Error("config: notify.ntfy.topic is required when provider is ntfy");
   }
 
+  // stt.provider selects a wire format, so an unrecognized value has to fail
+  // here and not as an opaque 404 on the first capture of the day.
+  const sttProvider = raw.stt?.provider ?? "whisper-cpp";
+  if (sttProvider !== "whisper-cpp" && sttProvider !== "openai-compatible") {
+    throw new Error(`config: stt.provider must be "whisper-cpp" or "openai-compatible", got ${JSON.stringify(sttProvider)}`);
+  }
+  if (sttProvider === "openai-compatible" && !raw.stt?.model) {
+    throw new Error("config: stt.model is required for the openai-compatible provider (e.g. whisper-large-v3)");
+  }
+
   // Absent `ask` is the normal case, not an error. Only validate once someone
   // has opted in, and then fail loudly rather than at the first question.
   let ask: Config["ask"];
@@ -82,7 +93,13 @@ export function loadConfig(path = defaultConfigPath()): Config {
   return {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
-    stt: { provider: "whisper-cpp", url: raw.stt?.url ?? "http://127.0.0.1:8081", apiKey: credential(raw.stt) },
+    stt: {
+      provider: sttProvider,
+      // `baseUrl` is what the ask block calls the same thing, so accept either.
+      url: raw.stt?.baseUrl ?? raw.stt?.url ?? "http://127.0.0.1:8081",
+      model: raw.stt?.model ? String(raw.stt.model) : undefined,
+      apiKey: credential(raw.stt),
+    },
     server: { port: raw.server?.port ?? 8080, adminToken: String(raw.server.adminToken) },
     notify: {
       provider,

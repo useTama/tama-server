@@ -36,7 +36,7 @@ function configPathFromArgs(args: string[]): string {
 const config = loadConfig(configPathFromArgs(Bun.argv));
 const db = openDb(join(config.dataDir, "tama.db"));
 const vault = new Vault(config.vault.path, config.vault.inbox, config.safety.dryRun, config.safety.allowUnbackedVault);
-const stt = new Stt(config.stt.url, config.stt.apiKey);
+const stt = new Stt(config.stt);
 
 const notifier: Notifier =
   config.notify.provider === "ntfy"
@@ -48,11 +48,11 @@ sweepExpiredCodes(db);
 idem.sweep(db);
 
 if (!(await stt.health())) {
-  recordFailure(db, { kind: "stt-down", detail: `unreachable at ${config.stt.url} at startup` });
+  recordFailure(db, { kind: "stt-down", detail: `unreachable at ${stt.endpoint} at startup` });
   safeNotify(notifier, {
     level: "error",
     title: "Tama: speech-to-text is down",
-    message: `whisper unreachable at ${config.stt.url}. Captures will fail until it is up.`,
+    message: `transcription unreachable at ${stt.endpoint}. Captures will fail until it is up.`,
   });
 }
 
@@ -358,7 +358,7 @@ setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
 
 console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
 console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
-console.log(`${grey("  stt    ")} ${config.stt.url}`);
+console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
 console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
 if (config.safety.dryRun) console.log(amber("  DRY RUN - nothing will be written"));
 

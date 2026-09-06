@@ -1,0 +1,17 @@
+[Unit]
+Description=Tama voice-capture server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tama
+Group=tama
+WorkingDirectory=/opt/tama-server
+Environment=TAMA_CONFIG=/etc/tama/tama.config.json
+ExecStart=/opt/tama-server/dist/tama-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

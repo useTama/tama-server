@@ -20,21 +20,23 @@ export type Digest = {
   words: number;
   audioMinutes: number;
   failures: { kind: string; detail: string; at: string }[];
+  additionalFailures: number;
   quietDays: number;
 };
 
 export function buildDigest(db: Database, sinceIso: string): Digest {
   const cap = db
     .query(
-      "SELECT COUNT(*) n, COALESCE(SUM(words),0) w, COALESCE(SUM(audio_secs),0) s FROM captures WHERE captured_at >= ?",
+      "SELECT COUNT(*) n, COALESCE(SUM(words),0) w, COALESCE(SUM(audio_secs),0) s FROM captures WHERE received_at >= ?",
     )
     .get(sinceIso) as { n: number; w: number; s: number };
 
   const failures = db
     .query("SELECT kind, detail, at FROM failures WHERE at >= ? ORDER BY at DESC LIMIT 10")
     .all(sinceIso) as { kind: string; detail: string; at: string }[];
+  const failureCount = (db.query("SELECT COUNT(*) n FROM failures WHERE at >= ?").get(sinceIso) as { n: number }).n;
 
-  const last = db.query("SELECT MAX(captured_at) m FROM captures").get() as { m: string | null };
+  const last = db.query("SELECT MAX(received_at) m FROM captures").get() as { m: string | null };
   const quietDays = last.m
     ? Math.floor((Date.now() - new Date(last.m).getTime()) / 86_400_000)
     : 0;
@@ -45,6 +47,7 @@ export function buildDigest(db: Database, sinceIso: string): Digest {
     words: cap.w,
     audioMinutes: Math.round((cap.s / 60) * 10) / 10,
     failures,
+    additionalFailures: Math.max(0, failureCount - failures.length),
     quietDays,
   };
 }
@@ -62,6 +65,7 @@ export function renderDigest(d: Digest): { title: string; message: string; level
     lines.push("");
     lines.push(`${d.failures.length} failure${d.failures.length === 1 ? "" : "s"}:`);
     for (const f of d.failures.slice(0, 5)) lines.push(`  ${f.kind}: ${f.detail.slice(0, 80)}`);
+    if (d.additionalFailures) lines.push(`  +${d.additionalFailures} more`);
   }
 
   return {

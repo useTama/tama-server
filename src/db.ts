@@ -31,16 +31,27 @@ export function openDb(path: string): Database {
       code       TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
-      used_at    TEXT
+      used_at    TEXT,
+      attempts   INTEGER NOT NULL DEFAULT 0,
+      locked_at  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS pairing_attempts (
+      caller     TEXT PRIMARY KEY,
+      attempts   INTEGER NOT NULL,
+      window_at  TEXT NOT NULL,
+      locked_at  TEXT
     );
 
     -- Idempotency: a client retrying a timed-out request must not create a
     -- second note. The UNIQUE key is what makes the race safe.
     CREATE TABLE IF NOT EXISTS idempotency (
-      key        TEXT PRIMARY KEY,
+      device_id  TEXT NOT NULL,
+      key        TEXT NOT NULL,
       status     TEXT NOT NULL,          -- 'pending' | 'done'
       response   TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (device_id, key)
     );
 
     -- Feeds the daily digest. Derived data, safe to delete.
@@ -70,6 +81,35 @@ export function openDb(path: string): Database {
     CREATE INDEX IF NOT EXISTS captures_at  ON captures(captured_at);
     CREATE INDEX IF NOT EXISTS failures_at  ON failures(at);
   `);
+
+  // v0 databases used a global idempotency key and pairing codes without an
+  // attempt counter. Migrate in place before any request can use the tables.
+  const idemColumns = db.query("PRAGMA table_info(idempotency)").all() as { name: string }[];
+  if (idemColumns.length && !idemColumns.some((c) => c.name === "device_id")) {
+    db.exec(`
+      BEGIN;
+      ALTER TABLE idempotency RENAME TO idempotency_legacy;
+      CREATE TABLE idempotency (
+        device_id  TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        status     TEXT NOT NULL,
+        response   TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (device_id, key)
+      );
+      INSERT INTO idempotency (device_id, key, status, response, created_at)
+        SELECT '', key, status, response, created_at FROM idempotency_legacy;
+      DROP TABLE idempotency_legacy;
+      COMMIT;
+    `);
+  }
+  const pairColumns = db.query("PRAGMA table_info(pairing_codes)").all() as { name: string }[];
+  if (!pairColumns.some((c) => c.name === "attempts")) {
+    db.exec("ALTER TABLE pairing_codes ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!pairColumns.some((c) => c.name === "locked_at")) {
+    db.exec("ALTER TABLE pairing_codes ADD COLUMN locked_at TEXT");
+  }
 
   return db;
 }

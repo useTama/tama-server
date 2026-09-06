@@ -35,16 +35,17 @@ export type TimeResult = {
 
 export function resolveCaptureTime(input: TimeInput, now = new Date()): TimeResult {
   const nowMs = now.getTime();
+  let ageWarning: string | undefined;
 
   if (input.capturedAgeMs !== undefined && input.capturedAgeMs !== null && input.capturedAgeMs !== "") {
     const age = Number(input.capturedAgeMs);
     if (!Number.isFinite(age) || age < 0) {
-      return { at: now, basis: "server-clock", warning: "capturedAgeMs was not a non-negative number" };
+      ageWarning = "capturedAgeMs was not a non-negative number";
+    } else if (age > MAX_AGE_MS) {
+      ageWarning = "capturedAgeMs older than 30 days";
+    } else {
+      return { at: new Date(nowMs - age), basis: "client-age" };
     }
-    if (age > MAX_AGE_MS) {
-      return { at: now, basis: "server-clock", warning: "capturedAgeMs older than 30 days" };
-    }
-    return { at: new Date(nowMs - age), basis: "client-age" };
   }
 
   if (input.capturedAt) {
@@ -59,9 +60,9 @@ export function resolveCaptureTime(input: TimeInput, now = new Date()): TimeResu
     if (-delta > MAX_AGE_MS) {
       return { at: now, basis: "server-clock", warning: "capturedAt is older than 30 days" };
     }
-    return { at: t, basis: "client-absolute" };
+    return { at: t, basis: "client-absolute", ...(ageWarning ? { warning: ageWarning } : {}) };
   }
 
   // No client opinion. Only correct for something posting in real time, like curl.
-  return { at: now, basis: "server-clock" };
+  return { at: now, basis: "server-clock", ...(ageWarning ? { warning: ageWarning } : {}) };
 }

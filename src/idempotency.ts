@@ -26,14 +26,14 @@ export type Claim =
   | { state: "in-flight" };
 
 /** Try to claim a key. Only a "fresh" claim may proceed to do the work. */
-export function claim(db: Database, key: string): Claim {
+export function claim(db: Database, deviceId: string, key: string): Claim {
   try {
-    db.query("INSERT INTO idempotency (key, status, created_at) VALUES (?, 'pending', ?)")
-      .run(key, new Date().toISOString());
+    db.query("INSERT INTO idempotency (device_id, key, status, created_at) VALUES (?, ?, 'pending', ?)")
+      .run(deviceId, key, new Date().toISOString());
     return { state: "fresh" };
   } catch {
-    const row = db.query("SELECT status, response, created_at FROM idempotency WHERE key = ?")
-      .get(key) as { status: string; response: string | null; created_at: string } | null;
+    const row = db.query("SELECT status, response, created_at FROM idempotency WHERE device_id = ? AND key = ?")
+      .get(deviceId, key) as { status: string; response: string | null; created_at: string } | null;
     if (!row) return { state: "fresh" }; // swept between insert and read; let it through
     if (row.status === "done" && row.response) {
       return { state: "duplicate", response: JSON.parse(row.response) };
@@ -42,8 +42,8 @@ export function claim(db: Database, key: string): Claim {
       // Abandoned, not merely slow: reclaim it rather than blocking every
       // retry with "in-flight" until the next hourly sweep, or worse, the
       // 24h TTL that was meant for completed dedup, not crash recovery.
-      db.query("DELETE FROM idempotency WHERE key = ?").run(key);
-      return claim(db, key);
+      db.query("DELETE FROM idempotency WHERE device_id = ? AND key = ?").run(deviceId, key);
+      return claim(db, deviceId, key);
     }
     return { state: "in-flight" };
   }
@@ -58,6 +58,7 @@ export function claim(db: Database, key: string): Claim {
  */
 export function waitForCompletion(
   db: Database,
+  deviceId: string,
   key: string,
   timeoutMs = 30_000,
   intervalMs = 250,
@@ -65,8 +66,8 @@ export function waitForCompletion(
   return new Promise((done) => {
     const deadline = Date.now() + timeoutMs;
     const poll = () => {
-      const row = db.query("SELECT status, response FROM idempotency WHERE key = ?")
-        .get(key) as { status: string; response: string | null } | null;
+      const row = db.query("SELECT status, response FROM idempotency WHERE device_id = ? AND key = ?")
+        .get(deviceId, key) as { status: string; response: string | null } | null;
       if (!row) return done({ state: "gone" });
       if (row.status === "done" && row.response) {
         return done({ state: "done", response: JSON.parse(row.response) });
@@ -79,14 +80,14 @@ export function waitForCompletion(
 }
 
 /** Record the result so a later retry replays it instead of writing again. */
-export function complete(db: Database, key: string, response: unknown): void {
-  db.query("UPDATE idempotency SET status = 'done', response = ? WHERE key = ?")
-    .run(JSON.stringify(response), key);
+export function complete(db: Database, deviceId: string, key: string, response: unknown): void {
+  db.query("UPDATE idempotency SET status = 'done', response = ? WHERE device_id = ? AND key = ?")
+    .run(JSON.stringify(response), deviceId, key);
 }
 
 /** The work failed. Release the claim so a retry can genuinely retry. */
-export function release(db: Database, key: string): void {
-  db.query("DELETE FROM idempotency WHERE key = ?").run(key);
+export function release(db: Database, deviceId: string, key: string): void {
+  db.query("DELETE FROM idempotency WHERE device_id = ? AND key = ?").run(deviceId, key);
 }
 
 export function sweep(db: Database): number {

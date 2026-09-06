@@ -33,6 +33,15 @@ export function defaultConfigPath(): string {
   return process.env.TAMA_CONFIG ?? (existsSync("tama.config.json") ? resolve("tama.config.json") : resolve(process.env.HOME ?? ".", ".config/tama/tama.config.json"));
 }
 
+/** Shared by the server and the wizard, so `--config` means one thing in both. */
+export function configPathFromArgs(args: string[]): string {
+  const flag = args.indexOf("--config");
+  if (flag === -1) return defaultConfigPath();
+  const path = args[flag + 1];
+  if (!path || path.startsWith("--")) throw new Error("--config requires a path");
+  return resolve(path);
+}
+
 export function loadConfig(path = defaultConfigPath()): Config {
   if (!existsSync(path)) {
     throw new Error(`no config at ${path}\n  cp tama.config.example.json tama.config.json\n  then set vault.path and server.adminToken`);

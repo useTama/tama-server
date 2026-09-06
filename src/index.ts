@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadConfig, defaultConfigPath } from "./config.ts";
+import { loadConfig, configPathFromArgs } from "./config.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
@@ -24,14 +24,6 @@ export const MIN_CLIENT = "0.1.0";
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SECONDS = 300;
 const MAX_INFLIGHT = 2;
-
-function configPathFromArgs(args: string[]): string {
-  const flag = args.indexOf("--config");
-  if (flag === -1) return defaultConfigPath();
-  const path = args[flag + 1];
-  if (!path || path.startsWith("--")) throw new Error("--config requires a path");
-  return path;
-}
 
 const config = loadConfig(configPathFromArgs(Bun.argv));
 const db = openDb(join(config.dataDir, "tama.db"));

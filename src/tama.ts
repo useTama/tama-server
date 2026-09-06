@@ -10,7 +10,10 @@ if (command === "setup") {
     process.exitCode = 1;
   }
 } else if (command === "help" || command === "--help" || command === "-h") {
-  console.log("tama-server [--config PATH] | tama-server setup");
+  const { tama, grey } = await import("./ui.ts");
+  console.log(`${tama("tama-server")} [--config PATH] ${grey("run the server")}`);
+  console.log(`${tama("tama-server")} setup             ${grey("configure a vault, transcription, and Ask")}`);
+  console.log(grey("\nColour follows NO_COLOR and is dropped when output is not a terminal."));
 } else {
   await import("./index.ts");
 }

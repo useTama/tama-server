@@ -25,9 +25,12 @@ route behavior, vault handling, authentication, or the public API.
 - `src/audio.ts`, `src/stt.ts`, `src/capture-time.ts`: capture pipeline.
 - `src/whisper.ts`: local whisper.cpp bring-up. Mechanics only; setup owns the prompts.
 - `src/ui.ts`: terminal colour. Never let colour be the only thing carrying a meaning.
+- `src/qr.ts`, `src/pair-page.ts`: the QR encoder and the `GET /pair` page. Self-contained
+  on purpose; drawing a square should not add a dependency.
 - `src/retrieval.ts`, `src/llm.ts`, `src/ask.ts`: optional question-answering path.
 - `src/config.ts`: config loading and validation.
 - `test/`: Bun tests; add coverage alongside behavior changes.
+- `clients/`: device clients that are version-coupled to the API, not separate repos.
 
 ## Non-negotiable safety and product rules
 
@@ -44,6 +47,8 @@ route behavior, vault handling, authentication, or the public API.
 - Do not weaken the git-tracked-vault preflight requirement except through the explicit
   `safety.allowUnbackedVault` override. Honor `safety.dryRun` as a true no-write mode.
 - Keep secrets out of source, examples, logs, and tests.
+- A pairing code is a credential. Anything that mints or displays one is admin-only, and the
+  admin token stays out of anything a device is handed.
 
 ## Development workflow
 

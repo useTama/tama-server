@@ -1,11 +1,12 @@
 # API reference
 
-All routes are on `localhost:8080` by default. Everything except `/health` and `/pair`
-needs a bearer token.
+All routes are on `localhost:8080` by default. `GET /health` is open and `POST /pair`
+authenticates with the pairing code itself; everything else needs a bearer token.
 
 | Route | Auth | Does |
 |---|---|---|
 | `GET /health` | none | version, min client version, whisper status |
+| `GET /pair` | admin | a page showing a QR code a phone can scan |
 | `POST /pair` | the code itself | redeem a pairing code for a device token |
 | `POST /capture` | device token | audio or text in, note path out |
 | `POST /ask` | device token | ask a question, get an answer from your notes |
@@ -16,6 +17,41 @@ needs a bearer token.
 | `GET /digest` | admin | today's digest without waiting for the scheduled one |
 
 ## Pairing
+
+A device gets a token by redeeming a short-lived code. There are two ways to put that code
+in front of a device: a page it can photograph, or a terminal.
+
+### GET /pair
+
+Open it in a browser and it mints a code and draws it as a QR code, one per address the
+machine might be reachable at. `tama-server setup` prints the link.
+
+```
+http://localhost:8080/pair?token=$ADMIN
+```
+
+Admin-only, because whoever can mint a pairing code can pair themselves into the vault. A
+browser cannot attach an `Authorization` header to a plain navigation, so this route — and
+only this route — also accepts the admin token as `?token=`. Treat that URL as the admin
+token itself: it is one. The page is served `no-store`, sends no referrer, refuses to be
+framed, and loads nothing from anywhere.
+
+Each load mints a fresh code, so reloading is how you get another one.
+
+The QR encodes JSON rather than a URL, so a camera app that helpfully opens links finds
+nothing to open, and a client can parse it with stock tooling:
+
+```json
+{ "v": 1, "url": "http://192.168.1.20:8080", "code": "807390" }
+```
+
+`url` is an address the *device* has to reach, which is rarely the one the admin is browsing.
+The page offers the machine's LAN addresses first and `localhost` last for that reason.
+
+[`clients/ios-shortcut`](../clients/ios-shortcut) is a client built around this: scan, and
+the phone is paired.
+
+### From a terminal
 
 ```sh
 ADMIN=$(jq -r .server.adminToken tama.config.json)
@@ -28,9 +64,10 @@ curl -X POST localhost:8080/pair -H 'content-type: application/json' \
 # -> { "token": "..." }   store it, it is not shown again
 ```
 
-Codes are single-use and expire in 10 minutes. Failed redemption attempts are limited per
-caller during that window to make a six-digit code impractical to brute-force. Each device
-gets its own token, so losing a device revokes one token rather than the whole install.
+Codes are single-use and expire in 10 minutes, however they were shown. Failed redemption
+attempts are limited per caller during that window to make a six-digit code impractical to
+brute-force. Each device gets its own token, so losing a device revokes one token rather
+than the whole install.
 
 For a board you are about to flash, mint a token directly instead:
 

@@ -5,8 +5,9 @@ import { mkdir, writeFile, readdir, readFile, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
-import { defaultConfigPath, loadConfig } from "./config.ts";
+import { configPathFromArgs, loadConfig } from "./config.ts";
 import { Stt, SPEECH_MODEL, type SttConfig } from "./stt.ts";
+import * as whisper from "./whisper.ts";
 import { tama, red, grey, bold, ok, warn } from "./ui.ts";
 
 type AskConfig =
@@ -66,7 +67,7 @@ export function worldFolder(name: string): string {
   return folder.slice(0, 80) || "My World";
 }
 
-export async function runSetup(): Promise<void> {
+export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
   if (!input.isTTY || !output.isTTY) throw new Error("tama setup needs an interactive terminal");
   const ask = async (label: string, fallback: string) => {
     const rl = createInterface({ input, output });
@@ -145,9 +146,69 @@ export async function runSetup(): Promise<void> {
     const answer = (await ask(`${label} ${fallback ? "[Y/n]" : "[y/N]"}`, "")).toLowerCase();
     return answer ? answer === "y" || answer === "yes" : fallback;
   };
+  /**
+   * Install check, model, service. Returns whether the server ended up
+   * answering; every exit is a soft one, because a saved config plus a manual
+   * whisper is still a working install.
+   */
+  const bootstrapWhisper = async (url: string, probe: () => Promise<boolean>): Promise<boolean> => {
+    const binary = whisper.serverBinary();
+    if (!binary) {
+      console.log(warn(`whisper.cpp is not installed. ${grey(whisper.installHint())}`));
+      return false;
+    }
+    let models = await whisper.installedModels();
+    if (models.length === 0) {
+      const file = await choose("Which model should Tama download?", whisper.MODELS, whisper.MODELS[0]!.value);
+      console.log(grey(`Downloading ${file} to ${whisper.MODEL_DIR} — this is a one-time download.`));
+      try {
+        let shown = -1;
+        await whisper.downloadModel(file, (fraction) => {
+          const percent = Math.floor(fraction * 100);
+          if (percent === shown) return;
+          shown = percent;
+          output.write(`\r\x1b[2K  ${red("\u2588".repeat(Math.round(percent / 4)))}${grey("\u2591".repeat(25 - Math.round(percent / 4)))} ${percent}%`);
+        });
+        output.write("\n");
+        console.log(ok("Model downloaded."));
+      } catch (error) {
+        output.write("\n");
+        console.log(warn(`Could not download the model: ${error instanceof Error ? error.message : "unknown error"}`));
+        return false;
+      }
+      models = await whisper.installedModels();
+    }
+    const model = models.length === 1
+      ? models[0]!
+      : await choose("Which model should Whisper serve?", models.map((m) => ({ value: m, label: m })), models[0]!);
+
+    const port = Number(new URL(url).port || "8081");
+    const service = whisper.serviceFor(binary, `${whisper.MODEL_DIR}/${model}`, port);
+    if (!service) {
+      console.log(warn(`No service template for this platform. Start it yourself: ${grey(`${binary} -m ${whisper.MODEL_DIR}/${model} --host 127.0.0.1 --port ${port}`)}`));
+      return false;
+    }
+    if (!(await yes(`Keep Whisper running in the background? ${grey(`(writes ${service.path})`)}`, true))) return false;
+    const failure = await whisper.installService(service);
+    if (failure) {
+      console.log(warn(`Could not start the Whisper service: ${failure}`));
+      return false;
+    }
+    console.log(grey("Waiting for Whisper to load the model…"));
+    const running = await whisper.waitForHealth(probe);
+    console.log(running
+      ? ok(`Whisper is running and will start again at login. ${grey(`Stop it with: ${service.stop}`)}`)
+      : warn(`The Whisper service was installed but is not answering yet. ${grey(service.path)}`));
+    return running;
+  };
   try {
     console.log(`\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
-    const configPath = defaultConfigPath();
+    const configPath = configPathFromArgs(argv);
+    // ffmpeg is not optional for audio, and finding that out at the first
+    // recording instead of here costs a thought. git is what makes a vault a
+    // vault, so its absence is fatal rather than a warning.
+    if (!Bun.which("git")) throw new Error(`git is not installed. A Tama vault is a git repository.\n  ${process.platform === "darwin" ? "brew install git" : "apt install git"}`);
+    if (!Bun.which("ffmpeg")) console.log(warn(`ffmpeg is not installed; audio capture will fail until it is. ${grey(process.platform === "darwin" ? "brew install ffmpeg" : "apt install ffmpeg")}`));
     const existing = existsSync(configPath) ? JSON.parse(await readFile(configPath, "utf8")) : undefined;
     const current = existing ? loadConfig(configPath) : undefined;
     if (existing) console.log(grey("Existing setup found. Unrelated settings and your admin token will be preserved."));
@@ -241,7 +302,15 @@ export async function runSetup(): Promise<void> {
         sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
       }
       stt = { provider: "whisper-cpp", url };
-      console.log(await new Stt({ ...stt, apiKey: sttKey }).health()
+      const probe = () => new Stt({ ...stt, apiKey: sttKey }).health();
+      let up = await probe();
+      // Nothing answering on this machine is the normal first run, not a
+      // mistake. Offer to do the three manual steps the README used to hand
+      // over: get the binary, get a model, keep it running.
+      if (!up && sttChoice === "here" && await yes("Nothing is listening there yet. Set up Whisper on this machine now?", true)) {
+        up = await bootstrapWhisper(url, probe);
+      }
+      console.log(up
         ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
         : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
     }
@@ -339,7 +408,10 @@ export async function runSetup(): Promise<void> {
     await rename(temporary, configPath);
     console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
     if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
-    console.log(grey("Start your chosen transcription server first, then pair a device at POST /pair/code."));
+    const admin = (saved.server as { adminToken: string }).adminToken;
+    console.log(`\n${bold("Pair your first device")}${grey(` — with the server running, on this machine:`)}`);
+    console.log(grey(`  curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));
+    console.log(grey(`  curl -X POST localhost:${port}/pair -H 'content-type: application/json' -d '{"code":"CODE","deviceName":"cheeko-01"}'`));
   } finally {
     input.setRawMode(false);
   }

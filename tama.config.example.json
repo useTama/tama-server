@@ -1,6 +1,6 @@
 {
   "vault":  { "path": "~/tama-vault", "inbox": "Inbox" },
-  "stt":    { "url": "http://127.0.0.1:8081" },
+  "stt":    { "provider": "whisper-cpp", "url": "http://127.0.0.1:8081" },
   "server": { "port": 8080, "adminToken": "RUN: openssl rand -hex 24" },
   "notify": {
     "provider": "console",
@@ -17,7 +17,7 @@
     "openai-compatible: one adapter covering Ollama, llama.cpp, LM Studio, vLLM, OpenAI,",
     "                   Groq, OpenRouter, Together. Needs baseUrl. Local needs no key.",
     "  Ollama: { provider: openai-compatible, baseUrl: http://127.0.0.1:11434/v1, model: qwen2.5:7b }",
-    "  OpenAI: { provider: openai-compatible, baseUrl: https://api.openai.com/v1, model: gpt-4o-mini, apiKey: sk-... }"
+    "  OpenRouter: { provider: openai-compatible, baseUrl: https://openrouter.ai/api/v1, model: openrouter/free, apiKeyEnv: OPENROUTER_API_KEY }"
   ],
   "ask": {
     "provider": "anthropic",

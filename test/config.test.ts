@@ -35,3 +35,31 @@ test("ntfy requires a topic", async () => {
   const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, notify: { provider: "ntfy" } });
   expect(() => loadConfig(path)).toThrow(/ntfy.topic is required/);
 });
+
+test("separate key files resolve relative to config for both providers", async () => {
+  await writeFile(join(dir, "provider.key"), "fixture-key", { mode: 0o600 });
+  const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { apiKeyFile: "provider.key" },
+    ask: { provider: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "fixture", apiKeyFile: "provider.key" } });
+  expect(loadConfig(path).stt.apiKey).toBe("fixture-key");
+  expect(loadConfig(path).ask?.apiKey).toBe("fixture-key");
+});
+
+test("ask can resolve a credential from the environment without storing it in config", async () => {
+  process.env.TAMA_TEST_PROVIDER_KEY = "test-secret";
+  try {
+    const path = await config({
+      vault: { path: "/vault" },
+      server: { adminToken: "secret" },
+      ask: {
+        provider: "openai-compatible",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "openrouter/free",
+        apiKeyEnv: "TAMA_TEST_PROVIDER_KEY",
+      },
+    });
+    expect(loadConfig(path).ask?.apiKey).toBe("test-secret");
+  } finally {
+    delete process.env.TAMA_TEST_PROVIDER_KEY;
+  }
+});

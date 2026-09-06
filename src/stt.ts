@@ -8,12 +8,12 @@
  * as the first, whisper is reloading from disk and every latency claim is void.
  */
 export class Stt {
-  constructor(private url: string) {}
+  constructor(private url: string, private apiKey?: string) {}
 
   async health(): Promise<boolean> {
     try {
-      const r = await fetch(`${this.url}/`, { signal: AbortSignal.timeout(2000) });
-      return r.status < 500;
+      const r = await fetch(`${this.url}/`, { headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, signal: AbortSignal.timeout(2000) });
+      return r.ok;
     } catch {
       return false;
     }
@@ -27,6 +27,7 @@ export class Stt {
 
     const res = await fetch(`${this.url}/inference`, {
       method: "POST",
+      headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {},
       body: form,
       signal: AbortSignal.timeout(180_000),
     });

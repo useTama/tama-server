@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadConfig } from "./config.ts";
+import { loadConfig, defaultConfigPath } from "./config.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
@@ -26,7 +26,7 @@ const MAX_INFLIGHT = 2;
 
 function configPathFromArgs(args: string[]): string {
   const flag = args.indexOf("--config");
-  if (flag === -1) return process.env.TAMA_CONFIG ?? "tama.config.json";
+  if (flag === -1) return defaultConfigPath();
   const path = args[flag + 1];
   if (!path || path.startsWith("--")) throw new Error("--config requires a path");
   return path;
@@ -35,7 +35,7 @@ function configPathFromArgs(args: string[]): string {
 const config = loadConfig(configPathFromArgs(Bun.argv));
 const db = openDb(join(config.dataDir, "tama.db"));
 const vault = new Vault(config.vault.path, config.vault.inbox, config.safety.dryRun, config.safety.allowUnbackedVault);
-const stt = new Stt(config.stt.url);
+const stt = new Stt(config.stt.url, config.stt.apiKey);
 
 const notifier: Notifier =
   config.notify.provider === "ntfy"

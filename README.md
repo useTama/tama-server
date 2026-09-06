@@ -7,6 +7,25 @@ Talk into a small device, and a markdown note appears in a folder you own.
 Self-hosted, open source, zero recurring cost. Speech-to-text runs locally, and there is no
 language model in the capture path, so capture needs no account, no key and no bill.
 
+## First-time setup
+
+After installing the binary, run the guided setup:
+
+```sh
+tama-server setup
+```
+
+It creates a new empty git-tracked vault (or uses an existing git-backed vault) and a private
+configuration file. Choose a local or custom Whisper-compatible transcription server, then
+keep `/ask` disabled, use any local OpenAI-compatible model server, or select a cloud API.
+Setup accepts hidden API keys and saves them in separate owner-readable files (not encrypted)
+beside the config. Environment-variable references remain supported for manual deployments.
+The wizard checks connectivity, lists chat models when supported, and offers a short model
+test. It connects to existing model servers; installing and starting them is still manual. Re-run
+`tama-server setup` to change configuration; it never modifies vault contents.
+The generated config lives at `~/.config/tama/tama.config.json`; server deployments can
+override that with `$TAMA_CONFIG` or `--config`.
+
 <a href="https://raw.githubusercontent.com/useTama/tama-server/main/assets/architecture-light.svg">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/useTama/tama-server/main/assets/architecture-dark.svg">

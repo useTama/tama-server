@@ -1,9 +1,9 @@
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
 export type Config = {
   vault: { path: string; inbox: string };
-  stt: { url: string };
+  stt: { provider: "whisper-cpp"; url: string; apiKey?: string };
   server: { port: number; adminToken: string };
   notify: {
     provider: "console" | "ntfy";
@@ -20,19 +20,30 @@ export type Config = {
     provider: "anthropic" | "openai-compatible";
     model: string;
     apiKey?: string;
+    /** Name of an environment variable containing the provider credential. */
+    apiKeyEnv?: string;
     baseUrl?: string;
     maxChunks: number;
   };
   dataDir: string;
 };
 
-export function loadConfig(path = "tama.config.json"): Config {
+export function defaultConfigPath(): string {
+  return process.env.TAMA_CONFIG ?? (existsSync("tama.config.json") ? resolve("tama.config.json") : resolve(process.env.HOME ?? ".", ".config/tama/tama.config.json"));
+}
+
+export function loadConfig(path = defaultConfigPath()): Config {
   if (!existsSync(path)) {
     throw new Error(`no config at ${path}\n  cp tama.config.example.json tama.config.json\n  then set vault.path and server.adminToken`);
   }
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const home = process.env.HOME ?? "~";
   const expand = (p: string) => resolve(p.replace(/^~/, home));
+  const credential = (section: any, fallback?: string): string | undefined => {
+    if (section?.apiKeyFile) return readFileSync(resolve(dirname(path), section.apiKeyFile), "utf8").trim();
+    if (section?.apiKeyEnv) return process.env[section.apiKeyEnv];
+    return section?.apiKey ?? (fallback ? process.env[fallback] : undefined);
+  };
 
   if (!raw?.vault?.path) throw new Error("config: vault.path is required");
   if (!raw?.server?.adminToken || String(raw.server.adminToken).includes("openssl")) {
@@ -62,7 +73,7 @@ export function loadConfig(path = "tama.config.json"): Config {
     ask = {
       provider,
       model: String(raw.ask.model),
-      apiKey: raw.ask.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY,
+      apiKey: credential(raw.ask, provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
       baseUrl: raw.ask.baseUrl,
       maxChunks: Number(raw.ask.maxChunks ?? 8),
     };
@@ -71,7 +82,7 @@ export function loadConfig(path = "tama.config.json"): Config {
   return {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
-    stt: { url: raw.stt?.url ?? "http://127.0.0.1:8081" },
+    stt: { provider: "whisper-cpp", url: raw.stt?.url ?? "http://127.0.0.1:8081", apiKey: credential(raw.stt) },
     server: { port: raw.server?.port ?? 8080, adminToken: String(raw.server.adminToken) },
     notify: {
       provider,

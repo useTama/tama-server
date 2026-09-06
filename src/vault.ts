@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink } from "node:fs/promises";
+import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, sep, basename } from "node:path";
 export type CaptureInput = {
@@ -29,6 +29,27 @@ export class Vault {
     private dryRun = false,
     private allowUnbacked = false,
   ) {}
+
+  /**
+   * Create a new, empty vault and put it under git before the server can use
+   * it. Setup is intentionally conservative: it never turns an existing,
+   * non-empty folder into a repository without the owner doing that directly.
+   */
+  static async initialize(root: string): Promise<void> {
+    const abs = resolve(root);
+    if (existsSync(abs)) {
+      const s = await stat(abs);
+      if (!s.isDirectory()) throw new Error(`vault path is not a directory: ${abs}`);
+      if ((await readdir(abs)).length > 0) throw new Error(`vault already exists and is not empty: ${abs}`);
+    } else {
+      await mkdir(abs, { recursive: true });
+    }
+    const child = Bun.spawn(["git", "init", abs], { stdout: "pipe", stderr: "pipe" });
+    if ((await child.exited) !== 0) {
+      const detail = await new Response(child.stderr).text();
+      throw new Error(`could not initialize git vault: ${detail.trim()}`);
+    }
+  }
 
   /** Invariant 3: refuse to run against an unprotected vault. */
   async preflight(): Promise<void> {

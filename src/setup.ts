@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
 import { defaultConfigPath, loadConfig } from "./config.ts";
 import { Stt } from "./stt.ts";
+import { tama, red, grey, bold, ok, warn } from "./ui.ts";
 
 type AskConfig =
   | undefined
@@ -55,11 +56,11 @@ export async function runSetup(): Promise<void> {
   if (!input.isTTY || !output.isTTY) throw new Error("tama setup needs an interactive terminal");
   const ask = async (label: string, fallback: string) => {
     const rl = createInterface({ input, output });
-    try { return (await rl.question(`${label}${fallback ? ` [${fallback}]` : ""}: `)).trim() || fallback; }
+    try { return (await rl.question(`${red("›")} ${label}${fallback ? grey(` [${fallback}]`) : ""}: `)).trim() || fallback; }
     finally { rl.close(); }
   };
   const secret = async (label: string): Promise<string> => {
-    output.write(`${label} (hidden; Enter to skip): `);
+    output.write(`${red("›")} ${label}${grey(" (hidden; Enter to skip)")}: `);
     return new Promise((done, fail) => {
       let value = "";
       const wasRaw = input.isRaw;
@@ -85,19 +86,19 @@ export async function runSetup(): Promise<void> {
         const url = new URL(value);
         if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
         return value.replace(/\/+$/, "");
-      } catch { console.log("Enter an http:// or https:// server address without credentials or query parameters."); }
+      } catch { console.log(warn("Enter an http:// or https:// server address without credentials or query parameters.")); }
     }
   };
   const choose = async <T extends string>(label: string, options: Array<{ value: T; label: string }>, fallback: T): Promise<T> => {
     let selected = options.findIndex((o) => o.value === fallback);
-    console.log(`\n${label}  (↑/↓ or j/k, then Enter)`);
+    console.log(`\n${bold(label)}  ${grey("(↑/↓ or j/k, then Enter)")}`);
     let drawn = false;
     const draw = () => {
       if (drawn) output.write(`\x1b[${options.length}A`);
       for (let i = 0; i < options.length; i++) {
         const option = options[i]!;
-        const mark = i === selected ? "❯" : " ";
-        output.write(`\r\x1b[2K${mark} ${i + 1}. ${option.label}\n`);
+        const chosen = i === selected;
+        output.write(`\r\x1b[2K${chosen ? red("❯") : " "} ${grey(`${i + 1}.`)} ${chosen ? bold(option.label) : option.label}\n`);
       }
       drawn = true;
     };
@@ -131,14 +132,14 @@ export async function runSetup(): Promise<void> {
     return answer ? answer === "y" || answer === "yes" : fallback;
   };
   try {
-    console.log("\nTama setup — voice notes in a folder you own.\n");
+    console.log(`\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
     const configPath = defaultConfigPath();
     const existing = existsSync(configPath) ? JSON.parse(await readFile(configPath, "utf8")) : undefined;
     const current = existing ? loadConfig(configPath) : undefined;
-    if (existing) console.log("Existing setup found. Unrelated settings and your admin token will be preserved.");
+    if (existing) console.log(grey("Existing setup found. Unrelated settings and your admin token will be preserved."));
     const worldName = await ask("What would you like to name your world?", existing?.world?.name ?? "My World");
     let suggestedPath = current?.vault.path ?? homePath(`/Tama/${worldFolder(worldName)}`);
-    console.log(`Your notes will be saved in ${suggestedPath}`);
+    console.log(`Your notes will be saved in ${bold(suggestedPath)}`);
     const customLocation = await yes("Choose a different location?");
     let vaultPath: string;
     let selectedVaultPlan: VaultPlan;
@@ -146,7 +147,7 @@ export async function runSetup(): Promise<void> {
     for (;;) {
       vaultPath = resolve((askLocation ? await ask("Folder for your world", suggestedPath) : suggestedPath).replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
       try { selectedVaultPlan = await vaultPlan(vaultPath); break; }
-      catch { console.log("Choose an empty folder or an existing git-backed vault. Your existing notes will not be changed."); askLocation = true; }
+      catch { console.log(warn("Choose an empty folder or an existing git-backed vault. Your existing notes will not be changed.")); askLocation = true; }
     }
     // This is application state, not a choice most people need to make. Keep
     // it in the standard per-user location; deployments can still set
@@ -158,13 +159,15 @@ export async function runSetup(): Promise<void> {
       { value: "local", label: "Use Whisper running on your server" },
       { value: "custom", label: "Use an API model (Whisper.cpp-compatible providers)" },
     ], "local");
-    console.log(sttChoice === "local" ? "Start Whisper on your server, then enter its address below." : "Connect a Whisper.cpp-compatible API here. Sarvam support is not available yet.");
+    console.log(grey(sttChoice === "local" ? "Start Whisper on your server, then enter its address below." : "Connect a Whisper.cpp-compatible API here. Sarvam support is not available yet."));
     const sttUrl = await endpoint("Transcription server address", current?.stt.url ?? "http://127.0.0.1:8081");
     let sttKey = current?.stt.url === sttUrl ? current.stt.apiKey : undefined;
     if (sttChoice === "custom" || sttKey) {
       sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
     }
-    console.log(await new Stt(sttUrl, sttKey).health() ? "✓ Transcription server reachable (audio transcription not yet tested)." : "⚠ Could not verify the transcription server. Start it or check the address/key before recording.");
+    console.log(await new Stt(sttUrl, sttKey).health()
+      ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
+      : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
     const askChoice = await choose("How would you like to ask questions about your notes?", [
       { value: "none", label: "Skip for now" },
       { value: "local", label: "Use a model running on your server" },
@@ -187,8 +190,8 @@ export async function runSetup(): Promise<void> {
         { value: "custom", label: "Custom provider (OpenAI-compatible API)" },
       ], "openrouter");
       const preset = presets.find(p => p.value === provider);
-      console.log("Your questions and relevant note excerpts will be sent to this provider.");
-      if (preset) console.log(`Get your API key: ${preset.keys}`);
+      console.log(warn("Your questions and relevant note excerpts will be sent to this provider."));
+      if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
       askConfig = {
         provider: "openai-compatible",
         baseUrl: preset?.url ?? await endpoint("Provider address", ""),
@@ -202,24 +205,24 @@ export async function runSetup(): Promise<void> {
         askKey = await secret(askKey ? "API key (skip to keep saved key)" : "API key") || askKey;
       }
       while (askChoice === "cloud" && !askKey) {
-        console.log("An API key is required for this setup. A public model list does not verify account access.");
+        console.log(warn("An API key is required for this setup. A public model list does not verify account access."));
         if (!(await yes("Enter an API key now?", true))) {
-          console.log("Setup cancelled; configuration was not changed.");
+          console.log(grey("Setup cancelled; configuration was not changed."));
           return;
         }
         askKey = await secret("API key");
       }
-      console.log("Loading available models…");
+      console.log(grey("Loading available models…"));
       try {
         const response = await fetch(`${askConfig.baseUrl}/models`, { headers: askKey ? { authorization: `Bearer ${askKey}` } : {}, signal: AbortSignal.timeout(8000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await response.json() as { data?: { id: string }[] };
         const models = body.data?.filter(m => typeof m.id === "string").map(m => m.id) ?? [];
-        console.log(`${models.length} models listed. API-key validity and model access have not been verified yet.`);
+        console.log(`${bold(String(models.length))} models listed. ${grey("API-key validity and model access have not been verified yet.")}`);
         const filter = models.length > 12 ? await ask("Filter model names (for example llama or claude; Enter for all)", "") : "";
         const matches = models.filter(m => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 12);
         askConfig.model = await choose("Choose a model", [...matches.map(m => ({ value: m, label: m })), { value: "__manual__", label: "Enter a model name myself" }], matches[0] ?? "__manual__");
-      } catch { console.log("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below."); }
+      } catch { console.log(warn("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below.")); }
       if (!askConfig.model || askConfig.model === "__manual__") {
         do { askConfig.model = await ask("Model name", current?.ask?.model ?? ""); } while (!askConfig.model);
       }
@@ -228,19 +231,19 @@ export async function runSetup(): Promise<void> {
           const response = await fetch(`${askConfig.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", ...(askKey ? { authorization: `Bearer ${askKey}` } : {}) }, body: JSON.stringify({ model: askConfig.model, messages: [{ role: "user", content: "Reply with hello." }], max_tokens: 16 }), signal: AbortSignal.timeout(60000) });
           const body = await response.json() as { choices?: { message?: { content?: string } }[] };
           if (!response.ok || !body.choices?.[0]?.message?.content) throw new Error();
-          console.log("✓ Model replied successfully.");
-        } catch { console.log("⚠ Model test failed. Setup can be saved, but Ask is not verified."); }
+          console.log(ok("Model replied successfully."));
+        } catch { console.log(warn("Model test failed. Setup can be saved, but Ask is not verified.")); }
       }
     }
 
     const config = configFromAnswers({ vaultPath, inbox: "Inbox", sttUrl, port, ask: askConfig });
-    console.log(`\nSummary\n  vault:  ${vaultPath} (${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})\n  stt:    ${sttChoice === "local" ? "local Whisper.cpp" : "custom compatible server"} at ${sttUrl}\n  ask:    ${askChoice}\n  config: ${configPath}`);
+    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  stt:   ")} ${sttChoice === "local" ? "local Whisper.cpp" : "custom compatible server"} ${grey(`at ${sttUrl}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  config:")} ${configPath}`);
     if (existsSync(configPath) && !(await yes("Replace the existing config?"))) {
-      console.log("Setup cancelled; no changes were made.");
+      console.log(grey("Setup cancelled; no changes were made."));
       return;
     }
     if (!(await yes("Create this vault and save this configuration?"))) {
-      console.log("Setup cancelled; no changes were made.");
+      console.log(grey("Setup cancelled; no changes were made."));
       return;
     }
     if (selectedVaultPlan === "create") await Vault.initialize(vaultPath);
@@ -257,9 +260,9 @@ export async function runSetup(): Promise<void> {
     const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, configPath);
-    console.log("\nConfiguration saved. Start Tama with bun run start (source checkout) or tama-server (installed binary).");
-    if (askConfig?.apiKeyEnv) console.log(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`);
-    console.log("Start your chosen transcription server first, then pair a device at POST /pair/code.");
+    console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
+    if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
+    console.log(grey("Start your chosen transcription server first, then pair a device at POST /pair/code."));
   } finally {
     input.setRawMode(false);
   }

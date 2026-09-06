@@ -191,6 +191,16 @@ test("a quiet day says so instead of sending an empty digest", () => {
   expect(r.message).toContain("nothing captured");
 });
 
+test("the digest signals failures beyond its detail limit", () => {
+  for (let n = 0; n < 12; n++) recordFailure(db, { kind: "capture-failed", detail: `failure ${n}` });
+  const d = buildDigest(db, new Date(Date.now() - 86_400_000).toISOString());
+  expect(d.failures).toHaveLength(10);
+  expect(d.additionalFailures).toBe(2);
+  const r = renderDigest(d);
+  expect(r.title).toContain("12 failed");
+  expect(r.message).toContain("+2 more");
+});
+
 // ---- whisper returns markers, not emptiness, for silence -------------------
 
 test("a transcript of only non-speech markers counts as silence", async () => {

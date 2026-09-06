@@ -54,6 +54,7 @@ export function buildDigest(db: Database, sinceIso: string): Digest {
 
 export function renderDigest(d: Digest): { title: string; message: string; level: "info" | "warn" } {
   const lines: string[] = [];
+  const failureCount = d.failures.length + d.additionalFailures;
 
   if (d.captures === 0) {
     lines.push(d.quietDays > 1 ? `nothing captured in ${d.quietDays} days` : "nothing captured yesterday");
@@ -69,7 +70,7 @@ export function renderDigest(d: Digest): { title: string; message: string; level
   }
 
   return {
-    title: d.failures.length ? `Tama: ${d.captures} captured, ${d.failures.length} failed` : `Tama: ${d.captures} captured`,
+    title: failureCount ? `Tama: ${d.captures} captured, ${failureCount} failed` : `Tama: ${d.captures} captured`,
     message: lines.join("\n"),
     level: d.failures.length ? "warn" : "info",
   };

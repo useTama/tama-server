@@ -15,6 +15,7 @@ import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
 import { ask } from "./ask.ts";
+import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
 export const VERSION = "0.1.0";
@@ -195,6 +196,43 @@ const server = Bun.serve({
         // Advertised so a client can hide or show an ask affordance instead of
         // discovering the answer by getting a 501 mid-question.
         ask: llm ? { available: true, provider: llm.name } : { available: false },
+      });
+    }
+
+    // The pairing page. Admin-only, because the code it prints is a credential
+    // and anyone who can mint one can pair themselves into the vault. A browser
+    // cannot set an Authorization header on a plain navigation, so the admin
+    // token is accepted in the query string here and nowhere else; the page
+    // sends no referrer and is never cached.
+    if (url.pathname === "/pair" && req.method === "GET") {
+      const given = bearer || url.searchParams.get("token") || "";
+      if (!adminTokenOk(given, config.server.adminToken)) {
+        return new Response("admin token required\n", {
+          status: 401,
+          headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
+      const { code, expiresAt } = newPairingCode(db);
+      const html = renderPairPage({
+        code,
+        expiresAt,
+        origins: candidateOrigins({
+          host: req.headers.get("host"),
+          protocol: url.protocol,
+          port: config.server.port,
+        }),
+        version: VERSION,
+      });
+      console.log(`${grey("pairing page")} ${red(code)} ${grey(`(expires ${expiresAt})`)}`);
+      return new Response(html, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+          "x-frame-options": "DENY",
+          "content-security-policy":
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+        },
       });
     }
 

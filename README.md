@@ -97,11 +97,24 @@ bun run start -- --config /etc/tama/tama.config.json
 | `POST /capture` | device | audio or text in, note path out |
 | `POST /ask` | device | ask a question, get an answer from your notes |
 | `GET /health` | none | version, min client version, whisper status |
+| `GET /pair` | admin | a QR code to point a phone at |
 | `POST /pair` | the code | redeem a pairing code for a device token |
 | `POST /pair/code`, `/tokens`, `GET /digest` | admin | mint codes, manage tokens, force a digest |
 
 **[Full reference →](docs/api.md)** covers the capture headers your client must send,
 the retry policy, and the streaming shape of `/ask`.
+
+## Pairing a phone
+
+`tama-server setup` prints a link to `/pair`. Open it and the server draws a QR code holding
+its own address and a one-time pairing code. Scan it, and the device has a token.
+
+[`clients/ios-shortcut`](clients/ios-shortcut) is two iOS Shortcuts built on that: **Setup**
+scans the code once, **Capture** records and posts. Bind Capture to the Action Button and a
+note is one press away. No app, no terminal, no token typed into a phone.
+
+First pairing still needs the admin to show that QR, which is the point — if a phone could
+pair itself, so could anyone else who can reach the port.
 
 ## Asking questions
 
@@ -128,11 +141,12 @@ Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 ## Test
 
 ```sh
-bun test          # 64 tests
+bun test          # 87 tests
 bun run typecheck
 ```
 
-Firmware lives in [tama-firmware](https://github.com/useTama/tama-firmware).
+Clients live in [`clients/`](clients). Firmware lives in
+[tama-firmware](https://github.com/useTama/tama-firmware).
 
 ## Licence
 

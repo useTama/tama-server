@@ -16,7 +16,8 @@ tama-server setup
 ```
 
 It creates a new empty git-tracked vault (or uses an existing git-backed vault) and a private
-configuration file. Choose a local or custom Whisper-compatible transcription server, then
+configuration file. Point transcription at whisper.cpp on this machine or another, or at a
+hosted API (Groq, OpenAI) whose models setup lists for you, then
 keep `/ask` disabled, use any local OpenAI-compatible model server, or select a cloud API.
 Setup accepts hidden API keys and saves them in separate owner-readable files (not encrypted)
 beside the config. Environment-variable references remain supported for manual deployments.

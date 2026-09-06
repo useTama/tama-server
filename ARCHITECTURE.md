@@ -32,7 +32,7 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `auth.ts` | device tokens (hashed at rest), single-use pairing codes |
 | `idempotency.ts` | claim, replay, release. A retry must not write a second note |
 | `audio.ts` | ffmpeg to 16 kHz mono, spawned with an argv array reading stdin |
-| `stt.ts` | whisper.cpp client, model stays resident between requests |
+| `stt.ts` | whisper.cpp client (model stays resident) and the hosted `/audio/transcriptions` shape |
 | `capture-time.ts` | when the user actually spoke, from client headers within sanity bounds |
 | `vault.ts` | **every** read and write, and all seven invariants below |
 | `retrieval.ts` | grep over the vault, ranked, behind a `Retriever` interface |

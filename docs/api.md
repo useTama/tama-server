@@ -85,9 +85,15 @@ nothing to say".
 
 The setup wizard can connect to an existing chat server, discover its models, and test a
 selected model. Keys entered in setup are stored in owner-readable files referenced by
-`apiKeyFile`; manual configurations can use `apiKeyEnv`. Whisper.cpp-compatible transcription
-servers can also use these credentials, sent as Bearer authentication. This does not add
-support for other transcription API formats.
+`apiKeyFile`; manual configurations can use `apiKeyEnv`. Credentials are sent as Bearer
+authentication on both paths.
+
+| `stt.provider` | Talks to | Needs |
+| --- | --- | --- |
+| `whisper-cpp` | whisper.cpp's `whisper-server`, local or remote | `url` |
+| `openai-compatible` | `POST {url}/audio/transcriptions` — Groq, OpenAI | `url`, `model` |
+
+Formats outside those two, Sarvam's among them, are not supported.
 
 | `ask.provider` | Covers | Needs |
 |---|---|---|

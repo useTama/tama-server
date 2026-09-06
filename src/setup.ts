@@ -409,9 +409,10 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
     if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
     const admin = (saved.server as { adminToken: string }).adminToken;
-    console.log(`\n${bold("Pair your first device")}${grey(` — with the server running, on this machine:`)}`);
-    console.log(grey(`  curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));
-    console.log(grey(`  curl -X POST localhost:${port}/pair -H 'content-type: application/json' -d '{"code":"CODE","deviceName":"cheeko-01"}'`));
+    console.log(`\n${bold("Pair your first device")}${grey(` — start the server, then open this on this machine:`)}`);
+    console.log(`  ${bold(`http://localhost:${port}/pair?token=${admin}`)}`);
+    console.log(grey("  A QR code a phone can scan. Keep that link to yourself; it mints pairing codes."));
+    console.log(grey(`  Scripting it instead: curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));
   } finally {
     input.setRawMode(false);
   }

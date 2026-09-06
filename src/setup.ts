@@ -6,17 +6,20 @@ import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
 import { defaultConfigPath, loadConfig } from "./config.ts";
-import { Stt } from "./stt.ts";
+import { Stt, SPEECH_MODEL, type SttConfig } from "./stt.ts";
 import { tama, red, grey, bold, ok, warn } from "./ui.ts";
 
 type AskConfig =
   | undefined
   | { provider: "openai-compatible"; baseUrl: string; model: string; apiKeyEnv?: string; maxChunks: number };
 
+/** What setup can produce. `apiKey` is never one of them: it goes to its own file. */
+export type SttAnswer = Omit<SttConfig, "apiKey">;
+
 export type SetupAnswers = {
   vaultPath: string;
   inbox: string;
-  sttUrl: string;
+  stt: SttAnswer;
   port: number;
   ask: AskConfig;
 };
@@ -34,13 +37,24 @@ export async function vaultPlan(path: string): Promise<VaultPlan> {
 export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
   return {
     vault: { path: a.vaultPath, inbox: a.inbox },
-    stt: { provider: "whisper-cpp", url: a.sttUrl },
+    stt: a.stt,
     server: { port: a.port, adminToken: randomBytes(24).toString("hex") },
     notify: { provider: "console", ntfy: { url: "https://ntfy.sh", topic: "" }, digestAt: "08:00" },
     safety: { allowUnbackedVault: false, dryRun: false },
     ...(a.ask ? { ask: a.ask } : {}),
     dataDir: "~/.local/share/tama",
   };
+}
+
+/** The OpenAI-compatible listing both the ask and the stt flows shop from. */
+async function listModels(baseUrl: string, apiKey?: string): Promise<string[]> {
+  const response = await fetch(`${baseUrl}/models`, {
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const body = await response.json() as { data?: { id: string }[] };
+  return body.data?.filter(m => typeof m.id === "string").map(m => m.id) ?? [];
 }
 
 function homePath(suffix: string): string {
@@ -155,19 +169,82 @@ export async function runSetup(): Promise<void> {
     const port = current?.server.port ?? 8080;
     if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("server port must be between 1 and 65535");
 
+    // Three answers, two wire formats. "Here" and "elsewhere" differ only in
+    // whether a key is likely, but they are separate lines because "where is
+    // whisper running" is the question the user can actually answer.
     const sttChoice = await choose("Speech-to-text", [
-      { value: "local", label: "Use Whisper running on your server" },
-      { value: "custom", label: "Use an API model (Whisper.cpp-compatible providers)" },
-    ], "local");
-    console.log(grey(sttChoice === "local" ? "Start Whisper on your server, then enter its address below." : "Connect a Whisper.cpp-compatible API here. Sarvam support is not available yet."));
-    const sttUrl = await endpoint("Transcription server address", current?.stt.url ?? "http://127.0.0.1:8081");
-    let sttKey = current?.stt.url === sttUrl ? current.stt.apiKey : undefined;
-    if (sttChoice === "custom" || sttKey) {
-      sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
+      { value: "here", label: "Whisper on this machine" },
+      { value: "remote", label: "Whisper on another machine" },
+      { value: "api", label: "A transcription API (Groq, OpenAI, …)" },
+    ], current?.stt.provider === "openai-compatible" ? "api" : "here");
+
+    let stt: SttAnswer;
+    let sttKey: string | undefined;
+    if (sttChoice === "api") {
+      const providers = [
+        { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
+        { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
+      ];
+      const chosen = await choose("Choose your transcription provider", [
+        ...providers,
+        { value: "custom", label: "Custom provider (OpenAI-compatible /audio/transcriptions)" },
+      ], "groq");
+      const preset = providers.find(p => p.value === chosen);
+      console.log(warn("Your recordings will be uploaded to this provider."));
+      if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
+      const baseUrl = preset?.url ?? await endpoint("Provider address", "");
+      sttKey = current?.stt.url === baseUrl ? current.stt.apiKey : undefined;
+      sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key") || sttKey;
+      while (!sttKey) {
+        console.log(warn("A hosted transcription provider needs an API key."));
+        if (!(await yes("Enter an API key now?", true))) {
+          console.log(grey("Setup cancelled; configuration was not changed."));
+          return;
+        }
+        sttKey = await secret("API key");
+      }
+      console.log(grey("Loading available models…"));
+      let speech: string[] = [];
+      let verified = false;
+      // Only the network call is guarded. Cancelling out of the menu below has
+      // to stay a cancellation, not get reported as an unreachable provider.
+      try {
+        speech = (await listModels(baseUrl, sttKey)).filter(m => SPEECH_MODEL.test(m)).slice(0, 12);
+        verified = true;
+      } catch {
+        console.log(warn("Could not list models. Check the address and API key; you can still enter a model name."));
+      }
+      if (verified && speech.length === 0) console.log(warn("No transcription models in this account's listing. Enter one by name below."));
+      let model = speech.length > 0
+        ? await choose("Choose a transcription model", [
+            ...speech.map(m => ({ value: m, label: m })),
+            { value: "__manual__", label: "Enter a model name myself" },
+          ], speech[0]!)
+        : "";
+      if (!model || model === "__manual__") {
+        do { model = await ask("Model name", current?.stt.model ?? "whisper-large-v3"); } while (!model);
+      }
+      stt = { provider: "openai-compatible", url: baseUrl, model };
+      // Listing models proves the address and the key. Whether this particular
+      // model accepts audio is only knowable by sending some, which setup does
+      // not do: a transcription request costs money and needs a recording.
+      console.log(verified
+        ? ok(`Provider reachable and the API key works ${grey("(audio transcription not yet tested)")}.`)
+        : warn("Could not verify the provider or the key. Setup can be saved, but transcription is not verified."));
+    } else {
+      console.log(grey(sttChoice === "here"
+        ? "Start whisper-server on this machine, then enter its address below."
+        : "Point Tama at a whisper.cpp server you run elsewhere."));
+      const url = await endpoint("Transcription server address", current?.stt.url ?? "http://127.0.0.1:8081");
+      sttKey = current?.stt.url === url ? current.stt.apiKey : undefined;
+      if (sttChoice === "remote" || sttKey) {
+        sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
+      }
+      stt = { provider: "whisper-cpp", url };
+      console.log(await new Stt({ ...stt, apiKey: sttKey }).health()
+        ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
+        : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
     }
-    console.log(await new Stt(sttUrl, sttKey).health()
-      ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
-      : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
     const askChoice = await choose("How would you like to ask questions about your notes?", [
       { value: "none", label: "Skip for now" },
       { value: "local", label: "Use a model running on your server" },
@@ -213,16 +290,16 @@ export async function runSetup(): Promise<void> {
         askKey = await secret("API key");
       }
       console.log(grey("Loading available models…"));
+      let models: string[] = [];
       try {
-        const response = await fetch(`${askConfig.baseUrl}/models`, { headers: askKey ? { authorization: `Bearer ${askKey}` } : {}, signal: AbortSignal.timeout(8000) });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = await response.json() as { data?: { id: string }[] };
-        const models = body.data?.filter(m => typeof m.id === "string").map(m => m.id) ?? [];
+        models = await listModels(askConfig.baseUrl, askKey);
         console.log(`${bold(String(models.length))} models listed. ${grey("API-key validity and model access have not been verified yet.")}`);
+      } catch { console.log(warn("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below.")); }
+      if (models.length > 0) {
         const filter = models.length > 12 ? await ask("Filter model names (for example llama or claude; Enter for all)", "") : "";
         const matches = models.filter(m => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 12);
         askConfig.model = await choose("Choose a model", [...matches.map(m => ({ value: m, label: m })), { value: "__manual__", label: "Enter a model name myself" }], matches[0] ?? "__manual__");
-      } catch { console.log(warn("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below.")); }
+      }
       if (!askConfig.model || askConfig.model === "__manual__") {
         do { askConfig.model = await ask("Model name", current?.ask?.model ?? ""); } while (!askConfig.model);
       }
@@ -236,8 +313,8 @@ export async function runSetup(): Promise<void> {
       }
     }
 
-    const config = configFromAnswers({ vaultPath, inbox: "Inbox", sttUrl, port, ask: askConfig });
-    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  stt:   ")} ${sttChoice === "local" ? "local Whisper.cpp" : "custom compatible server"} ${grey(`at ${sttUrl}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  config:")} ${configPath}`);
+    const config = configFromAnswers({ vaultPath, inbox: "Inbox", stt, port, ask: askConfig });
+    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  config:")} ${configPath}`);
     if (existsSync(configPath) && !(await yes("Replace the existing config?"))) {
       console.log(grey("Setup cancelled; no changes were made."));
       return;

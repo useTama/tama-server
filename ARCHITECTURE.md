@@ -29,6 +29,8 @@ Nothing in `ask.ts` may be reachable from the capture path.
 |---|---|
 | `index.ts` | routes, the bearer check, the inflight limit |
 | `tama.ts`, `setup.ts` | command entry point and interactive first-run setup |
+| `whisper.ts` | bringing whisper.cpp up locally: model download, per-user service |
+| `ui.ts` | terminal colour, dropped whenever stdout is not a colour-capable tty |
 | `auth.ts` | device tokens (hashed at rest), single-use pairing codes |
 | `idempotency.ts` | claim, replay, release. A retry must not write a second note |
 | `audio.ts` | ffmpeg to 16 kHz mono, spawned with an argv array reading stdin |

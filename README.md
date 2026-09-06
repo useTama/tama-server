@@ -7,25 +7,36 @@ Talk into a small device, and a markdown note appears in a folder you own.
 Self-hosted, open source, zero recurring cost. Speech-to-text runs locally, and there is no
 language model in the capture path, so capture needs no account, no key and no bill.
 
-## First-time setup
-
-After installing the binary, run the guided setup:
+## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/useTama/tama-server/main/scripts/install.sh | sh
 tama-server setup
 ```
 
-It creates a new empty git-tracked vault (or uses an existing git-backed vault) and a private
-configuration file. Point transcription at whisper.cpp on this machine or another, or at a
-hosted API (Groq, OpenAI) whose models setup lists for you, then
-keep `/ask` disabled, use any local OpenAI-compatible model server, or select a cloud API.
-Setup accepts hidden API keys and saves them in separate owner-readable files (not encrypted)
-beside the config. Environment-variable references remain supported for manual deployments.
-The wizard checks connectivity, lists chat models when supported, and offers a short model
-test. It connects to existing model servers; installing and starting them is still manual. Re-run
-`tama-server setup` to change configuration; it never modifies vault contents.
+The installer builds from source — it needs `git` and [bun](https://bun.sh) — and puts the
+binary in `~/.local/bin`. Set `PREFIX` to put it somewhere else. Audio capture also needs
+`ffmpeg`; setup says so if it is missing.
+
+## First-time setup
+
+`tama-server setup` creates a new empty git-tracked vault (or uses an existing git-backed
+vault) and a private configuration file.
+
+For transcription, choose whisper.cpp on this machine, whisper.cpp on another machine, or a
+hosted API (Groq, OpenAI) whose speech models setup lists for you. If you pick this machine
+and nothing is listening yet, setup offers to download a model and install a per-user service
+so Whisper starts with you — no root, and it tells you the command to undo it.
+
+For `/ask`: keep it disabled, use any local OpenAI-compatible model server, or select a cloud
+API. Setup accepts hidden API keys and saves them in separate owner-readable files (not
+encrypted) beside the config. Environment-variable references remain supported for manual
+deployments. The wizard checks connectivity, lists chat models when supported, and offers a
+short model test. It finishes by printing the two commands that pair your first device.
+
+Re-run `tama-server setup` to change configuration; it never modifies vault contents.
 The generated config lives at `~/.config/tama/tama.config.json`; server deployments can
-override that with `$TAMA_CONFIG` or `--config`.
+override that with `$TAMA_CONFIG` or `--config PATH`, which both the server and setup accept.
 
 <a href="https://raw.githubusercontent.com/useTama/tama-server/main/assets/architecture-light.svg">
   <picture>
@@ -35,11 +46,18 @@ override that with `$TAMA_CONFIG` or `--config`.
   </picture>
 </a>
 
-## Quickstart
+## From a source checkout
 
 ```sh
 brew install bun ffmpeg whisper-cpp          # or the apt/docker equivalents
+bun install
+bun run setup                                # same wizard, no install step
+bun run start
+```
 
+Or configure it by hand, which is what a scripted deployment wants:
+
+```sh
 mkdir -p ~/.local/share/whisper              # one model, once
 curl -L -o ~/.local/share/whisper/ggml-small.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
@@ -110,7 +128,7 @@ Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 ## Test
 
 ```sh
-bun test          # 43 tests
+bun test          # 64 tests
 bun run typecheck
 ```
 

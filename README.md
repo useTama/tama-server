@@ -38,6 +38,20 @@ bun run dev
 
 Then [pair a device](docs/api.md#pairing) and post to it.
 
+## Run as a service
+
+For a long-running install, use the included [systemd unit](deploy/tama-server.service)
+or [macOS LaunchAgent](deploy/com.usetama.server.plist). Copy one to the platform's
+service directory, set its absolute paths and the `TAMA_CONFIG` environment variable, then
+enable it. Both templates run the compiled binary and send `SIGTERM` for graceful shutdown.
+
+You can also choose a config file directly:
+
+```sh
+bun run start -- --config /etc/tama/tama.config.json
+# or: TAMA_CONFIG=/etc/tama/tama.config.json bun run start
+```
+
 ## API
 
 | Route | Auth | Does |

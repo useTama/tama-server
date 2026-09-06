@@ -24,7 +24,15 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SECONDS = 300;
 const MAX_INFLIGHT = 2;
 
-const config = loadConfig();
+function configPathFromArgs(args: string[]): string {
+  const flag = args.indexOf("--config");
+  if (flag === -1) return process.env.TAMA_CONFIG ?? "tama.config.json";
+  const path = args[flag + 1];
+  if (!path || path.startsWith("--")) throw new Error("--config requires a path");
+  return path;
+}
+
+const config = loadConfig(configPathFromArgs(Bun.argv));
 const db = openDb(join(config.dataDir, "tama.db"));
 const vault = new Vault(config.vault.path, config.vault.inbox, config.safety.dryRun, config.safety.allowUnbackedVault);
 const stt = new Stt(config.stt.url);
@@ -89,7 +97,18 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   };
 
   if (ct.includes("application/json")) {
-    const body = (await req.json()) as { text?: string; capturedAt?: string; capturedAgeMs?: number };
+    const declaredLength = Number(req.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
+      return json({ error: "upload too large" }, 413);
+    }
+    const raw = await req.arrayBuffer();
+    if (raw.byteLength > MAX_UPLOAD_BYTES) return json({ error: "upload too large" }, 413);
+    let body: { text?: string; capturedAt?: string; capturedAgeMs?: number };
+    try {
+      body = JSON.parse(new TextDecoder().decode(raw));
+    } catch {
+      return json({ error: "invalid JSON" }, 400);
+    }
     if (!body.text?.trim()) return json({ error: "text is required" }, 400);
     text = body.text;
     timeInput = {
@@ -179,7 +198,6 @@ const server = Bun.serve({
         version: VERSION,
         minClient: MIN_CLIENT,
         stt: await stt.health(),
-        vault: config.vault.path,
         notify: notifier.name,
         // Advertised so a client can hide or show an ask affordance instead of
         // discovering the answer by getting a 501 mid-question.
@@ -191,7 +209,8 @@ const server = Bun.serve({
     if (url.pathname === "/pair" && req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { code?: string; deviceName?: string };
       if (!b.code) return json({ error: "code is required" }, 400);
-      const r = redeemPairingCode(db, String(b.code), b.deviceName ?? "unnamed device");
+      const caller = server.requestIP(req)?.address ?? "unknown";
+      const r = redeemPairingCode(db, String(b.code), b.deviceName ?? "unnamed device", caller);
       if (!r.ok) return json({ error: `pairing code ${r.reason}` }, 403);
       safeNotify(notifier, { level: "info", title: "Tama: new device paired", message: b.deviceName ?? "unnamed device" });
       return json({ ok: true, id: r.id, token: r.token, note: "store this now, it is not shown again" });
@@ -204,10 +223,10 @@ const server = Bun.serve({
     if (url.pathname === "/capture" && req.method === "POST") {
       const key = req.headers.get("idempotency-key");
       if (key) {
-        const c = idem.claim(db, key);
+        const c = idem.claim(db, device.id, key);
         if (c.state === "duplicate") return json(c.response as object);
         if (c.state === "in-flight") {
-          const w = await idem.waitForCompletion(db, key);
+          const w = await idem.waitForCompletion(db, device.id, key);
           if (w.state === "done") return json(w.response as object);
           // Either still genuinely in flight past the wait, or the original
           // request failed and released the key. Neither is safe to tell the
@@ -216,18 +235,18 @@ const server = Bun.serve({
         }
       }
       if (inflight >= MAX_INFLIGHT) {
-        if (key) idem.release(db, key);
+        if (key) idem.release(db, device.id, key);
         return json({ error: "busy, retry shortly" }, 503);
       }
       inflight++;
       try {
         const res = await doCapture(req, device.deviceName);
-        if (key && res.status === 200) idem.complete(db, key, await res.clone().json());
-        else if (key) idem.release(db, key);
+        if (key && res.status === 200) idem.complete(db, device.id, key, await res.clone().json());
+        else if (key) idem.release(db, device.id, key);
         return res;
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
-        if (key) idem.release(db, key);
+        if (key) idem.release(db, device.id, key);
         recordFailure(db, { kind: "capture-failed", detail, source: device.deviceName });
         safeNotify(notifier, {
           level: "error",
@@ -342,4 +361,13 @@ console.log(`  stt     ${config.stt.url}`);
 console.log(`  notify  ${notifier.name}, digest at ${config.notify.digestAt}`);
 if (config.safety.dryRun) console.log("  DRY RUN - nothing will be written");
 
-process.on("SIGINT", () => { stopDigest(); db.close(); process.exit(0); });
+let stopping = false;
+const shutdown = () => {
+  if (stopping) return;
+  stopping = true;
+  stopDigest();
+  db.close();
+  server.stop(true);
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

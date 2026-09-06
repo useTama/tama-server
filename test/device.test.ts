@@ -57,6 +57,14 @@ test("a wrong clock is rejected, not trusted", () => {
   expect(junk.basis).toBe("server-clock");
 });
 
+test("an invalid age falls through to a valid absolute timestamp", () => {
+  const now = new Date("2026-08-19T09:00:00Z");
+  const r = resolveCaptureTime({ capturedAgeMs: "broken", capturedAt: "2026-08-18T23:00:00Z" }, now);
+  expect(r.basis).toBe("client-absolute");
+  expect(r.at.toISOString()).toBe("2026-08-18T23:00:00.000Z");
+  expect(r.warning).toMatch(/capturedAgeMs/);
+});
+
 test("no client opinion falls back to the server clock", () => {
   const now = new Date("2026-08-19T09:00:00Z");
   expect(resolveCaptureTime({}, now).basis).toBe("server-clock");
@@ -65,23 +73,28 @@ test("no client opinion falls back to the server clock", () => {
 // ---- idempotency: the device retries from flash --------------------------
 
 test("a retry replays the original result instead of writing twice", () => {
-  expect(idem.claim(db, "k1").state).toBe("fresh");
-  idem.complete(db, "k1", { ok: true, path: "Inbox/a.md" });
+  expect(idem.claim(db, "device-a", "k1").state).toBe("fresh");
+  idem.complete(db, "device-a", "k1", { ok: true, path: "Inbox/a.md" });
 
-  const again = idem.claim(db, "k1");
+  const again = idem.claim(db, "device-a", "k1");
   expect(again.state).toBe("duplicate");
   if (again.state === "duplicate") expect(again.response).toEqual({ ok: true, path: "Inbox/a.md" });
 });
 
 test("two simultaneous retries do not both proceed", () => {
-  expect(idem.claim(db, "k2").state).toBe("fresh");
-  expect(idem.claim(db, "k2").state).toBe("in-flight");
+  expect(idem.claim(db, "device-a", "k2").state).toBe("fresh");
+  expect(idem.claim(db, "device-a", "k2").state).toBe("in-flight");
+});
+
+test("the same idempotency key is independent for separate devices", () => {
+  expect(idem.claim(db, "device-a", "shared").state).toBe("fresh");
+  expect(idem.claim(db, "device-b", "shared").state).toBe("fresh");
 });
 
 test("a failed capture releases the key so a retry genuinely retries", () => {
-  expect(idem.claim(db, "k3").state).toBe("fresh");
-  idem.release(db, "k3");
-  expect(idem.claim(db, "k3").state).toBe("fresh");
+  expect(idem.claim(db, "device-a", "k3").state).toBe("fresh");
+  idem.release(db, "device-a", "k3");
+  expect(idem.claim(db, "device-a", "k3").state).toBe("fresh");
 });
 
 // ---- per-device tokens ----------------------------------------------------
@@ -124,9 +137,21 @@ test("a pairing code works exactly once", () => {
 });
 
 test("an unknown code is refused", () => {
-  const r = redeemPairingCode(db, "000000", "x");
+  const r = redeemPairingCode(db, "000000", "x", "caller-a");
   expect(r.ok).toBe(false);
   if (!r.ok) expect(r.reason).toBe("unknown");
+});
+
+test("pairing redemption locks a caller after repeated failed guesses", () => {
+  for (let n = 0; n < 8; n++) {
+    const r = redeemPairingCode(db, String(n).padStart(6, "0"), "x", "caller-a");
+    expect(r.ok).toBe(false);
+  }
+  const { code } = newPairingCode(db);
+  const blocked = redeemPairingCode(db, code, "x", "caller-a");
+  expect(blocked.ok).toBe(false);
+  if (!blocked.ok) expect(blocked.reason).toBe("locked");
+  expect(redeemPairingCode(db, code, "x", "caller-b").ok).toBe(true);
 });
 
 test("an expired code is refused", () => {

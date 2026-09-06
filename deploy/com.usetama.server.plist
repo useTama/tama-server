@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.usetama.server</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/tama-server/dist/tama-server</string></array>
+  <key>WorkingDirectory</key><string>/opt/tama-server</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>TAMA_CONFIG</key><string>/etc/tama/tama.config.json</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/var/log/tama-server.log</string>
+  <key>StandardErrorPath</key><string>/var/log/tama-server.log</string>
+</dict>
+</plist>

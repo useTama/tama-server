@@ -28,8 +28,9 @@ curl -X POST localhost:8080/pair -H 'content-type: application/json' \
 # -> { "token": "..." }   store it, it is not shown again
 ```
 
-Codes are single-use and expire in 10 minutes. Each device gets its own token, so losing a
-device revokes one token rather than the whole install.
+Codes are single-use and expire in 10 minutes. Failed redemption attempts are limited per
+caller during that window to make a six-digit code impractical to brute-force. Each device
+gets its own token, so losing a device revokes one token rather than the whole install.
 
 For a board you are about to flash, mint a token directly instead:
 

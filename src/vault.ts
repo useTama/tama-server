@@ -1,6 +1,7 @@
 import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, sep, basename } from "node:path";
+import { amber } from "./ui.ts";
 export type CaptureInput = {
   /** Raw transcript. Untrusted. Never becomes a path, never touches a shell. */
   text: string;
@@ -156,7 +157,7 @@ export class Vault {
         previewName = this.safeName(`${stamp}-voice-${++pn}.md`);
       }
       const relPath = join(this.inbox, previewName);
-      console.log(`[dry-run] would write ${bytes}B to ${relPath}`);
+      console.log(`${amber("[dry-run]")} would write ${bytes}B to ${relPath}`);
       return { path: join(dir, previewName), relPath, bytes, dryRun: true };
     }
 

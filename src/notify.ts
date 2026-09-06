@@ -1,3 +1,5 @@
+import { red, amber, grey } from "./ui.ts";
+
 export type Level = "info" | "warn" | "error";
 
 export type Event = {
@@ -28,8 +30,8 @@ export interface Notifier {
 export class ConsoleNotifier implements Notifier {
   readonly name = "console";
   async send(e: Event) {
-    const tag = e.level === "error" ? "!!" : e.level === "warn" ? " !" : "  ";
-    console.log(`${tag} ${e.title} — ${e.message}${e.ref ? ` (${e.ref})` : ""}`);
+    const tag = e.level === "error" ? red("!!") : e.level === "warn" ? amber(" !") : "  ";
+    console.log(`${tag} ${e.title} ${grey("—")} ${e.message}${e.ref ? grey(` (${e.ref})`) : ""}`);
   }
 }
 

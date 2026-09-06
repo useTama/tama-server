@@ -15,6 +15,7 @@ import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
 import { ask } from "./ask.ts";
+import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
 export const VERSION = "0.1.0";
 /** Clients older than this are refused rather than left to fail mysteriously. */
@@ -70,7 +71,7 @@ if (config.ask) {
             apiKey: config.ask.apiKey,
             model: config.ask.model,
           });
-    console.log(`  ask     ${llm.name}`);
+    console.log(`${grey("  ask    ")} ${llm.name}`);
   } catch (e) {
     // A broken ask config must not take capture down with it. Capture is the
     // free tier and has no dependency on any of this.
@@ -137,7 +138,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-raw.bin`, bytes);
       await Bun.write(`${process.env.TAMA_DUMP_AUDIO}/${stamp}-${device}-ffmpeg.wav`, wav);
-      console.log(`[dump] ${bytes.byteLength}B raw -> ${wav.byteLength}B wav (${seconds.toFixed(1)}s)`);
+      console.log(`${grey("[dump]")} ${bytes.byteLength}B raw -> ${wav.byteLength}B wav (${seconds.toFixed(1)}s)`);
     }
     text = await stt.transcribe(wav);
   }
@@ -166,7 +167,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
     source: device,
   });
 
-  console.log(`capture ${result.relPath} ${result.bytes}B ${seconds.toFixed(1)}s ${ms}ms [${t.basis}] <${device}>`);
+  console.log(`${green("capture")} ${result.relPath} ${grey(`${result.bytes}B ${seconds.toFixed(1)}s ${ms}ms [${t.basis}] <${device}>`)}`);
 
   // The delivery confirmation. This response IS the "did it go through" answer,
   // and the device drives its screen straight off it.
@@ -321,7 +322,7 @@ const server = Bun.serve({
         }
       }
       const ms = Math.round(performance.now() - started);
-      console.log(`ask "${question.slice(0, 60)}" -> ${sources.length} sources ${ms}ms <${device.deviceName}>`);
+      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms <${device.deviceName}>`)}`);
       return json({ ok: true, question, answer, sources, ms });
     }
 
@@ -330,7 +331,7 @@ const server = Bun.serve({
 
     if (url.pathname === "/pair/code" && req.method === "POST") {
       const { code, expiresAt } = newPairingCode(db);
-      console.log(`pairing code ${code} (expires ${expiresAt})`);
+      console.log(`${grey("pairing code")} ${red(code)} ${grey(`(expires ${expiresAt})`)}`);
       return json({ code, expiresAt });
     }
     if (url.pathname === "/tokens" && req.method === "GET") return json({ tokens: listTokens(db) });
@@ -355,11 +356,11 @@ const server = Bun.serve({
 const stopDigest = scheduleDigest(db, notifier, config.notify.digestAt);
 setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
 
-console.log(`tama-server ${VERSION}   http://127.0.0.1:${server.port}`);
-console.log(`  vault   ${config.vault.path} -> ${config.vault.inbox}/`);
-console.log(`  stt     ${config.stt.url}`);
-console.log(`  notify  ${notifier.name}, digest at ${config.notify.digestAt}`);
-if (config.safety.dryRun) console.log("  DRY RUN - nothing will be written");
+console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
+console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
+console.log(`${grey("  stt    ")} ${config.stt.url}`);
+console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
+if (config.safety.dryRun) console.log(amber("  DRY RUN - nothing will be written"));
 
 let stopping = false;
 const shutdown = () => {

@@ -17,6 +17,22 @@
   },
   "safety": { "allowUnbackedVault": false, "dryRun": false },
 
+  "//whatsapp": [
+    "OPTIONAL. Register a dedicated number with Meta's WhatsApp Cloud API and expose",
+    "https://your-host/webhooks/whatsapp. Voice notes capture; text messages use Ask.",
+    "allowedFrom is the explicit vault access list: country code + number, digits only.",
+    "Keep the access token, Meta app secret, and your random webhook verify token outside this file."
+  ],
+  "//whatsapp-example": {
+    "phoneNumberId": "123456789012345",
+    "allowedFrom": ["919876543210"],
+    "publicBaseUrl": "https://tama.example.com",
+    "accessTokenEnv": "WHATSAPP_ACCESS_TOKEN",
+    "appSecretEnv": "WHATSAPP_APP_SECRET",
+    "verifyTokenEnv": "WHATSAPP_VERIFY_TOKEN",
+    "graphApiVersion": "v23.0"
+  },
+
   "//ask": [
     "OPTIONAL. Delete this whole block and capture still works with no account and no key;",
     "POST /ask just returns 501. Adding it turns on question answering over your notes.",

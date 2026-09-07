@@ -29,6 +29,7 @@ Nothing in `ask.ts` may be reachable from the capture path.
 |---|---|
 | `index.ts` | routes, the bearer check, the inflight limit |
 | `tama.ts`, `setup.ts` | command entry point and interactive first-run setup |
+| `import.ts` | read-only walk of an external Markdown folder; all destination writes still go through `Vault` |
 | `whisper.ts` | bringing whisper.cpp up locally: model download, per-user service |
 | `ui.ts` | terminal colour, dropped whenever stdout is not a colour-capable tty |
 | `auth.ts` | device tokens (hashed at rest), single-use pairing codes |
@@ -42,16 +43,19 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `ask.ts` | retrieve, frame as data, stream |
 | `digest.ts` | counts and failures, daily. Needs no model, a digest is arithmetic |
 | `notify.ts` | console or ntfy |
+| `whatsapp.ts` | signed Cloud API webhook, allowed senders, durable inbox and Meta media/messages client |
 
 ## Setup is an explicit, local-first choice
 
 `tama-server setup` creates a new empty git-backed vault only after confirmation and writes a
 private config outside the repository. It starts with local whisper.cpp and lets the owner
 leave `/ask` disabled, select a local Ollama-compatible server, or opt into OpenRouter.
-Provider credentials are referenced through separate private key files or environment variables
-rather than embedded in the generated config. Setup preserves the admin token and unrelated
-settings when reconfigured. A setup wizard must never silently route audio or vault excerpts to a
-cloud service, and it must never modify a non-empty vault.
+Provider and WhatsApp credentials are referenced through separate private key files or environment
+variables rather than embedded in the generated config. The optional WhatsApp step creates the
+webhook verification secret locally and prints the callback details the admin must explicitly put
+into Meta. Setup preserves the admin token and unrelated settings when reconfigured. A setup wizard
+must never silently route audio or vault excerpts to a cloud service. Its explicit import choice may
+add new Markdown files to a non-empty vault through `Vault`, but may never overwrite an existing note.
 
 ## Only the vault adapter touches files
 
@@ -67,6 +71,12 @@ them enforceable in one place and checkable in one test file.
 6. Writes are atomic: temp file, fsync, rename. No reader sees a partial note.
 7. `safety.dryRun` prints intended writes and touches nothing.
 
+The local setup wizard and admin-only import command are not capture and may preserve an existing
+note's relative path so its wiki-links survive. They still go through `Vault`: imports are
+new-file-only, identical replays are skipped, different collisions are refused, writes are atomic
+and every imported note is journalled. The source folder is external read-only input and is never
+modified.
+
 These are cheap now and impossible to retrofit after the first data loss.
 
 ## The vault is a plain git-tracked folder
@@ -77,6 +87,23 @@ the sync and backup story instead.
 
 On a remote deployment the vault lives on that host, and git is how it reaches your laptop:
 the server is the origin, you clone it, Obsidian opens the clone.
+
+## WhatsApp is an optional transport
+
+The WhatsApp Cloud API adapter terminates Meta's webhook authentication and then calls the same
+capture and ask operations as a paired device. Voice notes enter capture; text messages enter
+ask. The choice is made before either operation starts, so capture does not acquire a dependency
+on `ask.ts` or on a language model.
+
+Webhook delivery is not held open while ffmpeg, Whisper, retrieval or an LLM runs. Once a signed
+event is from the configured phone-number ID and an explicitly allowed sender, its small envelope
+is committed to the operational SQLite database and Meta is acknowledged. A worker downloads
+audio with the Cloud API, processes the message, and replies in the same chat. Meta message IDs
+deduplicate webhook retries and become capture idempotency keys. Pending work survives restarts;
+completed rows retain only the opaque message ID, discarding the sender, question and answer.
+
+This is not part of the local/accountless default. With no `whatsapp` block, no webhook is exposed
+and capture remains useful without Meta, a public hostname, or any additional credential.
 
 ## Untrusted input, twice
 

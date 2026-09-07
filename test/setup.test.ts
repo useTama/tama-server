@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { configFromAnswers, vaultPlan } from "../src/setup.ts";
+import { configFromAnswers, vaultPlan, whatsappSenders } from "../src/setup.ts";
 import { SPEECH_MODEL } from "../src/stt.ts";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -51,6 +51,39 @@ test("a hosted transcription provider is recorded with its model and no secret",
 
   expect(config.stt).toEqual({ provider: "openai-compatible", url: "https://api.groq.com/openai/v1", model: "whisper-large-v3" });
   expect(config.stt.apiKey).toBeUndefined();
+});
+
+test("setup records WhatsApp routing without embedding its three secrets", () => {
+  const config = configFromAnswers({
+    vaultPath: "/notes",
+    inbox: "Inbox",
+    stt: { provider: "whisper-cpp", url: "http://127.0.0.1:8081" },
+    port: 8080,
+    ask: undefined,
+    whatsapp: {
+      phoneNumberId: "123456789",
+      allowedFrom: ["919876543210"],
+      graphApiVersion: "v23.0",
+      publicBaseUrl: "https://tama.example.com",
+    },
+  }) as { whatsapp: Record<string, unknown> };
+
+  expect(config.whatsapp).toEqual({
+    phoneNumberId: "123456789",
+    allowedFrom: ["919876543210"],
+    graphApiVersion: "v23.0",
+    publicBaseUrl: "https://tama.example.com",
+  });
+  expect(config.whatsapp.accessToken).toBeUndefined();
+  expect(config.whatsapp.appSecret).toBeUndefined();
+  expect(config.whatsapp.verifyToken).toBeUndefined();
+});
+
+test("setup normalizes a comma-separated WhatsApp allowlist", () => {
+  expect(whatsappSenders("+919876543210, 12025550123  +919876543210"))
+    .toEqual(["919876543210", "12025550123"]);
+  expect(whatsappSenders("not-a-number")).toBeNull();
+  expect(whatsappSenders("  ")).toBeNull();
 });
 
 test("only speech models are offered from a provider's model listing", () => {

@@ -14,7 +14,8 @@ import { ConsoleNotifier, NtfyNotifier, safeNotify, type Notifier } from "./noti
 import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest } from "./digest.ts";
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
-import { ask } from "./ask.ts";
+import { ask, askOnce } from "./ask.ts";
+import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
@@ -177,6 +178,87 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   });
 }
 
+type CaptureDevice = { id: string; deviceName: string };
+
+/** Shared delivery semantics for native clients and the WhatsApp adapter. */
+async function runCapture(req: Request, device: CaptureDevice, key: string | null): Promise<Response> {
+  if (key) {
+    const c = idem.claim(db, device.id, key);
+    if (c.state === "duplicate") return json(c.response as object);
+    if (c.state === "in-flight") {
+      const w = await idem.waitForCompletion(db, device.id, key);
+      if (w.state === "done") return json(w.response as object);
+      return json({ error: "busy, retry shortly" }, 503);
+    }
+  }
+  if (inflight >= MAX_INFLIGHT) {
+    if (key) idem.release(db, device.id, key);
+    return json({ error: "busy, retry shortly" }, 503);
+  }
+  inflight++;
+  try {
+    const res = await doCapture(req, device.deviceName);
+    if (key && res.status === 200) idem.complete(db, device.id, key, await res.clone().json());
+    else if (key) idem.release(db, device.id, key);
+    return res;
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    if (key) idem.release(db, device.id, key);
+    recordFailure(db, { kind: "capture-failed", detail, source: device.deviceName });
+    safeNotify(notifier, {
+      level: "error",
+      title: "Tama: a capture failed",
+      message: `${device.deviceName}: ${detail.slice(0, 160)}`,
+    });
+    console.error("capture failed:", e);
+    return json({ error: detail }, 500);
+  } finally {
+    inflight--;
+  }
+}
+
+const whatsapp = config.whatsapp
+  ? new WhatsAppIntegration({
+      db,
+      config: config.whatsapp,
+      async capture(input) {
+        const source = whatsappSource(input.sender, config.whatsapp!.appSecret);
+        const req = new Request("http://tama.local/capture", {
+          method: "POST",
+          headers: {
+            "content-type": input.mimeType,
+            "x-tama-captured-at": input.capturedAt,
+          },
+          body: new Blob([input.audio as unknown as BlobPart], { type: input.mimeType }),
+        });
+        const res = await runCapture(req, { id: source, deviceName: source }, input.messageId);
+        const body = await res.json() as { path?: string; error?: string; reason?: string };
+        if (res.ok) return `Saved to your second brain.\n${body.path ?? "Capture complete"}`;
+        if (res.status === 422) return "I couldn't hear any speech in that voice note, so nothing was saved.";
+        if (res.status === 413) return "That voice note is too large for Tama (25 MB maximum), so nothing was saved.";
+        if (res.status < 500) return `I couldn't save that voice note: ${body.error ?? `HTTP ${res.status}`}`;
+        throw new Error(body.error ?? `capture HTTP ${res.status}`);
+      },
+      async ask(input) {
+        if (!llm) return "Ask is not configured on this Tama server yet. Voice notes still work.";
+        const started = performance.now();
+        const result = await askOnce({
+          question: input.question,
+          retriever,
+          llm,
+          maxChunks: config.ask?.maxChunks,
+        });
+        const ms = Math.round(performance.now() - started);
+        console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms <${whatsappSource(input.sender, config.whatsapp!.appSecret)}>`)} `);
+        return result.answer;
+      },
+      onError(message) {
+        console.error(message);
+        recordFailure(db, { kind: "whatsapp-failed", detail: message });
+      },
+    })
+  : null;
+
 // ---------------------------------------------------------------- routes
 
 const server = Bun.serve({
@@ -196,7 +278,15 @@ const server = Bun.serve({
         // Advertised so a client can hide or show an ask affordance instead of
         // discovering the answer by getting a 501 mid-question.
         ask: llm ? { available: true, provider: llm.name } : { available: false },
+        whatsapp: { available: Boolean(whatsapp) },
       });
+    }
+
+    // Meta authenticates this route with its verification token (GET) and an
+    // HMAC over the exact request bytes (POST), not a Tama bearer token.
+    if (url.pathname === "/webhooks/whatsapp") {
+      if (!whatsapp) return json({ error: "WhatsApp is not configured" }, 404);
+      return whatsapp.handle(req);
     }
 
     // The pairing page. Admin-only, because the code it prints is a credential
@@ -253,42 +343,7 @@ const server = Bun.serve({
 
     if (url.pathname === "/capture" && req.method === "POST") {
       const key = req.headers.get("idempotency-key");
-      if (key) {
-        const c = idem.claim(db, device.id, key);
-        if (c.state === "duplicate") return json(c.response as object);
-        if (c.state === "in-flight") {
-          const w = await idem.waitForCompletion(db, device.id, key);
-          if (w.state === "done") return json(w.response as object);
-          // Either still genuinely in flight past the wait, or the original
-          // request failed and released the key. Neither is safe to tell the
-          // client to dequeue, so this always means "retry, same key."
-          return json({ error: "busy, retry shortly" }, 503);
-        }
-      }
-      if (inflight >= MAX_INFLIGHT) {
-        if (key) idem.release(db, device.id, key);
-        return json({ error: "busy, retry shortly" }, 503);
-      }
-      inflight++;
-      try {
-        const res = await doCapture(req, device.deviceName);
-        if (key && res.status === 200) idem.complete(db, device.id, key, await res.clone().json());
-        else if (key) idem.release(db, device.id, key);
-        return res;
-      } catch (e) {
-        const detail = e instanceof Error ? e.message : String(e);
-        if (key) idem.release(db, device.id, key);
-        recordFailure(db, { kind: "capture-failed", detail, source: device.deviceName });
-        safeNotify(notifier, {
-          level: "error",
-          title: "Tama: a capture failed",
-          message: `${device.deviceName}: ${detail.slice(0, 160)}`,
-        });
-        console.error("capture failed:", e);
-        return json({ error: detail }, 500);
-      } finally {
-        inflight--;
-      }
+      return runCapture(req, device, key);
     }
 
     // Ask sits behind the same device token as capture. No new auth surface:
@@ -384,12 +439,19 @@ const server = Bun.serve({
 });
 
 const stopDigest = scheduleDigest(db, notifier, config.notify.digestAt);
+whatsapp?.start();
 setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
 
 console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
 console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
 console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
 console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
+if (whatsapp) {
+  const callback = config.whatsapp!.publicBaseUrl
+    ? `${config.whatsapp!.publicBaseUrl}/webhooks/whatsapp`
+    : "/webhooks/whatsapp";
+  console.log(`${grey("  whatsapp")} ${callback} (${config.whatsapp!.allowedFrom.length} allowed sender${config.whatsapp!.allowedFrom.length === 1 ? "" : "s"})`);
+}
 if (config.safety.dryRun) console.log(amber("  DRY RUN - nothing will be written"));
 
 let stopping = false;
@@ -397,6 +459,7 @@ const shutdown = () => {
   if (stopping) return;
   stopping = true;
   stopDigest();
+  whatsapp?.stop();
   db.close();
   server.stop(true);
 };

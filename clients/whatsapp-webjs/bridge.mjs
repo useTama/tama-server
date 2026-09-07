@@ -200,35 +200,60 @@ async function onMessage(message) {
   if (message.id?._serialized && ours.has(message.id._serialized)) return;
 
   const chatId = message.fromMe ? message.to : message.from;
+  // Every inbound message says what was decided about it. Silently ignoring
+  // most of them is correct behaviour and undebuggable behaviour at once:
+  // without this line there is no way to tell "filtered" from "never arrived".
+  const seen = (verdict) => log("seen", message.type ?? "?", chatId ?? "?", message.fromMe ? "fromMe" : "inbound", "->", verdict);
+
   // Groups are never captured. A second brain filling up with other people's
   // chatter is a worse failure than missing a note.
-  if (!chatId || !chatId.endsWith("@c.us")) return;
+  if (!chatId || !chatId.endsWith("@c.us")) {
+    seen("ignored, not a direct chat");
+    return;
+  }
 
   const isSelfChat = chatId === selfId;
   // Your own outgoing half of someone else's chat is not input.
-  if (message.fromMe && !isSelfChat) return;
+  if (message.fromMe && !isSelfChat) {
+    seen("ignored, your own message to someone else");
+    return;
+  }
 
   const number = chatId.replace(/@c\.us$/, "");
   if (!isSelfChat && !ALLOWED.has(number)) {
-    log("skip", "sender not allowed");
+    seen(`ignored, ${number} is not in WA_ALLOWED`);
     return;
   }
 
   const isVoice = message.hasMedia && (message.type === "ptt" || message.type === "audio");
   const text = (message.body ?? "").trim();
 
-  if (isVoice) return capture(message);
-  if (!text) return;
+  if (isVoice) {
+    seen("capture");
+    return capture(message);
+  }
+  if (!text) {
+    seen("ignored, no text and no audio");
+    return;
+  }
 
   // Self-chat is also a scratchpad, so plain text there is left alone and
   // only the prefix asks. In a chat with someone else there is nothing to
   // mistake, and text behaves as it does on the Cloud API path.
   if (isSelfChat) {
-    if (!text.startsWith(ASK_PREFIX)) return;
+    if (!text.startsWith(ASK_PREFIX)) {
+      seen(`ignored, self-chat text without the "${ASK_PREFIX}" prefix`);
+      return;
+    }
     const question = text.slice(ASK_PREFIX.length).trim();
-    if (question) return askQuestion(message, question);
-    return;
+    if (!question) {
+      seen("ignored, prefix with no question after it");
+      return;
+    }
+    seen("ask");
+    return askQuestion(message, question);
   }
+  seen("ask");
   return askQuestion(message, text);
 }
 

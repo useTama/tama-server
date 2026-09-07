@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { configFromAnswers, vaultPlan, whatsappSenders } from "../src/setup.ts";
+import { bridgeSettings, configFromAnswers, vaultPlan, whatsappSenders } from "../src/setup.ts";
 import { SPEECH_MODEL } from "../src/stt.ts";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -132,4 +132,19 @@ test("a container deployment's volume paths override the home-directory defaults
     if (before === undefined) delete process.env.TAMA_DATA_DIR;
     else process.env.TAMA_DATA_DIR = before;
   }
+});
+
+test("bridge settings keep an empty allowlist and default to answering self-chat text", () => {
+  const settings = bridgeSettings("tok", [], "");
+  expect(settings).toEqual({ token: "tok", allowedFrom: [], askPrefix: "?", selfChatText: "ask" });
+});
+
+test("bridge settings record the numbers and prefix chosen for a scratchpad self-chat", () => {
+  const settings = bridgeSettings("tok", whatsappSenders("+919876543210, 918887776665")!, "//", "ignore");
+  expect(settings).toEqual({
+    token: "tok",
+    allowedFrom: ["919876543210", "918887776665"],
+    askPrefix: "//",
+    selfChatText: "ignore",
+  });
 });

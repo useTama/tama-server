@@ -1,0 +1,76 @@
+#!/bin/sh
+# `tama <command>` for a Docker deployment.
+#
+# The installed binary is `tama-server`; a container deployment has no binary on
+# the host, and asking someone to remember
+#
+#   docker compose --profile whatsapp-webjs logs -f whatsapp-webjs
+#
+# to read a log is deployment plumbing leaking into the interface. This wrapper
+# is the host-side equivalent of the CLI, run from wherever the repo is:
+#
+#   sudo ln -s "$PWD/docker/tama" /usr/local/bin/tama
+#
+# It resolves its own location, so the symlink works from any directory.
+set -e
+
+self=$0
+# Follow the symlink so TAMA_DIR is the repo, not /usr/local/bin.
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *)  self=$(dirname "$self")/$link ;;
+  esac
+done
+TAMA_DIR=${TAMA_DIR:-$(cd "$(dirname "$self")/.." && pwd)}
+cd "$TAMA_DIR"
+
+# Every command that touches the bridge needs its profile, or Compose treats the
+# container as an orphan and stops it. Getting that wrong is the single most
+# common way to break a working install, so the wrapper always passes it.
+compose() { docker compose --profile whatsapp-webjs "$@"; }
+
+command=${1:-help}
+[ $# -gt 0 ] && shift
+
+case $command in
+  setup)    docker compose run --rm --build setup "$@" ;;
+  settings) docker compose run --rm --build settings "$@" ;;
+  start|up) compose up -d --build "$@" ;;
+  stop)     compose stop "$@" ;;
+  restart)  compose up -d --build "$@" ;;
+  status|ps) compose ps "$@" ;;
+  logs)     compose logs -f --tail 100 "${@:-tama}" ;;
+  health)   curl -s localhost:8080/health ;;
+  # The vault is a git repo; committing is how a note becomes recoverable.
+  commit)   compose exec -T tama sh -c 'git -C /vault add -A && (git -C /vault diff --cached --quiet || git -C /vault commit -qm "tama commit") && git -C /vault log --oneline | head -1' ;;
+  notes)    compose exec -T tama sh -c 'find /vault -name "*.md" | wc -l' ;;
+  update)   git pull && compose up -d --build ;;
+  ask)
+    if [ $# -eq 0 ]; then echo "usage: tama ask \"your question\"" >&2; exit 2; fi
+    admin=$(sed -n 's/.*"adminToken": *"\([^"]*\)".*/\1/p' config/tama.config.json | head -1)
+    if [ -z "$admin" ]; then echo "no adminToken in config/tama.config.json (try sudo)" >&2; exit 1; fi
+    curl -s -X POST localhost:8080/ask \
+      -H "Authorization: Bearer $admin" -H 'content-type: application/json' \
+      --data-raw "$(printf '{"question":%s}' "$(printf '%s' "$*" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')")"
+    echo
+    ;;
+  help|--help|-h)
+    cat <<'USAGE'
+tama setup                  first-run wizard: vault, transcription, Ask, WhatsApp
+tama settings               change one thing: WhatsApp numbers, devices
+tama start                  build and start everything configured
+tama restart                apply a config or settings change
+tama stop                   stop the containers, volumes survive
+tama status                 what is running
+tama logs [service]         follow logs; defaults to tama
+tama health                 the /health JSON
+tama ask "question"         ask your notes from the terminal
+tama notes                  how many Markdown notes are in the vault
+tama commit                 commit the vault's git repo
+tama update                 git pull, then rebuild and restart
+USAGE
+    ;;
+  *) echo "tama: unknown command '$command'. Try: tama help" >&2; exit 2 ;;
+esac

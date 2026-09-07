@@ -90,6 +90,8 @@ export type Audience = {
   /** A view name. Defaults to `none`, so a misconfigured audience knows nothing. */
   view: string;
   voice: Voice;
+  /** Required when `voice` is "custom": how to talk, in the owner's words. */
+  voicePrompt?: string;
   /** Whether answers may name note paths. Off for anywhere shared. */
   cite: boolean;
   length: AnswerStyle;
@@ -101,7 +103,7 @@ export type Audience = {
   note?: string;
 };
 
-const VOICE_NAMES: Voice[] = ["neutral", "friend", "roast"];
+const VOICE_NAMES: Voice[] = ["neutral", "friend", "roast", "custom"];
 
 function parseAudience(name: string, raw: any, views: Record<string, View>): Audience {
   const enumerated = <T extends string>(field: string, value: unknown, allowed: readonly T[], fallback: T): T => {
@@ -129,6 +131,13 @@ function parseAudience(name: string, raw: any, views: Record<string, View>): Aud
     capture: Boolean(raw?.capture ?? false),
   };
   if (raw?.note !== undefined) audience.note = String(raw.note);
+  if (audience.voice === "custom") {
+    const described = String(raw?.voicePrompt ?? "").trim();
+    if (!described) {
+      throw new Error(`config: audiences.${name}.voice is "custom", so voicePrompt must describe how it should talk`);
+    }
+    audience.voicePrompt = described;
+  }
 
   // The combination that turns the assistant into a fabricator: nothing to read
   // and licence to answer anyway. Legal for a banter-only group, so it is a

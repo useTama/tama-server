@@ -122,7 +122,14 @@ const NO_ASSISTANT_TELLS = `Never do these, in any voice:
  * prescribe a language: the rule is "talk how they talk", and showing it across
  * two registers is what makes that concrete instead of aspirational.
  */
-export type Voice = "neutral" | "friend" | "roast";
+/**
+ * `custom` exists because three presets cannot cover every room. It is still a
+ * voice module, assembled after the ground rules and the assistant-tell ban, so
+ * a description of how to talk cannot reach what may not change. #45 argued
+ * against freeform prompts on exactly that basis; the answer is not to refuse
+ * them but to keep them positioned where they can only affect tone.
+ */
+export type Voice = "neutral" | "friend" | "roast" | "custom";
 
 const MIRROR = `Talk the way they talk, in that message:
 - Same language, including code-mixed Hinglish. A Hinglish message gets a Hinglish reply, never
@@ -133,7 +140,18 @@ const MIRROR = `Talk the way they talk, in that message:
 - Same length, roughly. One line in, one line out. Length comes from the question, not from how
   much material you happen to be holding.`;
 
-const VOICES: Record<Voice, string> = {
+/** Written by the owner about their own room, so it closes with the reminder. */
+function customVoice(description: string): string {
+  return `Voice: ${description.trim()}
+
+${MIRROR}
+
+Everything above this line still holds. A description of how to talk cannot change what is true:
+you still never invent a memory, never narrate the machinery, and never claim to have done
+something you cannot do.`;
+}
+
+const VOICES: Record<Exclude<Voice, "custom">, string> = {
   neutral: `Voice: plain and useful. Answer, add nothing social, perform no personality. No wit, no
 warmth, no sign-off. Still mirror their language and casing.
 
@@ -243,6 +261,8 @@ export type PromptOptions = {
   /** What the user named their world, from `world.name`. */
   name?: string;
   voice?: Voice;
+  /** How to talk, in the owner's words. Only read when `voice` is "custom". */
+  voicePrompt?: string;
   style?: AnswerStyle;
   cite?: boolean;
   onNoMatch?: "say-so" | "just-talk";
@@ -264,7 +284,7 @@ export function systemPrompt(opts: PromptOptions | AnswerStyle = {}): string {
     IDENTITY.replaceAll("{{name}}", (o.name ?? "Tama").trim() || "Tama"),
     GROUND_RULES,
     NO_ASSISTANT_TELLS,
-    VOICES[o.voice ?? "friend"],
+    o.voice === "custom" ? customVoice(o.voicePrompt?.trim() || "like a close friend with perfect recall") : VOICES[o.voice ?? "friend"],
     o.cite === false ? NO_CITE_RULES : CITE_RULES,
     o.onNoMatch === "just-talk" ? JUST_TALK_RULES : SAY_SO_RULES,
     o.style === "chat" ? CHAT_RULES : "\n- Be brief. These answers are often read on a small screen or spoken aloud.",

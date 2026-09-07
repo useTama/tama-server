@@ -167,3 +167,45 @@ test("WhatsApp requires an explicit sender allowlist and webhook credentials", a
   });
   expect(() => loadConfig(noSecret)).toThrow(/access token/);
 });
+
+test("a custom voice without a description is a startup failure", async () => {
+  // The alternative is an audience whose voice section is the empty string,
+  // which reads as no instruction at all rather than as a mistake.
+  const dir = await mkdtemp(join(tmpdir(), "tama-audience-"));
+  try {
+    const path = join(dir, "tama.config.json");
+    const base = {
+      vault: { path: dir },
+      stt: { provider: "whisper-cpp", url: "http://127.0.0.1:8081" },
+      server: { adminToken: "a".repeat(48) },
+    };
+    await writeFile(path, JSON.stringify({ ...base, audiences: { boys: { view: "none", voice: "custom" } } }));
+    expect(() => loadConfig(path)).toThrow(/voicePrompt/);
+
+    await writeFile(path, JSON.stringify({
+      ...base,
+      audiences: { boys: { view: "none", voice: "custom", voicePrompt: "short and rude" } },
+    }));
+    expect(loadConfig(path).audiences?.boys?.voicePrompt).toBe("short and rude");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unknown view on an audience fails at boot, not at request time", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tama-audience-view-"));
+  try {
+    const path = join(dir, "tama.config.json");
+    await writeFile(path, JSON.stringify({
+      vault: { path: dir },
+      stt: { provider: "whisper-cpp", url: "http://127.0.0.1:8081" },
+      server: { adminToken: "a".repeat(48) },
+      audiences: { work: { view: "wrok" } },
+    }));
+    // A view typo that resolved to everything at request time would widen what
+    // a group can read, silently, which is the whole failure mode.
+    expect(() => loadConfig(path)).toThrow(/unknown view/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

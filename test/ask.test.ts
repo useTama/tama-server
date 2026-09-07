@@ -112,3 +112,18 @@ test("the prompt bans the em dash it kept producing, and says what to use instea
 test("the prompt pins second person, because notes describe the user in the third", () => {
   expect(systemPrompt()).toContain('They are "you"');
 });
+
+test("a custom voice is a tone description, positioned so it cannot reach the rules", () => {
+  const custom = systemPrompt({ voice: "custom", voicePrompt: "like a tired sysadmin, all lowercase" });
+  expect(custom).toContain("like a tired sysadmin");
+  // Assembled after the ground rules and the assistant-tell ban, and closing
+  // with the reminder, so a description of tone stays a description of tone.
+  expect(custom.indexOf("Never invent a memory")).toBeLessThan(custom.indexOf("like a tired sysadmin"));
+  expect(custom).toContain("still holds");
+  // Mirroring is not something a custom voice has to remember to ask for.
+  expect(custom).toContain("code-mixed Hinglish");
+});
+
+test("a custom voice with no description falls back rather than shipping an empty rule", () => {
+  expect(systemPrompt({ voice: "custom" })).toContain("close friend with perfect recall");
+});

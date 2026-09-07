@@ -210,6 +210,7 @@ function audienceProfile(name: string | undefined): { view?: View; prompt: Promp
     prompt: {
       name: worldName,
       voice: audience.voice,
+      voicePrompt: audience.voicePrompt,
       style: audience.length,
       cite: audience.cite,
       onNoMatch: audience.onNoMatch,

@@ -131,24 +131,52 @@ async function devicesSection(dbPath: string): Promise<void> {
  */
 async function editAudience(
   configPath: string,
+  vaultPath: string,
   name: string,
   current: Audience | undefined,
   viewNames: string[],
 ): Promise<Audience> {
-  const view = await choose("What can it see?", viewNames.map((v) => ({
-    value: v,
-    label: v === "none"
-      ? "none — no notes at all, it can only talk"
-      : v === "everything"
-        ? "everything — the whole vault, like your own devices"
-        : v,
-  })), current?.view ?? "none");
+  // "Make a view first, then come back" is a dead end, and the menu is at its
+  // emptiest exactly when someone is configuring their first audience.
+  let view = await choose("What can it see?", [
+    ...viewNames.map((v) => ({
+      value: v,
+      label: v === "none"
+        ? "none — no notes at all, it can only talk"
+        : v === "everything"
+          ? "everything — the whole vault, like your own devices"
+          : v,
+    })),
+    { value: "__new__", label: "something else — pick the folders now" },
+  ], current?.view ?? "none");
+  if (view === "__new__") {
+    const viewName = (await ask("Name this slice of the vault (e.g. work, public)", "")).trim();
+    if (!viewName || viewName in BUILTIN_VIEWS || !/^[a-z0-9][a-z0-9-]*$/i.test(viewName)) {
+      console.log(warn("Needs a name of letters, digits and hyphens that is not a built-in. Falling back to none."));
+      view = "none";
+    } else {
+      const saved = await editView(configPath, vaultPath, viewName, undefined);
+      view = saved ? viewName : "none";
+    }
+  }
 
   const voice = await choose("How should it talk?", [
-    { value: "friend" as const, label: "friend — warm and direct, the default" },
+    { value: "friend" as const, label: "friend — a close friend with perfect recall, the default" },
     { value: "neutral" as const, label: "neutral — answers, no personality" },
     { value: "roast" as const, label: "roast — gives as good as it gets, for a group of friends" },
+    { value: "custom" as const, label: "custom — describe it yourself" },
   ], current?.voice ?? "friend");
+
+  let voicePrompt = current?.voicePrompt;
+  if (voice === "custom") {
+    console.log(grey("  One or two sentences on how it should talk. Tone only: it still cannot invent"));
+    console.log(grey("  a memory, narrate its plumbing, or claim to have done something it cannot."));
+    for (;;) {
+      voicePrompt = (await ask("How should it talk?", voicePrompt ?? "")).trim();
+      if (voicePrompt) break;
+      console.log(warn("A custom voice needs a description, or pick one of the presets instead."));
+    }
+  }
 
   const length = await choose("How long should answers be?", [
     { value: "chat" as const, label: "chat — a couple of sentences, plain text" },
@@ -182,6 +210,7 @@ async function editAudience(
 
   const audience: Audience = {
     view, voice, length, cite, onNoMatch, mention,
+    ...(voice === "custom" && voicePrompt ? { voicePrompt } : {}),
     // Never true. A group filling the vault with other people's chatter is the
     // failure the blanket group ignore was avoiding, and nothing here changes it.
     capture: false,
@@ -200,7 +229,7 @@ async function editAudience(
  * failure with a path filter is not writing it but being unable to see what it
  * did. Too narrow gives worse answers and no error; too wide leaks.
  */
-async function editView(configPath: string, vaultPath: string, name: string, current: View | undefined): Promise<void> {
+async function editView(configPath: string, vaultPath: string, name: string, current: View | undefined): Promise<boolean> {
   const notes = await vaultNotes(vaultPath);
   const folders = [...new Set(notes.map((p) => (p.includes("/") ? p.slice(0, p.indexOf("/")) : ".")))].sort();
   if (folders.length === 0) {
@@ -235,12 +264,13 @@ async function editView(configPath: string, vaultPath: string, name: string, cur
 
   if (!(await yes("Save this view?", true))) {
     console.log(grey("Discarded."));
-    return;
+    return false;
   }
   await patchConfig(configPath, (raw) => {
     raw.views = { ...(raw.views ?? {}), [name]: view };
   });
   console.log(ok(`Saved view "${name}".`));
+  return true;
 }
 
 /**
@@ -293,7 +323,8 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
       a.onNoMatch === "just-talk" ? "answers anything" : "admits gaps",
       a.mention === "when-mentioned" ? "when mentioned" : "every message",
     ].join(", ");
-    console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${a.voice}  ${grey(behaviour)}`);
+    const voice = a.voice === "custom" ? `custom: ${(a.voicePrompt ?? "").slice(0, 40)}` : a.voice;
+    console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${voice}  ${grey(behaviour)}`);
   }
 
   const pick = await choose("Which one?", [
@@ -331,7 +362,7 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     return;
   }
 
-  const audience = await editAudience(configPath, name, audiences[name], viewNames);
+  const audience = await editAudience(configPath, config.vault.path, name, audiences[name], viewNames);
 
   const existing = await readBridge(bridgePath);
   const alreadyWired = existing?.audiences?.some((a) => a.name === name);

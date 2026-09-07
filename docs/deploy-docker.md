@@ -454,6 +454,28 @@ up -d`. Anyone who knows a public ntfy topic can read it — the topic is the pa
 
 ## 13. Optional: WhatsApp
 
+Two ways in, and they are not equivalent.
+
+| | Option A: Cloud API | Option B: the whatsapp-web.js bridge |
+|---|---|---|
+| Needs step 9 (domain + HTTPS) | yes, Meta posts to you | **no**, the socket is outbound |
+| Needs a Meta business app | yes | no |
+| Phone number | a dedicated one, which stops being a normal WhatsApp | your own |
+| WhatsApp's terms | supported | **violated; the account can be banned** |
+
+Option A is the supported path and the rest of this section covers it. Option B is a
+client in [`clients/whatsapp-webjs`](../clients/whatsapp-webjs) with its own README —
+it holds a device token and posts to `/capture` and `/ask` like the iOS Shortcut does,
+so the server needs no `whatsapp` block for it at all:
+
+```sh
+echo 'TAMA_TOKEN=a_device_token_from_pairing' >> .env
+docker compose --profile whatsapp-webjs up -d --build
+docker compose --profile whatsapp-webjs logs -f whatsapp-webjs   # scan the QR
+```
+
+### Option A — WhatsApp Cloud API
+
 Requires step 9 (public HTTPS). Full Meta-side walkthrough is in
 [api.md#whatsapp-cloud-api](api.md#whatsapp-cloud-api). The container-specific parts:
 

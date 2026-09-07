@@ -556,13 +556,18 @@ async function onMessage(message) {
   if (audience) {
     // "when mentioned" is what keeps a busy group from muting the bot. An @
     // mention resolves to the linked number, so match on that.
-    if (audience.mention === "when-mentioned" && !(await mentionsUs(message, text))) {
+    // The owner never has to tag their own bot. "when mentioned" exists so a
+    // group of sixteen people does not get a reply to every message; it was
+    // never meant to make the person who set it up queue up like a stranger.
+    if (audience.mention === "when-mentioned" && !isOwner && !(await mentionsUs(message, text))) {
       seen(`ignored, ${audience.name} replies only when mentioned`);
       return;
     }
-    seen(`ask as ${audience.name}`);
+    seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
     return askQuestion(message, text, audience);
   }
+
+
 
   if (isSelfChat && SELF_CHAT_TEXT === "ignore") {
     if (!text.startsWith(ASK_PREFIX)) {

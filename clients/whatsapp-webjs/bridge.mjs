@@ -371,6 +371,44 @@ function patchSettings(mutate) {
  * accepted from the linked phone and the owner's other numbers and from nobody
  * else, which is the same boundary the rest of the bridge uses.
  */
+/**
+ * Whether a group message is addressed to us.
+ *
+ * Every one of these has failed on some build, so all of them are checked.
+ * `mentionedIds` is the documented accessor and `_data.mentionedJidList` the
+ * raw field behind it, but which one is populated varies, and under `@lid`
+ * addressing a mention can carry an opaque id rather than the phone number -
+ * so the number appearing in the body is worth checking too.
+ *
+ * Replying to something we said counts. In a group that is how people address a
+ * bot, and treating it as silence is the same as ignoring them.
+ */
+async function mentionsUs(message, text) {
+  const candidates = [];
+  try {
+    const ids = await message.getMentions?.();
+    for (const c of ids ?? []) candidates.push(c?.id?._serialized, c?.number, c?.id?.user);
+  } catch { /* the raw fields below are the fallback */ }
+  for (const j of message.mentionedIds ?? []) candidates.push(String(j?._serialized ?? j));
+  for (const j of message._data?.mentionedJidList ?? []) candidates.push(String(j?._serialized ?? j));
+
+  const digits = candidates.filter(Boolean).map((c) => String(c).replace(/[^\d]/g, ""));
+  if (selfNumber && digits.includes(selfNumber)) return true;
+  if (selfNumber && text.includes(selfNumber)) return true;
+
+  // A reply to one of ours is being spoken to.
+  if (message.hasQuotedMsg) {
+    try {
+      const quoted = await message.getQuotedMessage();
+      if (quoted?.fromMe || (quoted?.id?._serialized && ours.has(quoted.id._serialized))) return true;
+    } catch { /* not decisive either way */ }
+  }
+
+  // Logged, because "it ignored me" needs to be diagnosable without a debugger.
+  log("not addressed to us", `mentions=[${digits.join(", ")}] me=${selfNumber}`);
+  return false;
+}
+
 async function claimChat(message, chatId, name) {
   const target = name.trim();
   const waiting = (settings.audiences ?? []).filter((a) => a.match.length === 0).map((a) => a.name);
@@ -518,14 +556,9 @@ async function onMessage(message) {
   if (audience) {
     // "when mentioned" is what keeps a busy group from muting the bot. An @
     // mention resolves to the linked number, so match on that.
-    if (audience.mention === "when-mentioned") {
-      const mentioned = selfNumber
-        && (text.includes(selfNumber)
-          || (message._data?.mentionedJidList ?? []).some((j) => String(j).includes(selfNumber)));
-      if (!mentioned) {
-        seen(`ignored, ${audience.name} replies only when mentioned`);
-        return;
-      }
+    if (audience.mention === "when-mentioned" && !(await mentionsUs(message, text))) {
+      seen(`ignored, ${audience.name} replies only when mentioned`);
+      return;
     }
     seen(`ask as ${audience.name}`);
     return askQuestion(message, text, audience);

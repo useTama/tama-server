@@ -1,7 +1,27 @@
 {
   "vault":  { "path": "/vault", "inbox": "Inbox" },
   "dataDir": "/data",
-  "stt":    { "provider": "whisper-cpp", "url": "http://whisper:8081" },
+
+  "//stt": [
+    "The default is a transcription API, so the container stays small and the",
+    "server does no inference. Your recordings are uploaded to the provider.",
+    "",
+    "Groq:   { provider: openai-compatible, url: https://api.groq.com/openai/v1, model: whisper-large-v3, apiKeyEnv: GROQ_API_KEY }",
+    "OpenAI: { provider: openai-compatible, url: https://api.openai.com/v1,      model: whisper-1,         apiKeyEnv: OPENAI_API_KEY }",
+    "Sarvam: { provider: sarvam, model: saaras:v3, language: unknown, apiKeyEnv: SARVAM_API_KEY }",
+    "        Indian languages and code-mixed speech; language may be hi-IN, en-IN, ta-IN, … or unknown.",
+    "",
+    "Nothing leaves the machine instead:",
+    "  docker compose --profile local-stt up -d --build",
+    "  { provider: whisper-cpp, url: http://whisper:8081 }"
+  ],
+  "stt": {
+    "provider": "openai-compatible",
+    "url": "https://api.groq.com/openai/v1",
+    "model": "whisper-large-v3",
+    "apiKeyEnv": "GROQ_API_KEY"
+  },
+
   "server": { "port": 8080, "adminToken": "REPLACE: openssl rand -hex 24" },
   "notify": { "provider": "console", "ntfy": { "url": "https://ntfy.sh", "topic": "" }, "digestAt": "08:00" },
   "safety": { "allowUnbackedVault": false, "dryRun": false }

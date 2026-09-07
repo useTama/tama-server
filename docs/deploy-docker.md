@@ -17,11 +17,15 @@ picks up NEON on ARM, so an ARM instance is if anything the faster one per rupee
 ## 0. What you will end up with
 
 ```
-                 :443 ──► caddy ──► tama:8080 ──► whisper:8081
-                 (TLS)              │
+                 :443 ──► caddy ──► tama:8080 ──┬──► a transcription API (default)
+                 (TLS)              │           └──► whisper:8081  (opt-in, --profile local-stt)
                                     ├── volume tama-vault  → /vault  (your notes, git-tracked)
                                     └── volume tama-data   → /data   (tokens, pairing, capture log)
 ```
+
+**Transcription is an API call by default.** One small image, about a minute to build, and
+your server does no inference. Local whisper is one flag away when you want it, and the
+trade is stated plainly in step 5.
 
 Caddy is optional and only needed for pairing a phone from outside the LAN, or for WhatsApp.
 Steps 1–8 give you a working server; step 9 adds HTTPS.
@@ -118,29 +122,72 @@ ADMIN=$(grep -o '"adminToken": *"[^"]*"' tama.config.json | cut -d'"' -f4); echo
 
 ---
 
-## 5. Choose the transcription model
+## 5. Choose how audio gets transcribed
 
-Edit `docker-compose.yml`, the `whisper` service's `MODEL` build arg:
+This is the one real decision in the deploy. Everything else is mechanical.
+
+| | Default: a transcription API | Opt-in: local whisper |
+|---|---|---|
+| Build | ~1 min, one small image | 5–15 min, compiles whisper.cpp |
+| Server load | none — an HTTP call | a CPU core and ~2 GB resident per transcription |
+| Cost | per minute of audio | zero, forever |
+| Privacy | **recordings are uploaded to the provider** | nothing leaves the machine |
+| Speed | usually faster than CPU whisper | depends on your cores |
+
+### Option A — a transcription API (default)
+
+Pick a provider and put the key in `.env`, never in the config file:
+
+```sh
+cd ~/tama
+echo 'GROQ_API_KEY=gsk_your_key_here' > .env    # console.groq.com/keys
+chmod 600 .env
+```
+
+The shipped `tama.config.json` already points at Groq. To use a different one, edit its `stt`
+block:
+
+```jsonc
+// OpenAI
+"stt": { "provider": "openai-compatible", "url": "https://api.openai.com/v1",
+         "model": "whisper-1", "apiKeyEnv": "OPENAI_API_KEY" }
+
+// Sarvam — Indian languages and code-mixed Hindi-English, where whisper is weaker.
+// url and model default; language may be hi-IN, en-IN, ta-IN, … or unknown to auto-detect.
+"stt": { "provider": "sarvam", "model": "saaras:v3", "language": "unknown",
+         "apiKeyEnv": "SARVAM_API_KEY" }
+```
+
+`docker-compose.yml` already passes `GROQ_API_KEY`, `OPENAI_API_KEY` and `SARVAM_API_KEY`
+through; set the one you use in `.env` and leave the rest unset.
+
+### Option B — local whisper (nothing leaves the machine)
+
+It lives behind a Compose profile, so it is never built or started unless you ask:
+
+```sh
+docker compose --profile local-stt up -d --build
+```
+
+Then point the config at it — no key, no `.env`:
+
+```json
+"stt": { "provider": "whisper-cpp", "url": "http://whisper:8081" }
+```
+
+Model size is the `MODEL` build arg on the `whisper` service:
 
 | Model | RAM | Speed on 2 vCPU | Use when |
 |---|---|---|---|
-| `ggml-base.bin` | ~1 GB | ~4× realtime | 1–2 GB box, t3.micro |
+| `ggml-base.bin` | ~1 GB | ~4× realtime | 1–2 GB box |
 | `ggml-small.bin` (default) | ~2 GB | ~2× realtime | 2 GB+, the sane default |
-| `ggml-medium.bin` | ~5 GB | slower than realtime on CPU | only with a GPU |
+| `ggml-medium.bin` | ~5 GB | slower than realtime | only with a GPU |
 
-Changing this later means `docker compose build whisper` again — the model is baked into the
-image on purpose, so a container restart never re-downloads 500 MB.
+The model is baked into the image deliberately, so a restart never re-downloads 500 MB.
+Changing it means `docker compose --profile local-stt build whisper` again.
 
-**Prefer a hosted API instead?** Skip the whisper container entirely: delete the `whisper`
-service and the `depends_on` block from `docker-compose.yml`, then set in `tama.config.json`:
-
-```json
-"stt": { "provider": "openai-compatible", "url": "https://api.groq.com/openai/v1",
-         "model": "whisper-large-v3", "apiKeyEnv": "GROQ_API_KEY" }
-```
-
-and add `GROQ_API_KEY` to the `tama` service's `environment:`. Audio then leaves the machine,
-which is the tradeoff.
+Remember to keep `--profile local-stt` on every later `docker compose` command, or Compose
+treats the whisper container as an orphan and stops it.
 
 ---
 
@@ -151,8 +198,9 @@ cd ~/tama
 docker compose up -d --build
 ```
 
-First build compiles whisper.cpp from source and downloads the model: **5–15 minutes** on a
-small instance, and near-silent for most of it. Later builds are cached.
+With the default API transcription this is about a minute. With `--profile local-stt` the
+first build compiles whisper.cpp and downloads the model: **5–15 minutes** on a small
+instance, near-silent for most of it. Later builds are cached either way.
 
 Watch it come up:
 
@@ -178,7 +226,9 @@ git-backed-vault check without you doing anything.
 curl -s localhost:8080/health | jq
 ```
 
-`whisper` must report reachable. If it does not, jump to Troubleshooting.
+The `stt` field must report reachable. On the API path that means the provider answered; on
+`--profile local-stt` it means the whisper container is up. If it does not, jump to
+Troubleshooting.
 
 Now a real end-to-end capture. Mint a device token from the terminal:
 
@@ -461,10 +511,21 @@ curl -s localhost:8080/health | jq .version
 
 ## Troubleshooting
 
-**`whisper` unhealthy, or `tama` never starts.**
-`docker compose logs whisper`. Out-of-memory on a small instance is the usual cause — the
-container is killed with no message. Switch `MODEL` to `ggml-base.bin` and
-`docker compose build whisper && docker compose up -d`.
+**`stt` unreachable on the API path.**
+The key is wrong or absent. `docker compose exec tama env | grep API_KEY` shows what actually
+reached the container — an empty value means `.env` is missing or the variable name does not
+match the config's `apiKeyEnv`.
+
+**`stt` unreachable on `--profile local-stt`.**
+`docker compose --profile local-stt logs whisper`. Out-of-memory on a small instance is the
+usual cause — the container is killed with no message. Switch `MODEL` to `ggml-base.bin` and
+rebuild. Also check the config says `http://whisper:8081`, not `127.0.0.1`: inside the tama
+container, loopback is the tama container.
+
+**Sarvam returns 401 but the key looks right.**
+Sarvam authenticates with `api-subscription-key`, not `Bearer`. Tama handles that, but only
+when `provider` is `sarvam` — an `openai-compatible` block pointed at Sarvam's URL will fail
+this way.
 
 **`vault at /vault is not git-tracked`.**
 The entrypoint's `git init` did not run — you are on an older image. Fix it directly:

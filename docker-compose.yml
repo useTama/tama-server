@@ -1,13 +1,20 @@
-# Default: API transcription only. One small image, ~1 minute to build.
+# First run:
 #
+#   mkdir -p config
+#   docker compose run --rm setup        # the wizard; paste your API key here
 #   docker compose up -d --build
 #
-# Local whisper is opt-in, because compiling whisper.cpp and holding a model
-# resident is load you should choose, not inherit:
+# Do not pre-copy tama.config.docker.json into config/ before the wizard: that
+# template's placeholder adminToken is rejected on load by design. The template
+# is for configuring by hand instead of running the wizard.
+#
+# Default transcription is an API call, so this builds one small image in about
+# a minute and the server runs no inference. Local whisper is opt-in:
 #
 #   docker compose --profile local-stt up -d --build
 #
-# and point stt at http://whisper:8081 in tama.config.json.
+# The whole config directory is mounted, not just the file, because the wizard
+# writes each secret to its own 0600 file beside the config.
 services:
   tama:
     build: .
@@ -17,13 +24,24 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       TAMA_CONFIG: /etc/tama/tama.config.json
-      # Whichever one the config's apiKeyEnv names; the rest stay empty.
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
-      - ./tama.config.json:/etc/tama/tama.config.json:ro
+      - ./config:/etc/tama:ro
+      - tama-vault:/vault
+      - tama-data:/data
+
+  # The setup wizard, run interactively and then thrown away. Same image, same
+  # volumes, one difference: it may write to the config directory.
+  setup:
+    profiles: ["setup"]
+    build: .
+    command: ["bun", "run", "src/tama.ts", "setup", "--config", "/etc/tama/tama.config.json"]
+    environment:
+      # What the wizard should suggest instead of a home directory that does
+      # not outlive the container.
+      TAMA_VAULT: /vault
+      TAMA_DATA_DIR: /data
+    volumes:
+      - ./config:/etc/tama
       - tama-vault:/vault
       - tama-data:/data
 

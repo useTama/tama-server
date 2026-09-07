@@ -53,7 +53,10 @@ export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
     safety: { allowUnbackedVault: false, dryRun: false },
     ...(a.ask ? { ask: a.ask } : {}),
     ...(a.whatsapp ? { whatsapp: a.whatsapp } : {}),
-    dataDir: "~/.local/share/tama",
+    // A container deployment mounts its own volumes, and the wizard running
+    // inside it must write those paths rather than a home directory that does
+    // not survive the container.
+    dataDir: process.env.TAMA_DATA_DIR ?? "~/.local/share/tama",
   };
 }
 
@@ -239,7 +242,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     const current = existing ? loadConfig(configPath) : undefined;
     if (existing) console.log(grey("Existing setup found. Unrelated settings and your admin token will be preserved."));
     const worldName = await ask("What would you like to name your world?", existing?.world?.name ?? "My World");
-    let suggestedPath = current?.vault.path ?? homePath(`/Tama/${worldFolder(worldName)}`);
+    let suggestedPath = current?.vault.path ?? process.env.TAMA_VAULT ?? homePath(`/Tama/${worldFolder(worldName)}`);
     console.log(`Your notes will be saved in ${bold(suggestedPath)}`);
     const customLocation = await yes("Choose a different location?");
     let vaultPath: string;
@@ -465,7 +468,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       }
     }
 
-    const whatsappChoice = await choose("WhatsApp", [
+    let whatsappChoice = await choose("WhatsApp", [
       { value: "none", label: "Skip / disable WhatsApp" },
       { value: "cloud", label: "Connect a WhatsApp Cloud API number" },
     ], current?.whatsapp ? "cloud" : "none");
@@ -474,7 +477,24 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     let whatsappAppSecret: string | undefined;
     let whatsappVerifyToken: string | undefined;
     if (whatsappChoice === "cloud") {
-      console.log(grey("Use a dedicated number from Meta App Dashboard → WhatsApp → API Setup."));
+      // Meta's half cannot be automated away — it is a dashboard, a business
+      // verification and a number registration. What the wizard can do is name
+      // every value it is about to ask for and where that value is found,
+      // rather than dropping the user at a prompt for a "phone number ID".
+      console.log(`\n${bold("First, on Meta's side")} ${grey("— https://developers.facebook.com/apps")}`);
+      console.log(grey("  1. Create a business app, then add the WhatsApp product to it."));
+      console.log(grey("  2. Connect a WhatsApp Business Account and register a dedicated number."));
+      console.log(warn("     That number's WhatsApp moves to the Cloud API. Do not use a number carrying personal chats."));
+      console.log(grey("  3. WhatsApp → API Setup: copy the phone number ID (digits, not the visible number)."));
+      console.log(grey("  4. Business settings → System users: create a token with whatsapp_business_messaging."));
+      console.log(grey("  5. App settings → Basic: copy the app secret."));
+      console.log(grey("Tama generates the webhook verify token itself, and prints the callback URL to paste back."));
+      if (!(await yes("Have those ready?", true))) {
+        console.log(grey("Skipping WhatsApp. Re-run setup when the Meta app is ready; nothing else is affected."));
+        whatsappChoice = "none";
+      }
+    }
+    if (whatsappChoice === "cloud") {
       let phoneNumberId = "";
       do {
         phoneNumberId = await ask("Meta phone number ID (not the visible phone number)", current?.whatsapp?.phoneNumberId ?? "");
@@ -600,6 +620,13 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       console.log(`${grey("  callback URL: ")} ${whatsappConfig.publicBaseUrl ? `${whatsappConfig.publicBaseUrl}/webhooks/whatsapp` : "https://YOUR-PUBLIC-HOST/webhooks/whatsapp"}`);
       console.log(`${grey("  verify token: ")} ${whatsappVerifyToken}`);
       console.log(grey("  Start Tama, then subscribe the WhatsApp Business Account to the messages webhook field."));
+      // Saying "configuration saved" and stopping reads as done. It is not:
+      // nothing arrives until Meta has the callback, and Meta will not accept a
+      // callback it cannot reach over HTTPS.
+      console.log(warn("  Until that is pasted in, WhatsApp stays silent — the config alone changes nothing."));
+      if (!whatsappConfig.publicBaseUrl) {
+        console.log(warn("  You also need a public HTTPS address for this server. Meta will not call a plain-HTTP or private one."));
+      }
     }
   } finally {
     input.setRawMode(false);

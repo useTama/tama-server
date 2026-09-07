@@ -88,37 +88,63 @@ Cloning into a non-empty directory fails; `.` on an empty `~/tama` is the intent
 
 ---
 
-## 4. Generate the admin token and the config
+## 4. Run the setup wizard
+
+The wizard is the same one a laptop install uses; here it runs inside the container, against
+the same volumes the server will use. It generates the admin token, creates the vault, and
+takes your API key interactively — so no secret is ever typed into a shell command or left in
+your shell history.
 
 ```sh
-cp tama.config.docker.json tama.config.json
-sed -i "s|REPLACE: openssl rand -hex 24|$(openssl rand -hex 24)|" tama.config.json
-chmod 600 tama.config.json
-cat tama.config.json
+cd ~/tama
+mkdir -p config
+docker compose run --rm setup
 ```
 
-You should see paths that are *container* paths, not host paths:
+Answer its questions. The ones that matter for a server:
 
-```json
-{
-  "vault":  { "path": "/vault", "inbox": "Inbox" },
-  "dataDir": "/data",
-  "stt":    { "provider": "whisper-cpp", "url": "http://whisper:8081" },
-  "server": { "port": 8080, "adminToken": "…64 hex chars…" }
-}
-```
+| Question | Answer here |
+|---|---|
+| Folder for your world | accept `/vault` — it is the mounted volume |
+| Speech-to-text | **A transcription API** (see step 5 for which) |
+| API key | paste it; the input is hidden |
+| Ask | disable for now, or pick a provider — it is optional |
+| WhatsApp | skip unless you have done the Meta setup |
 
-`tama.config.json` is the admin credential for the whole vault. It is git-ignored; keep it
-that way and do not copy it into an image.
+It writes `config/tama.config.json`, and each secret into its own `0600` file beside it. That
+is why the whole `config/` directory is mounted, not just the one file.
 
-Save the token somewhere you can paste from:
+> Do **not** copy `tama.config.docker.json` into `config/` before running the wizard. That
+> template's placeholder admin token is rejected on load by design, and the wizard would fail
+> trying to read it. The template is for configuring by hand *instead of* the wizard.
+
+Check what it produced, and note the admin token:
 
 ```sh
-ADMIN=$(grep -o '"adminToken": *"[^"]*"' tama.config.json | cut -d'"' -f4); echo "$ADMIN"
+sudo cat config/tama.config.json
 ```
 
-> Do not run `tama-server setup` here. The wizard is for an interactive install; a container
-> deployment configures by file, which is what this step did.
+`sudo`, because the container runs as root and so the files it wrote are root-owned. To edit
+them as yourself later:
+
+```sh
+sudo chown -R "$USER:$USER" config
+```
+
+### Configuring by hand instead
+
+For a scripted deployment with no interactive step:
+
+```sh
+mkdir -p config
+cp tama.config.docker.json config/tama.config.json
+sed -i "s|REPLACE: openssl rand -hex 24|$(openssl rand -hex 24)|" config/tama.config.json
+chmod 600 config/tama.config.json
+```
+
+Then edit its `stt` block per step 5, and put the provider key in `.env` as
+`GROQ_API_KEY=…` (or `OPENAI_API_KEY`, `SARVAM_API_KEY`). `apiKeyEnv` in the config names
+which one to read. The wizard's key files and this env-var route are equivalent; pick one.
 
 ---
 
@@ -136,16 +162,12 @@ This is the one real decision in the deploy. Everything else is mechanical.
 
 ### Option A — a transcription API (default)
 
-Pick a provider and put the key in `.env`, never in the config file:
+The wizard in step 4 already asked for this: choose **A transcription API**, then Groq, OpenAI
+or Sarvam, and paste the key. Nothing further to do.
 
-```sh
-cd ~/tama
-echo 'GROQ_API_KEY=gsk_your_key_here' > .env    # console.groq.com/keys
-chmod 600 .env
-```
+Get a key from console.groq.com/keys, platform.openai.com/api-keys, or dashboard.sarvam.ai.
 
-The shipped `tama.config.json` already points at Groq. To use a different one, edit its `stt`
-block:
+If you configured by hand instead, this is the `stt` block to write:
 
 ```jsonc
 // OpenAI
@@ -158,8 +180,8 @@ block:
          "apiKeyEnv": "SARVAM_API_KEY" }
 ```
 
-`docker-compose.yml` already passes `GROQ_API_KEY`, `OPENAI_API_KEY` and `SARVAM_API_KEY`
-through; set the one you use in `.env` and leave the rest unset.
+Sarvam is the pick if you capture in Hindi or code-mixed Hindi-English; Groq otherwise, on
+speed and price. Whichever you choose, the recording is uploaded to them.
 
 ### Option B — local whisper (nothing leaves the machine)
 
@@ -169,11 +191,16 @@ It lives behind a Compose profile, so it is never built or started unless you as
 docker compose --profile local-stt up -d --build
 ```
 
-Then point the config at it — no key, no `.env`:
+Then point the config at it — no key at all. Either re-run `docker compose run --rm setup`
+and choose **Whisper on another machine**, entering `http://whisper:8081`, or edit the block
+directly:
 
 ```json
 "stt": { "provider": "whisper-cpp", "url": "http://whisper:8081" }
 ```
+
+`whisper` is the container's hostname on the Compose network. `127.0.0.1` there means the
+tama container itself, which is the most common way to get this wrong.
 
 Model size is the `MODEL` build arg on the `whisper` service:
 
@@ -233,6 +260,7 @@ Troubleshooting.
 Now a real end-to-end capture. Mint a device token from the terminal:
 
 ```sh
+ADMIN=$(sudo jq -r .server.adminToken config/tama.config.json)
 CODE=$(curl -s -X POST localhost:8080/pair/code -H "Authorization: Bearer $ADMIN" | jq -r .code)
 TOKEN=$(curl -s -X POST localhost:8080/pair -H 'content-type: application/json' \
   -d "{\"code\":\"$CODE\",\"deviceName\":\"server-test\"}" | jq -r .token)
@@ -384,7 +412,7 @@ curl -s -X DELETE localhost:8080/tokens/DEVICE_ID -H "Authorization: Bearer $ADM
 ## 11. Optional: turn on /ask
 
 Capture never touches a language model. `/ask` answers 501 until you add an `ask` block.
-Add to `tama.config.json`:
+Add to `config/tama.config.json`:
 
 ```json
 "ask": { "provider": "anthropic", "model": "claude-sonnet-5", "apiKeyEnv": "ANTHROPIC_API_KEY", "maxChunks": 8 }
@@ -413,7 +441,7 @@ Retrieval is grep, not embeddings — nothing to index or rebuild.
 
 ## 12. Optional: push notifications
 
-In `tama.config.json`:
+In `config/tama.config.json`:
 
 ```json
 "notify": { "provider": "ntfy", "ntfy": { "url": "https://ntfy.sh", "topic": "SOMETHING-UNGUESSABLE" }, "digestAt": "08:00" }
@@ -429,7 +457,7 @@ up -d`. Anyone who knows a public ntfy topic can read it — the topic is the pa
 Requires step 9 (public HTTPS). Full Meta-side walkthrough is in
 [api.md#whatsapp-cloud-api](api.md#whatsapp-cloud-api). The container-specific parts:
 
-`tama.config.json`:
+`config/tama.config.json`:
 
 ```json
 "whatsapp": {
@@ -475,7 +503,7 @@ docker run --rm -v tama_tama-vault:/vault:ro -v "$PWD":/out alpine \
   tar czf /out/tama-vault-$(date -I).tgz -C /vault .
 ```
 
-Back up `tama.config.json` and the `tama-data` volume too — `tama-data` holds device tokens.
+Back up the `config/` directory and the `tama-data` volume too — `tama-data` holds device tokens.
 Losing it means re-pairing every device; losing the vault means losing notes.
 
 Check the volume names on your box with `docker volume ls` — Compose prefixes them with the
@@ -497,6 +525,14 @@ docker compose down -v               # stop AND DELETE the vault. do not.
 ```
 
 Config changes need a restart; the file is mounted read-only and read at boot.
+
+To change transcription providers, keys, or anything else the wizard asks, re-run it — it
+preserves your admin token and any settings it does not ask about:
+
+```sh
+docker compose run --rm setup
+docker compose restart tama
+```
 
 **Update to a new version:**
 
@@ -539,7 +575,7 @@ The upload was not audio, or was truncated. Test with a known-good file; text ca
 (step 7) isolates whether the problem is audio-specific.
 
 **401 on every request.**
-The token is wrong or revoked. Admin routes need the `adminToken` from `tama.config.json`;
+The token is wrong or revoked. Admin routes need the `adminToken` from `config/tama.config.json`;
 `/capture` and `/ask` need a *device* token from pairing. They are not interchangeable.
 
 **Capture returns 503, or is very slow.**
@@ -555,4 +591,4 @@ The container runs as root against root-owned volumes by design. If you switched
 mount instead, `chown -R 0:0` the host directory or run the container as your UID.
 
 **Everything looks fine but no note appears.**
-Check `safety.dryRun` in `tama.config.json` is `false`.
+Check `safety.dryRun` in `config/tama.config.json` is `false`.

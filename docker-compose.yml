@@ -13,6 +13,10 @@
 #
 #   docker compose --profile local-stt up -d --build
 #
+# Unofficial WhatsApp, against WhatsApp's terms, ban risk on the account:
+#
+#   docker compose --profile whatsapp-webjs up -d --build
+#
 # The whole config directory is mounted, not just the file, because the wizard
 # writes each secret to its own 0600 file beside the config.
 services:
@@ -59,6 +63,31 @@ services:
     expose:
       - "8081"
 
+  # Unofficial WhatsApp, and never started without --profile whatsapp-webjs.
+  # whatsapp-web.js logs in as your own account through WhatsApp Web, which is
+  # why it needs no Meta app, no dedicated number and no public HTTPS: the
+  # connection is outbound. It is also against WhatsApp's terms and the account
+  # can be banned. The supported path is the `whatsapp` block in the config.
+  #
+  # It is a client, not part of the server. It holds a device token and posts
+  # to /capture and /ask like any other client, so tama needs no config for it.
+  whatsapp-webjs:
+    profiles: ["whatsapp-webjs"]
+    build: ./clients/whatsapp-webjs
+    restart: unless-stopped
+    depends_on: [tama]
+    environment:
+      TAMA_URL: http://tama:8080
+      # A device token from pairing, NOT the admin token. See the client README.
+      TAMA_TOKEN: "${TAMA_TOKEN:?mint a device token first, see clients/whatsapp-webjs/README.md}"
+      # Comma-separated, country code and digits only. Empty means your own
+      # self-chat is the only thing listened to.
+      WA_ALLOWED: ${WA_ALLOWED:-}
+      WA_ASK_PREFIX: "${WA_ASK_PREFIX:-?}"
+    volumes:
+      - whatsapp-session:/session
+
 volumes:
   tama-vault:
   tama-data:
+  whatsapp-session:

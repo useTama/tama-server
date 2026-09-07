@@ -214,6 +214,84 @@ export class Vault {
    * what keeps wiki-links useful. They are still append-only. Identical files
    * are idempotently skipped and a different existing file is never replaced.
    */
+  /**
+   * Append to a note, creating it if it does not exist.
+   *
+   * Distinct from `capture`, which decides the filename, and from
+   * `importMarkdown`, which refuses to touch an existing file. This is the
+   * write an agent wants: a path it chose, added to over and over, as a session
+   * log or a running page.
+   *
+   * Append rather than rewrite because the caller does not hold the file. Two
+   * agents finishing at once, or one retrying, must not lose the other's entry,
+   * and a read-modify-write would do exactly that.
+   */
+  async appendMarkdown(relPath: string, text: string): Promise<WriteResult & { created: boolean }> {
+    const { dir: relDir, name } = this.checkedPath(relPath);
+    const body = text.endsWith("\n") ? text : `${text}\n`;
+    const bytes = Buffer.byteLength(body, "utf8");
+
+    if (this.dryRun) {
+      const abs = join(resolve(await realpath(this.root), relDir), name);
+      console.log(`${amber("[dry-run]")} would append ${bytes}B to ${relPath}`);
+      return { path: abs, relPath, bytes, dryRun: true, created: false };
+    }
+
+    const dir = await this.confineDir(relDir);
+    const abs = join(dir, name);
+
+    let created = false;
+    try {
+      const st = await lstat(abs);
+      if (st.isSymbolicLink() || !st.isFile()) {
+        throw new Error(`append destination is not a regular file: ${relPath}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      created = true;
+    }
+
+    // O_APPEND, so concurrent writers interleave whole entries instead of
+    // overwriting each other. fsync because a note that is only in the page
+    // cache is a note that a power cut never had.
+    const fh = await open(abs, "a");
+    try {
+      await fh.writeFile(body, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+
+    try {
+      await this.journal({ op: "append", at: new Date(), relPath, bytes, source: "tama-append" });
+    } catch (error) {
+      console.error(`journal write failed for appended ${relPath}:`, error);
+    }
+    return { path: abs, relPath, bytes, dryRun: false, created };
+  }
+
+  /**
+   * The path checks shared by every caller-chosen path.
+   *
+   * Lifted out of importMarkdown rather than duplicated: this is the security
+   * surface for anything that lets a client name a file, and two copies of it
+   * would eventually disagree.
+   */
+  private checkedPath(relPath: string): { dir: string; name: string } {
+    const parts = relPath.split("/");
+    if (
+      parts.length === 0 ||
+      parts.some((part) => !part || part === "." || part === ".." || part.startsWith(".") || /[\\\u0000-\u001f\u007f]/.test(part))
+    ) {
+      throw new Error(`unsafe path: ${relPath}`);
+    }
+    const name = parts.at(-1)!;
+    if (!name.toLowerCase().endsWith(".md") || this.safeName(name) !== name) {
+      throw new Error(`unsafe Markdown filename: ${relPath}`);
+    }
+    return { dir: parts.slice(0, -1).join(sep), name };
+  }
+
   async importMarkdown(relPath: string, text: string): Promise<ImportResult> {
     const parts = relPath.split("/");
     if (
@@ -284,7 +362,7 @@ export class Vault {
   }
 
   /** Invariant 4: every write is auditable without reading source code. */
-  private async journal(e: { op: "capture" | "import"; at: Date; relPath: string; bytes: number; source: string }) {
+  private async journal(e: { op: "capture" | "import" | "append"; at: Date; relPath: string; bytes: number; source: string }) {
     const dir = await this.confineDir(".tama");
     const line = JSON.stringify({
       ts: e.at.toISOString(),

@@ -18,6 +18,7 @@ import { makeLlm, type Llm } from "./llm.ts";
 import { ask, askOnce, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
+import { appendSession } from "./session.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
@@ -430,6 +431,91 @@ const server = Bun.serve({
     if (url.pathname === "/capture" && req.method === "POST") {
       const key = req.headers.get("idempotency-key");
       return runCapture(req, device, key);
+    }
+
+    // Writing at a chosen path is the owner's own device only. An audience
+    // reads; it has no business adding to the vault, and a group's token
+    // getting a write path would be the first way a room could put something
+    // in someone's notes.
+    if (url.pathname === "/notes" && req.method === "POST") {
+      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      const b = (await req.json().catch(() => ({}))) as { path?: string; text?: string; mode?: string };
+      const relPath = String(b.path ?? "").trim();
+      const text = String(b.text ?? "");
+      if (!relPath) return json({ error: "path is required" }, 400);
+      if (!text.trim()) return json({ error: "text is required" }, 400);
+      if (Buffer.byteLength(text, "utf8") > MAX_UPLOAD_BYTES) return json({ error: "text too large" }, 413);
+
+      const key = req.headers.get("idempotency-key");
+      if (key) {
+        const claimed = idem.claim(db, device.id, key);
+        if (claimed.state === "duplicate") return json(claimed.response as object);
+        if (claimed.state === "in-flight") return json({ error: "busy, retry shortly" }, 503);
+      }
+      try {
+        const result = b.mode === "create"
+          ? await vault.importMarkdown(relPath, text)
+          : await vault.appendMarkdown(relPath, text);
+        const body = {
+          ok: true,
+          path: result.relPath,
+          bytes: result.bytes,
+          ...(("created" in result) ? { created: result.created } : {}),
+        };
+        console.log(`${green("note")} ${result.relPath} ${grey(`${result.bytes}B ${b.mode === "create" ? "created" : "appended"} <${device.deviceName}>`)}`);
+        if (key) idem.complete(db, device.id, key, body);
+        return json(body);
+      } catch (e) {
+        if (key) idem.release(db, device.id, key);
+        const detail = e instanceof Error ? e.message : String(e);
+        recordFailure(db, { kind: "note-failed", detail, source: device.deviceName });
+        console.error("note write failed:", detail);
+        // An unsafe path is the caller's mistake, not a server fault.
+        return json({ error: detail }, /unsafe|escapes|not a regular file/.test(detail) ? 400 : 500);
+      }
+    }
+
+    // One append per work session, to one file per project. Sugar over /notes,
+    // and the shape is the point: a rendered entry that reads as a diary is
+    // what makes "what have I been doing on X" answerable later.
+    if (url.pathname === "/sessions" && req.method === "POST") {
+      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      const b = (await req.json().catch(() => ({}))) as {
+        project?: string;
+        summary?: string;
+        shipped?: string[];
+        learned?: string[];
+        next?: string[];
+      };
+      const project = String(b.project ?? "").trim();
+      if (!project) return json({ error: "project is required" }, 400);
+
+      const key = req.headers.get("idempotency-key");
+      if (key) {
+        const claimed = idem.claim(db, device.id, key);
+        if (claimed.state === "duplicate") return json(claimed.response as object);
+        if (claimed.state === "in-flight") return json({ error: "busy, retry shortly" }, 503);
+      }
+      try {
+        const asList = (v: unknown) => (Array.isArray(v) ? v.map((i) => String(i)) : undefined);
+        const result = await appendSession(vault, {
+          project,
+          summary: String(b.summary ?? ""),
+          shipped: asList(b.shipped),
+          learned: asList(b.learned),
+          next: asList(b.next),
+        });
+        const body = { ok: true, ...result };
+        console.log(`${green("session")} ${result.relPath} ${grey(`${result.bytes}B ${result.created ? "started" : "appended"} <${device.deviceName}>`)}`);
+        if (key) idem.complete(db, device.id, key, body);
+        return json(body);
+      } catch (e) {
+        if (key) idem.release(db, device.id, key);
+        const detail = e instanceof Error ? e.message : String(e);
+        recordFailure(db, { kind: "session-failed", detail, source: device.deviceName });
+        console.error("session write failed:", detail);
+        return json({ error: detail }, /nothing to record|no usable characters|unsafe/.test(detail) ? 400 : 500);
+      }
     }
 
     // Ask sits behind the same device token as capture. No new auth surface:

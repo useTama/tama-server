@@ -231,3 +231,56 @@ to a topic, works on iOS and Android, and can itself be self-hosted.
 
 You get told when a capture fails, when **nothing was heard** (mic muted or too quiet), when
 whisper is down, and when a new device pairs. Plus a daily digest of counts and failures.
+
+## POST /notes
+
+Append text to a note at a path you choose, or create one. This is the write
+path for something that already has text and knows where it belongs: an agent
+finishing work on a repo, a script, a cron job. `/capture` is for a voice note,
+where the server decides the filename.
+
+```sh
+curl -s -X POST localhost:8080/notes \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -H "Idempotency-Key: $(openssl rand -hex 8)" \
+  -d '{"path":"Projects/tama/log.md","text":"## fixed the mention detection\n"}'
+```
+
+| Field | |
+|---|---|
+| `path` | vault-relative, must end `.md`, no `..`, no dotfiles, no symlink escape |
+| `text` | Markdown. 25 MB cap, same as capture |
+| `mode` | `append` (default) or `create`. `create` refuses to touch an existing file |
+
+Append uses `O_APPEND`, so two writers finishing at once interleave whole
+entries rather than overwriting each other, and a retry cannot lose the other
+one's work. `Idempotency-Key` still collapses a repeat of the *same* request.
+
+**Owner devices only.** A token with an audience gets a 403: an audience reads,
+and a group's token holding a write path would be the first way a room could put
+something in someone's notes.
+
+## POST /sessions
+
+Sugar over `/notes` for the case that has a shape: one entry per work session,
+appended to `Projects/<slug>/sessions.md`.
+
+```sh
+curl -s -X POST localhost:8080/sessions \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"project":"tama","summary":"fixed the @lid chat matching",
+       "shipped":["PR #37"],"learned":["a gateway prices a request by max_tokens"],
+       "next":["scoped tokens"]}'
+```
+
+The project name is slugged, so `tama-server` and `Tama Server` land in the same
+file. The first entry writes frontmatter carrying `project`, which is what lets
+retrieval tell a session log from a note that merely mentions the project.
+
+From a terminal, `tama session tama < summary.md` does the same thing without a
+token, by writing through the vault directly. Over SSH, which is how a laptop
+reaches a server whose port is loopback-only:
+
+```sh
+echo "fixed the mention detection" | ssh ubuntu@YOUR_SERVER 'cd tama && tama session tama'
+```

@@ -536,12 +536,24 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
     console.log(grey("  Run tama-server setup first; settings edits an install that already exists."));
     return;
   }
-  const config = await loadConfig(configPath);
+  const initial = loadConfig(configPath);
   const bridgePath = resolve(dirname(configPath), "whatsapp-bridge.json");
-  const dbPath = join(config.dataDir, "tama.db");
+  const dbPath = join(initial.dataDir, "tama.db");
 
   console.log(`\n${tama("Tama settings")} ${grey(configPath)}`);
   for (;;) {
+    // Re-read every pass. Sections write to this file, so a config captured
+    // once at startup goes stale the moment one saves - which showed up as
+    // "Saved audience 315" followed by "None yet." on the next screen.
+    let config: Config;
+    try {
+      config = loadConfig(configPath);
+    } catch (e) {
+      console.log(warn(`The config is no longer loadable: ${e instanceof Error ? e.message : e}`));
+      console.log(grey("  Fix it, or re-run the full wizard. Nothing here can edit a file it cannot parse."));
+      return;
+    }
+
     const section = await choose("What would you like to change?", [
       { value: "audiences" as const, label: "Audiences — who can talk to it, what they see, how it replies" },
       { value: "views" as const, label: "Views — named slices of the vault that audiences can use" },

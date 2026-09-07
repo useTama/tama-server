@@ -442,8 +442,24 @@ async function pickChats(
     console.log(grey("  Claiming from the group is usually easier anyway."));
   }
 
+  const add = (value: string): void => {
+    if (chosen.includes(value)) {
+      console.log(grey(`  already added: ${value}`));
+      return;
+    }
+    chosen.push(value);
+    console.log(ok(`Added ${value}.`));
+  };
+
   for (;;) {
-    const options = [
+    // Once something is chosen, finishing is the first option so Enter ends the
+    // loop. Adding a second chat is the rare case and should not be the default
+    // just because it happens to come later in a list.
+    const done = {
+      value: "__done__",
+      label: chosen.length ? `done (${chosen.length} chat${chosen.length === 1 ? "" : "s"})` : "skip for now",
+    };
+    const rest = [
       ...groups
         .filter((g) => !chosen.includes(g.id))
         .map((g) => ({
@@ -451,14 +467,18 @@ async function pickChats(
           label: `${g.name || "unnamed group"}${current.includes(g.id) ? " (currently connected)" : ""}`,
         })),
       // A group cannot be expressed as a phone number, and a new group appears
-      // in no published list until the bridge reconnects, so there has to be a
+      // in no published list until the bridge has seen it, so there has to be a
       // way to say one by hand.
       { value: "__claim__", label: `claim it from the group — send "/tama ${name}" there` },
       { value: "__number__", label: "a phone number, for a one-to-one chat" },
       { value: "__group__", label: "paste a group id (ends in @g.us)" },
-      { value: "__done__", label: chosen.length ? "done" : "skip for now" },
     ];
-    const picked = await choose(chosen.length ? "Add another chat, or finish" : "Which chat is this audience?", options, options[0]!.value);
+    const options = chosen.length ? [done, ...rest] : [...rest, done];
+    const picked = await choose(
+      chosen.length ? `Connected to ${chosen.join(", ")}. Add another, or finish` : "Which chat is this audience?",
+      options,
+      options[0]!.value,
+    );
     if (picked === "__done__" || picked === "__claim__") break;
     if (picked === "__group__") {
       console.log(grey("  A group id looks like 120363043211234567@g.us. In WhatsApp it is not shown"));
@@ -469,7 +489,7 @@ async function pickChats(
         console.log(warn("That is not a group id. They are digits followed by @g.us."));
         continue;
       }
-      chosen.push(id);
+      add(id);
       continue;
     }
     if (picked === "__number__") {
@@ -478,10 +498,10 @@ async function pickChats(
         console.log(warn("Use an international number, digits only."));
         continue;
       }
-      chosen.push(...numbers);
+      for (const number of numbers) add(number);
       continue;
     }
-    chosen.push(picked);
+    add(picked);
   }
   return chosen;
 }

@@ -201,19 +201,37 @@ const client = new Client({
 });
 
 /**
- * Message ids this process sent. In your own self-chat a reply is itself a
- * fromMe message, so without this the answer to a question would be read back
- * as the next question.
+ * What this process said, so it does not answer itself.
+ *
+ * Two mechanisms, because one is not enough. `ours` holds the ids of messages
+ * we sent, which is exact but only known after the send resolves - and the
+ * message_create event for our own reply can arrive before that, which is how
+ * a reply ended up being read back as a new message. `saying` holds the text
+ * we are about to send, keyed by chat, and is populated before the send starts.
+ *
+ * In a group with onNoMatch "just talk" this is not cosmetic: without it the
+ * bot answers its own answer, forever.
  */
 const ours = new Set();
+const saying = new Set();
+const utterance = (chatId, text) => `${chatId}\u0000${text.trim()}`;
 
 let selfId = "";
 let selfNumber = "";
 
 async function reply(message, text) {
+  const chatId = message.fromMe ? message.to : message.from;
   for (const chunk of splitReply(text)) {
-    const sent = await message.reply(chunk);
-    if (sent?.id?._serialized) ours.add(sent.id._serialized);
+    const key = utterance(chatId, chunk);
+    saying.add(key);
+    try {
+      const sent = await message.reply(chunk);
+      if (sent?.id?._serialized) ours.add(sent.id._serialized);
+    } finally {
+      // Long enough to cover the echo, short enough that saying the same thing
+      // twice on purpose still works.
+      setTimeout(() => saying.delete(key), 60_000).unref?.();
+    }
   }
 }
 
@@ -385,6 +403,7 @@ async function onMessage(message) {
   if (message.id?._serialized && ours.has(message.id._serialized)) return;
 
   const chatId = message.fromMe ? message.to : message.from;
+  if (chatId && saying.has(utterance(chatId, message.body ?? ""))) return;
   // Every inbound message says what was decided about it. Silently ignoring
   // most of them is correct behaviour and undebuggable behaviour at once:
   // without this line there is no way to tell "filtered" from "never arrived".
@@ -404,9 +423,13 @@ async function onMessage(message) {
   // "not a direct chat" silently dropped every message from a chat WhatsApp had
   // moved to `@lid`.
   let isGroup = chatId.endsWith("@g.us");
+  let groupName;
   try {
     const chat = await message.getChat();
-    if (chat) isGroup = chat.isGroup === true;
+    if (chat) {
+      isGroup = chat.isGroup === true;
+      groupName = chat.name;
+    }
   } catch { /* keep the suffix guess */ }
 
   const ids = await senderIdentifiers(message, chatId);
@@ -434,13 +457,10 @@ async function onMessage(message) {
       seen("ignored, no audience claims this group");
       return;
     }
-    if (!audience && isOwner && !/^\/tama\b/i.test((message.body ?? "").trim())) {
-      // The owner talking in a group that is not set up yet. Publish it so the
+    if (!audience && !/^\/tama\b/i.test((message.body ?? "").trim())) {
+      // The owner talking in a group that is not set up yet. Record it so the
       // menu can offer it, and stay quiet: they were talking to their friends.
-      if (!published.has(chatId)) {
-        published.add(chatId);
-        void publishChats();
-      }
+      rememberChat(chatId, groupName);
       seen("ignored, this group has no audience. send /tama to set one up");
       return;
     }
@@ -601,22 +621,37 @@ client.on("message_create", (message) => {
  */
 const published = new Set();
 
+function rememberChat(id, name) {
+  if (!id || published.has(id)) return;
+  published.add(id);
+  try {
+    const file = patchSettings((f) => {
+      const chats = Array.isArray(f.chats) ? f.chats : [];
+      f.chats = [...chats.filter((c) => c.id !== id), { id, ...(name ? { name } : {}) }];
+    });
+    log("published", `${(file.chats ?? []).length} chats for tama settings to offer`);
+  } catch (error) {
+    console.error("could not record the chat:", error?.message ?? error);
+  }
+}
+
+/**
+ * Bulk on connect, one at a time thereafter.
+ *
+ * `client.getChats()` throws on some WhatsApp Web builds - it surfaced here as
+ * "could not publish the chat list: r", a minified internal error - and it took
+ * the whole list with it. Recording each chat as it is seen means one broken
+ * call costs a menu that fills in as messages arrive, rather than a menu that
+ * is empty forever.
+ */
 async function publishChats() {
   try {
     const chats = await client.getChats();
-    const groups = chats
-      .filter((c) => c.isGroup)
-      .map((c) => ({ id: c.id?._serialized, name: c.name }))
-      .filter((c) => c.id);
-    const file = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
-    file.chats = groups;
-    writeFileSync(SETTINGS_PATH, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-    published.clear();
-    for (const g of groups) published.add(g.id);
-    log("published", `${groups.length} groups for tama settings to offer`);
+    for (const c of chats) {
+      if (c.isGroup) rememberChat(c.id?._serialized, c.name);
+    }
   } catch (error) {
-    // Non-fatal: it only costs the settings menu its group list.
-    console.error("could not publish the chat list:", error?.message ?? error);
+    log("could not list chats in bulk, so groups will be recorded as they are seen", `(${error?.message ?? error})`);
   }
 }
 

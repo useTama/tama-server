@@ -1,8 +1,7 @@
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile, readdir, readFile, rename } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
 import { assertSeparateImportRoots, collectMarkdown, importMarkdownFolder } from "./import.ts";
@@ -10,10 +9,48 @@ import { configPathFromArgs, loadConfig } from "./config.ts";
 import { Stt, SPEECH_MODEL, SARVAM_URL, SARVAM_DEFAULT_MODEL, type SttConfig } from "./stt.ts";
 import * as whisper from "./whisper.ts";
 import { tama, red, grey, bold, ok, warn } from "./ui.ts";
+import { ask, choose, endpoint, optionalPublicOrigin, requireTty, secret, yes } from "./prompt.ts";
 
 type AskConfig =
   | undefined
   | { provider: "openai-compatible"; baseUrl: string; model: string; apiKeyEnv?: string; maxChunks: number };
+
+/**
+ * What the whatsapp-web.js bridge reads. It is a client, so this is not part of
+ * `tama.config.json`: the server has no opinion about the bridge existing, and
+ * the file lives beside the config only because that directory is already the
+ * one mounted into containers.
+ */
+export type BridgeSettings = {
+  token: string;
+  allowedFrom: string[];
+  /** Marks a question when self-chat text is otherwise ignored. */
+  askPrefix: string;
+  /**
+   * What plain text in your own chat with yourself means. "ignore" keeps that
+   * chat usable as a scratchpad; "ask" is the default because a bot that says
+   * nothing when you talk to it reads as broken, whatever the reasoning.
+   */
+  selfChatText: "ask" | "ignore";
+};
+
+/** Written 0600 and replaced atomically, because it holds a device token. */
+export async function writeSettings(path: string, settings: BridgeSettings): Promise<void> {
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  await rename(temporary, path);
+}
+
+export function bridgeSettings(
+  token: string,
+  allowedFrom: string[],
+  askPrefix: string,
+  selfChatText: "ask" | "ignore" = "ask",
+): BridgeSettings {
+  // An empty allowlist is meaningful rather than missing: it means nobody but
+  // you, in your own chat with yourself.
+  return { token, allowedFrom, askPrefix: askPrefix.trim() || "?", selfChatText };
+}
 
 /** What setup can produce. `apiKey` is never one of them: it goes to its own file. */
 export type SttAnswer = Omit<SttConfig, "apiKey">;
@@ -86,95 +123,7 @@ export function whatsappSenders(value: string): string[] | null {
 }
 
 export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
-  if (!input.isTTY || !output.isTTY) throw new Error("tama setup needs an interactive terminal");
-  const ask = async (label: string, fallback: string) => {
-    const rl = createInterface({ input, output });
-    try { return (await rl.question(`${red("›")} ${label}${fallback ? grey(` [${fallback}]`) : ""}: `)).trim() || fallback; }
-    finally { rl.close(); }
-  };
-  const secret = async (label: string): Promise<string> => {
-    output.write(`${red("›")} ${label}${grey(" (hidden; Enter to skip)")}: `);
-    return new Promise((done, fail) => {
-      let value = "";
-      const wasRaw = input.isRaw;
-      const finish = (cancelled = false) => {
-        input.off("data", onData); input.setRawMode(wasRaw); input.pause(); output.write("\n");
-        if (cancelled) fail(new Error("Setup cancelled")); else done(value.trim());
-      };
-      const onData = (chunk: Buffer) => {
-        for (const char of chunk.toString()) {
-          if (char === "\u0003") return finish(true);
-          if (char === "\r" || char === "\n") return finish();
-          if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
-          else if (char >= " ") value += char;
-        }
-      };
-      input.setRawMode(true); input.on("data", onData); input.resume();
-    });
-  };
-  const endpoint = async (label: string, fallback: string): Promise<string> => {
-    for (;;) {
-      const value = await ask(label, fallback);
-      try {
-        const url = new URL(value);
-        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
-        return value.replace(/\/+$/, "");
-      } catch { console.log(warn("Enter an http:// or https:// server address without credentials or query parameters.")); }
-    }
-  };
-  const optionalPublicOrigin = async (fallback?: string): Promise<string | undefined> => {
-    for (;;) {
-      const value = await ask("Public HTTPS base URL (Enter to configure later)", fallback ?? "");
-      if (!value) return undefined;
-      try {
-        const url = new URL(value);
-        if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
-        return url.origin;
-      } catch { console.log(warn("Enter an https:// origin such as https://tama.example.com, with no path or credentials.")); }
-    }
-  };
-  const choose = async <T extends string>(label: string, options: Array<{ value: T; label: string }>, fallback: T): Promise<T> => {
-    let selected = options.findIndex((o) => o.value === fallback);
-    console.log(`\n${bold(label)}  ${grey("(↑/↓ or j/k, then Enter)")}`);
-    let drawn = false;
-    const draw = () => {
-      if (drawn) output.write(`\x1b[${options.length}A`);
-      for (let i = 0; i < options.length; i++) {
-        const option = options[i]!;
-        const chosen = i === selected;
-        output.write(`\r\x1b[2K${chosen ? red("❯") : " "} ${grey(`${i + 1}.`)} ${chosen ? bold(option.label) : option.label}\n`);
-      }
-      drawn = true;
-    };
-    draw();
-    return await new Promise<T>((done, fail) => {
-      input.setRawMode(true);
-      input.resume();
-      const finish = (value?: T, error?: Error) => {
-        input.setRawMode(false);
-        input.off("data", onKey);
-        input.pause();
-        output.write("\n");
-        if (error) fail(error);
-        else done(value!);
-      };
-      const onKey = (chunk: Buffer) => {
-        const key = chunk.toString();
-        if (key === "\u0003") return finish(undefined, new Error("setup cancelled"));
-        if (key === "\r" || key === "\n") return finish(options[selected]!.value);
-        if (key === "\x1b[A" || key === "k") selected = (selected + options.length - 1) % options.length;
-        else if (key === "\x1b[B" || key === "j") selected = (selected + 1) % options.length;
-        else if (/^[1-9]$/.test(key) && Number(key) <= options.length) selected = Number(key) - 1;
-        else return;
-        draw();
-      };
-      input.on("data", onKey);
-    });
-  };
-  const yes = async (label: string, fallback = false) => {
-    const answer = (await ask(`${label} ${fallback ? "[Y/n]" : "[y/N]"}`, "")).toLowerCase();
-    return answer ? answer === "y" || answer === "yes" : fallback;
-  };
+  requireTty("setup");
   /**
    * Install check, model, service. Returns whether the server ended up
    * answering; every exit is a soft one, because a saved config plus a manual
@@ -468,10 +417,52 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       }
     }
 
+    const bridgePath = resolve(dirname(configPath), "whatsapp-bridge.json");
+    const currentBridge = await readFile(bridgePath, "utf8")
+      .then(text => JSON.parse(text) as BridgeSettings)
+      .catch(() => undefined);
+
     let whatsappChoice = await choose("WhatsApp", [
       { value: "none", label: "Skip / disable WhatsApp" },
-      { value: "cloud", label: "Connect a WhatsApp Cloud API number" },
-    ], current?.whatsapp ? "cloud" : "none");
+      { value: "bridge", label: "Link your own WhatsApp number (no Meta app; unofficial)" },
+      { value: "cloud", label: "Connect a WhatsApp Cloud API number (official; needs a domain)" },
+    ], current?.whatsapp ? "cloud" : currentBridge ? "bridge" : "none");
+
+    let bridge: BridgeSettings | undefined;
+    if (whatsappChoice === "bridge") {
+      // The Cloud API path asks for five values from a Meta dashboard. This one
+      // asks for nothing you have to go and find, so the only thing worth
+      // spending the user's attention on is the trade they are making.
+      console.log(`\n${bold("Linking your own number")}`);
+      console.log(grey("  Tama logs into WhatsApp Web as your account, the way the desktop app does."));
+      console.log(grey("  No Meta app, no second number, no domain: the connection is outbound."));
+      console.log(warn("  Unofficial. This is against WhatsApp's terms and the account can be banned."));
+      console.log(grey("  A voice note becomes a note. Text from a number you allow is a question."));
+      if (!(await yes("Set that up?", true))) {
+        console.log(grey("Skipping WhatsApp. Nothing else is affected."));
+        whatsappChoice = "none";
+      } else {
+        let allowedFrom: string[] | null = null;
+        do {
+          const raw = await ask(
+            "Numbers allowed to message it, comma-separated (Enter for only your own self-chat)",
+            currentBridge?.allowedFrom.join(",") ?? "",
+          );
+          allowedFrom = raw.trim() ? whatsappSenders(raw) : [];
+          if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
+        } while (!allowedFrom);
+        const selfChatText = await choose("Plain text in your own chat with yourself", [
+          { value: "ask" as const, label: "Answer it — the chat is your assistant" },
+          { value: "ignore" as const, label: "Ignore it — the chat stays a scratchpad, a prefix asks" },
+        ], currentBridge?.selfChatText ?? "ask");
+        const askPrefix = selfChatText === "ignore"
+          ? await ask("Prefix that marks a question there", currentBridge?.askPrefix ?? "?")
+          : currentBridge?.askPrefix ?? "?";
+        // The token is minted after the config is saved, because minting needs
+        // the data directory that the config settles.
+        bridge = bridgeSettings("", allowedFrom, askPrefix, selfChatText);
+      }
+    }
     let whatsappConfig: WhatsAppAnswer | undefined;
     let whatsappAccessToken: string | undefined;
     let whatsappAppSecret: string | undefined;
@@ -553,7 +544,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     }
 
     const config = configFromAnswers({ vaultPath, inbox: "Inbox", stt, port, ask: askConfig, whatsapp: whatsappConfig });
-    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  import:")} ${importSource ? `${importNoteCount} Markdown notes from a read-only source` : "none"}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  whatsapp:")} ${whatsappConfig ? `${whatsappConfig.phoneNumberId} (${whatsappConfig.allowedFrom.length} allowed)` : "disabled"}\n${grey("  config:")} ${configPath}`);
+    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  import:")} ${importSource ? `${importNoteCount} Markdown notes from a read-only source` : "none"}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  whatsapp:")} ${whatsappConfig ? `${whatsappConfig.phoneNumberId} (${whatsappConfig.allowedFrom.length} allowed)` : bridge ? `your own number, unofficial bridge (${bridge.allowedFrom.length} allowed + self-chat)` : "disabled"}\n${grey("  config:")} ${configPath}`);
     if (existsSync(configPath) && !(await yes("Replace the existing config?"))) {
       console.log(grey("Setup cancelled; no changes were made."));
       return;
@@ -589,6 +580,21 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, configPath);
+
+    if (bridge) {
+      // The bridge authenticates as a device, exactly like the iOS Shortcut, so
+      // it gets a device token rather than the admin one. Minting it here is
+      // what removes the curl-and-paste step the bridge used to need.
+      const { mintToken } = await import("./auth.ts");
+      const { openDb } = await import("./db.ts");
+      const db = openDb(join(saved.dataDir, "tama.db"));
+      try {
+        bridge = bridgeSettings(mintToken(db, "whatsapp-bridge").token, bridge.allowedFrom, bridge.askPrefix, bridge.selfChatText);
+      } finally {
+        db.close();
+      }
+      await writeSettings(bridgePath, bridge);
+    }
     console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
     if (importSource) {
       console.log(grey("Importing Markdown into the Tama vault…"));
@@ -627,6 +633,13 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       if (!whatsappConfig.publicBaseUrl) {
         console.log(warn("  You also need a public HTTPS address for this server. Meta will not call a plain-HTTP or private one."));
       }
+    }
+    if (bridge) {
+      console.log(`\n${bold("Link your WhatsApp")}${grey(" — one QR scan, then it is running:")}`);
+      console.log(`  ${bold("docker compose --profile whatsapp-webjs up -d --build")}`);
+      console.log(`  ${bold("docker compose --profile whatsapp-webjs logs -f whatsapp-webjs")} ${grey("scan the QR it prints")}`);
+      console.log(grey(`  Settings and the device token are in ${bridgePath}. Change them later with tama-server settings.`));
+      console.log(grey("  Send yourself a voice note to test. Text from an allowed number is a question."));
     }
   } finally {
     input.setRawMode(false);

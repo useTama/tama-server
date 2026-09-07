@@ -61,8 +61,11 @@ case $command in
   update)   git pull && compose up -d --build ;;
   ask)
     if [ $# -eq 0 ]; then echo "usage: tama ask \"your question\"" >&2; exit 2; fi
-    admin=$(sed -n 's/.*"adminToken": *"\([^"]*\)".*/\1/p' config/tama.config.json | head -1)
-    if [ -z "$admin" ]; then echo "no adminToken in config/tama.config.json (try sudo)" >&2; exit 1; fi
+    # Read the token inside the container. The wizard writes the config 0600 and
+    # root-owned, so reading it from the host needs sudo for no good reason: the
+    # server already has it mounted.
+    admin=$(compose exec -T tama sh -c 'sed -n "s/.*\"adminToken\": *\"\([^\"]*\)\".*/\1/p" "$TAMA_CONFIG" | head -1' 2>/dev/null | tr -d '\r')
+    if [ -z "$admin" ]; then echo "could not read the admin token; is tama running? (tama status)" >&2; exit 1; fi
     curl -s -X POST localhost:8080/ask \
       -H "Authorization: Bearer $admin" -H 'content-type: application/json' \
       --data-raw "$(printf '{"question":%s}' "$(printf '%s' "$*" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')")"

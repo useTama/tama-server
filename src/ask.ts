@@ -222,7 +222,11 @@ This answer will be delivered as a chat message.
 - Plain text only. No markdown: no asterisks for emphasis, no backticks, no headings, no bullet
   lists, no numbered lists. This surface shows those characters literally.
 - Two or three sentences, one short paragraph. A one-line question gets a one-line answer, however
-  many notes were available. Length comes from the question, not from the material.`;
+  many notes were available. Length comes from the question, not from the material.
+- Do not end the message with a full stop. In chat people just stop typing. Commas and question
+  marks inside the line are fine, and a full stop between two sentences is fine, but the last
+  character of a short reply should not be a period. Punctuating a chat message like prose is the
+  same tell as capitalising it.`;
 
 const CITE_RULES = `
 - Present recalled information naturally, then cite its note path unobtrusively, like this:

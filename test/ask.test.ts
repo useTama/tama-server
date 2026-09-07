@@ -137,3 +137,10 @@ test("just-talk mode refuses to mention notes at all, not just apologetically", 
   expect(talk).toContain("nothing to");
   expect(talk).toContain("cannot see them and did not ask");
 });
+
+test("chat replies are told not to close on a full stop", () => {
+  // Terminal punctuation on a one-line message reads as prose, which is the
+  // same tell as sentence case.
+  expect(systemPrompt({ style: "chat" })).toContain("Do not end the message with a full stop");
+  expect(systemPrompt({ style: "prose" })).not.toContain("Do not end the message with a full stop");
+});

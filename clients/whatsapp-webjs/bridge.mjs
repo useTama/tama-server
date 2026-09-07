@@ -19,7 +19,7 @@
  */
 
 import { createRequire } from "node:module";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 
@@ -33,33 +33,60 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const REPLY_CHARS = 4000;
 
 const TAMA_URL = (process.env.TAMA_URL ?? "http://tama:8080").replace(/\/+$/, "");
-const TAMA_TOKEN = process.env.TAMA_TOKEN ?? "";
-const ASK_PREFIX = process.env.WA_ASK_PREFIX ?? "?";
 const SESSION_DIR = process.env.WA_SESSION_DIR ?? "/session";
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH ?? "/usr/bin/chromium";
+const SETTINGS_PATH = process.env.WA_SETTINGS ?? "/etc/tama/whatsapp-bridge.json";
 
-// Digits only, country code included: "919876543210". An empty list means
-// only your own self-chat is honoured, which is the safe default.
-const ALLOWED = new Set(
-  (process.env.WA_ALLOWED ?? "")
-    .split(",")
-    .map((n) => n.replace(/[^\d]/g, ""))
-    .filter(Boolean),
-);
-
-if (!TAMA_TOKEN) {
-  console.error(
-    "TAMA_TOKEN is not set. Mint a device token first:\n" +
-      "  CODE=$(curl -s -X POST localhost:8080/pair/code -H \"Authorization: Bearer $ADMIN\" | jq -r .code)\n" +
-      "  curl -s -X POST localhost:8080/pair -H 'content-type: application/json' \\\n" +
-      "    -d \"{\\\"code\\\":\\\"$CODE\\\",\\\"deviceName\\\":\\\"whatsapp-bridge\\\"}\" | jq -r .token\n" +
-      "then put it in .env as TAMA_TOKEN=…",
-  );
-  process.exit(1);
+/**
+ * `tama-server setup` and `tama-server settings` write this file: the device
+ * token they minted, the numbers allowed to write in, and what plain self-chat
+ * text means. Environment variables still win, so a one-off override or a
+ * deployment that predates the wizard support keeps working, but nobody should
+ * have to hand-edit .env to add a phone number.
+ */
+function loadSettings() {
+  let file = {};
+  try {
+    file = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+    console.log(stamp(), "settings", SETTINGS_PATH);
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.error("could not read", SETTINGS_PATH, "-", error?.message ?? error);
+  }
+  // Truthy, not defined: Compose passes WA_ALLOWED through as an empty string
+  // whether or not anyone set it, and an empty override would silently wipe the
+  // allowlist the wizard just wrote.
+  const numbers = process.env.WA_ALLOWED
+    ? process.env.WA_ALLOWED.split(",")
+    : Array.isArray(file.allowedFrom) ? file.allowedFrom : [];
+  return {
+    token: process.env.TAMA_TOKEN || file.token || "",
+    // Digits only, country code included: "919876543210".
+    allowed: new Set(numbers.map((n) => String(n).replace(/[^\d]/g, "")).filter(Boolean)),
+    askPrefix: process.env.WA_ASK_PREFIX || file.askPrefix || "?",
+    // Answering is the default: a bot that stays silent when you talk to it
+    // reads as broken, whatever the reasoning behind the silence.
+    selfChatText: process.env.WA_SELF_CHAT_TEXT || file.selfChatText || "ask",
+  };
 }
 
 const stamp = () => new Date().toISOString().slice(11, 19);
 const log = (...parts) => console.log(stamp(), ...parts);
+
+const settings = loadSettings();
+const TAMA_TOKEN = settings.token;
+const ALLOWED = settings.allowed;
+const ASK_PREFIX = settings.askPrefix;
+const SELF_CHAT_TEXT = settings.selfChatText;
+
+if (!TAMA_TOKEN) {
+  console.error(
+    `No device token. Expected one in ${SETTINGS_PATH} or in TAMA_TOKEN.\n` +
+      "Run `tama-server setup` and choose \"Link your own WhatsApp number\" under WhatsApp,\n" +
+      "or `tama-server settings` if the bridge is already set up. In Docker:\n" +
+      "  docker compose run --rm setup",
+  );
+  process.exit(1);
+}
 
 /**
  * Retries only the failures that are worth retrying: a refused connection
@@ -267,11 +294,22 @@ async function onMessage(message) {
   // Self-chat is also a scratchpad, so plain text there is left alone and
   // only the prefix asks. In a chat with someone else there is nothing to
   // mistake, and text behaves as it does on the Cloud API path.
-  if (isSelfChat) {
+  if (isSelfChat && SELF_CHAT_TEXT === "ignore") {
     if (!text.startsWith(ASK_PREFIX)) {
       seen(`ignored, self-chat text without the "${ASK_PREFIX}" prefix`);
       return;
     }
+    const question = text.slice(ASK_PREFIX.length).trim();
+    if (!question) {
+      seen("ignored, prefix with no question after it");
+      return;
+    }
+    seen("ask");
+    return askQuestion(message, question);
+  }
+  // Answering mode still honours the prefix, so a habit formed under the other
+  // setting keeps working instead of asking about the literal "?" characters.
+  if (isSelfChat && text.startsWith(ASK_PREFIX)) {
     const question = text.slice(ASK_PREFIX.length).trim();
     if (!question) {
       seen("ignored, prefix with no question after it");
@@ -295,7 +333,8 @@ client.on("ready", () => {
   selfId = client.info?.wid?._serialized ?? "";
   log("ready as", selfId);
   log("tama", TAMA_URL);
-  log("allowed senders", ALLOWED.size ? [...ALLOWED].join(", ") : `none (self-chat only, ask prefix "${ASK_PREFIX}")`);
+  log("allowed senders", ALLOWED.size ? [...ALLOWED].join(", ") : "none (your own self-chat only)");
+  log("self-chat text", SELF_CHAT_TEXT === "ask" ? "answered as a question" : `ignored unless prefixed with "${ASK_PREFIX}"`);
 });
 
 client.on("auth_failure", (m) => {

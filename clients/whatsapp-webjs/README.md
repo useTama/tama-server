@@ -27,68 +27,81 @@ and does not know it exists — no `whatsapp` block, no webhook, no app secret.
 |---|---|
 | Voice note | transcribes and saves a note, replies with the path |
 | Voice note in your own self-chat | same |
-| `?what did I say about the mic gain` in self-chat | asks your notes, replies with the answer |
-| Plain text in self-chat | **ignored** — self-chat is also a scratchpad |
+| Text in your own self-chat | asks your notes — or is ignored, if you chose the scratchpad setting |
+| `?question` in self-chat | asks your notes either way |
 | Any text from an allowed contact | asks your notes |
 | Anything in a group | ignored |
 | Anything from a number not on the allowlist | ignored |
 
-Voice note captures, text asks. That mirrors the Cloud API adapter. Self-chat
-is the exception: plain text there is left alone so pasting yourself a link
-does not spend a model call, and the `?` prefix asks instead.
+Voice note captures, text asks. That mirrors the Cloud API adapter. Your own
+chat with yourself is the one place you get a choice, because it doubles as a
+scratchpad: `ignore` leaves plain text alone so pasting yourself a link does
+not spend a model call, and the prefix asks. `ask` is the default — a bot that
+says nothing when you talk to it reads as broken.
 
 ## Setup
 
-**1. Mint a device token.** Not the admin token — a device token, from pairing:
+The wizard does all of it. On a container deployment:
 
 ```sh
 cd ~/tama
-ADMIN=$(sudo grep -o '"adminToken": *"[^"]*"' config/tama.config.json | cut -d'"' -f4)
-CODE=$(curl -s -X POST localhost:8080/pair/code -H "Authorization: Bearer $ADMIN" | jq -r .code)
-curl -s -X POST localhost:8080/pair -H 'content-type: application/json' \
-  -d "{\"code\":\"$CODE\",\"deviceName\":\"whatsapp-bridge\"}" | jq -r .token
+docker compose run --rm setup
 ```
 
-**2. Put it in `.env`** alongside `docker-compose.yml`:
+Arrow through to **WhatsApp** — Enter keeps every saved answer — and choose
+**Link your own WhatsApp number**. It asks three things:
 
-```sh
-echo 'TAMA_TOKEN=paste_the_device_token' >> .env
-```
+| Question | What it means |
+|---|---|
+| Numbers allowed to message it | Other phones that may send notes and ask questions. Country code, digits only. Enter for none — your own self-chat always works. |
+| Plain text in your own chat with yourself | **Answer it** makes that chat your assistant. **Ignore it** keeps it a scratchpad, and a prefix asks. |
+| Prefix that marks a question | Only asked in "ignore" mode. Defaults to `?`. |
 
-Optionally allow other people to ask and send notes — your own number is
-already allowed through self-chat and does not need listing:
+It mints the device token itself and writes `config/whatsapp-bridge.json`
+(0600). There is no token to copy, and nothing to put in `.env`.
 
-```sh
-echo 'WA_ALLOWED=919876543210,918887776665' >> .env
-```
-
-**3. Start it and scan the QR:**
+Then start it and scan the QR:
 
 ```sh
 docker compose --profile whatsapp-webjs up -d --build
 docker compose --profile whatsapp-webjs logs -f whatsapp-webjs
 ```
 
-A QR code prints in the logs. On your phone: **WhatsApp → Settings → Linked
-devices → Link a device**. Scan it. The log then says `ready as <your number>`.
+On your phone: **WhatsApp → Settings → Linked devices → Link a device**. The
+log then says `ready as <your number>`. The session is saved to the
+`whatsapp-session` volume, so a rebuild does not ask again.
 
-The session is saved to the `whatsapp-session` volume, so a rebuild or restart
-does not ask again.
-
-**4. Test it.** Message yourself a voice note. Within a few seconds the reply
-is `Saved to your second brain.` and a path. Then send `?what did I just say`.
+**Test it:** message yourself a voice note. The reply is `Saved to your second
+brain.` and a path.
 
 Keep `--profile whatsapp-webjs` on every later `docker compose` command, or
 Compose treats this container as an orphan and stops it.
 
+### Changing it later
+
+```sh
+docker compose run --rm settings
+```
+
+Or on a source checkout, `tama-server settings`. The **WhatsApp bridge**
+section edits the allowed numbers, the self-chat behaviour and the token
+without walking the whole wizard; **Devices** lists what is paired and revokes
+one. Restart the bridge afterwards — it reads the file at startup.
+
 ## Environment
+
+Settings come from `config/whatsapp-bridge.json`, written by the wizard. These
+environment variables override it, for a one-off or a deployment that predates
+the wizard support:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TAMA_TOKEN` | — | device token, required |
+| `WA_SETTINGS` | `/etc/tama/whatsapp-bridge.json` | where the settings file is |
+| `TAMA_TOKEN` | from the file | device token |
 | `TAMA_URL` | `http://tama:8080` | the server, over the Compose network |
-| `WA_ALLOWED` | empty | comma-separated senders, country code + digits |
-| `WA_ASK_PREFIX` | `?` | what marks a self-chat message as a question |
+| `WA_ALLOWED` | from the file | comma-separated senders, country code + digits |
+| `WA_ASK_PREFIX` | from the file | what marks a self-chat message as a question |
+| `WA_SELF_CHAT_TEXT` | from the file | `ask` or `ignore` |
 | `WA_WEB_VERSION_HTML` | unset | pin the WhatsApp Web page (see below) |
 
 ## When it breaks

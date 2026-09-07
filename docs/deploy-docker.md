@@ -533,22 +533,24 @@ path is `/var/lib/docker/volumes/tama_tama-vault/_data`, root-owned. For a
 product whose pitch is "a folder you own", that is the wrong default once there
 is anything in it.
 
-To make it a real directory:
+One command:
 
 ```sh
-cd ~/tama
-echo 'TAMA_VAULT_DIR=/home/ubuntu/vault' >> .env
-
-# Copy what is already there, from inside a container so permissions are simple
-mkdir -p ~/vault
-docker run --rm -v tama_tama-vault:/from:ro -v "$HOME/vault":/to alpine \
-  sh -c 'cp -a /from/. /to/'
-sudo chown -R "$USER:$USER" ~/vault
-
-tama restart
-tama notes                      # same count as before
-ls ~/vault                      # your notes, as files
+tama vault move
 ```
+
+It says what it is about to do, asks, copies the notes out of the volume,
+chowns them to you, writes `TAMA_VAULT_DIR` into `.env`, restarts, and compares
+the note count before and after. The volume is left untouched, so it is
+reversible until you delete it yourself.
+
+`tama vault move /some/other/path` if you want it elsewhere.
+
+This is a host command rather than a step in `tama settings`, and the reason is
+structural: settings runs inside a container. It cannot write the host's `.env`,
+cannot `docker run` to copy a volume, cannot `chown` a host path, and has none
+of your SSH keys. Giving the configuration wizard the Docker socket so that it
+could is a far worse trade than one command on the host.
 
 Then the vault is a normal git repo you can open in an editor, push to a private
 remote, and clone down to Obsidian:

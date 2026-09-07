@@ -77,9 +77,68 @@ case $command in
   # The vault is a git repo; committing is how a note becomes recoverable.
   commit)   compose exec -T tama sh -c 'git -C /vault add -A && (git -C /vault diff --cached --quiet || git -C /vault commit -qm "tama commit") && git -C /vault log --oneline | head -1' ;;
 
-  # Where the notes actually are. Asked often enough to deserve a verb: by
-  # default they live in a Docker volume, which is a path nobody would guess.
+  # Where the notes actually are, and moving them somewhere you can open.
+  #
+  # This lives in the wrapper rather than in `tama settings` because settings
+  # runs inside a container: it cannot write the host's .env, cannot docker run
+  # to copy a volume, cannot chown a host path, and has none of your SSH keys.
+  # Handing the config wizard the Docker socket to make it possible would be a
+  # far worse trade than one host command.
   vault)
+    case ${1:-status} in
+      move)
+        shift
+        target=${1:-$HOME/vault}
+        current=$(vault_dir)
+        if [ -n "$current" ]; then
+          echo "The vault is already a folder: $current"
+          echo "Nothing to move. To change where it lives, edit TAMA_VAULT_DIR in .env."
+          exit 0
+        fi
+        volume=$(docker volume ls --format '{{.Name}}' | grep -E '_tama-vault$' | head -1)
+        if [ -z "$volume" ]; then echo "No tama vault volume found. Is this the right directory?" >&2; exit 1; fi
+
+        before=$(compose exec -T tama sh -c 'find /vault -name "*.md" | wc -l' 2>/dev/null | tr -d ' \r')
+        echo "Moving the vault out of Docker and into a folder you can open."
+        echo "  from:  volume $volume"
+        echo "  to:    $target"
+        echo "  notes: ${before:-unknown}"
+        echo ""
+        echo "The volume is left untouched, so this is reversible until you delete it."
+        printf 'Go ahead? [y/N]: '
+        read -r answer
+        case $answer in [yY]*) ;; *) echo "Nothing changed."; exit 0 ;; esac
+
+        mkdir -p "$target"
+        # Copied inside a container so the source needs no host permissions,
+        # and -a to keep the git directory and the file times intact.
+        docker run --rm -v "$volume":/from:ro -v "$target":/to alpine sh -c 'cp -a /from/. /to/'
+        sudo chown -R "$(id -u):$(id -g)" "$target"
+
+        # Replaced rather than appended: a second TAMA_VAULT_DIR line would win
+        # silently and leave the first one looking authoritative.
+        touch .env
+        sed -i '/^TAMA_VAULT_DIR=/d' .env
+        echo "TAMA_VAULT_DIR=$target" >> .env
+
+        compose up -d --build >/dev/null
+        after=$(find "$target" -name '*.md' -not -path '*/.*' | wc -l | tr -d ' ')
+        echo ""
+        echo "Moved. $after notes in $target"
+        if [ -n "$before" ] && [ "$before" != "$after" ]; then
+          echo "WARNING: the server counted $before before the move. Check before deleting the volume." >&2
+        fi
+        echo ""
+        echo "  ls $target"
+        echo "  tama vault                     where it is and what git thinks"
+        echo "  tama remote <git url>          if you want it pushed somewhere"
+        echo ""
+        echo "When you are satisfied:  docker volume rm $volume"
+        exit 0
+        ;;
+      status) ;;
+      *) echo "usage: tama vault [status|move [path]]" >&2; exit 2 ;;
+    esac
     dir=$(vault_dir)
     if [ -n "$dir" ]; then
       echo "vault:   $dir"
@@ -157,6 +216,7 @@ tama ask "question"         ask your notes from the terminal
 tama session PROJECT        record what a session did; summary on stdin
 tama notes                  how many Markdown notes are in the vault
 tama vault                  where the notes are, and their git state
+tama vault move [path]      move it out of Docker into a folder (default ~/vault)
 tama remote [url]           set or show the vault's git remote
 tama sync                   commit the vault and push it
 tama commit                 commit the vault's git repo

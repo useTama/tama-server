@@ -58,12 +58,13 @@ if (config.ask) {
   try {
     llm =
       config.ask.provider === "anthropic"
-        ? makeLlm({ provider: "anthropic", apiKey: config.ask.apiKey, model: config.ask.model })
+        ? makeLlm({ provider: "anthropic", apiKey: config.ask.apiKey, model: config.ask.model, maxTokens: config.ask.maxTokens })
         : makeLlm({
             provider: "openai-compatible",
             baseUrl: config.ask.baseUrl!,
             apiKey: config.ask.apiKey,
             model: config.ask.model,
+            maxTokens: config.ask.maxTokens,
           });
     console.log(`${grey("  ask    ")} ${llm.name}`);
   } catch (e) {

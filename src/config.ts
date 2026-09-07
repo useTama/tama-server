@@ -25,6 +25,12 @@ export type Config = {
     apiKeyEnv?: string;
     baseUrl?: string;
     maxChunks: number;
+    /**
+     * Output cap per answer. Optional: llm.ts owns the default, and the reason
+     * it is configurable is that a gateway refuses a request whose max_tokens
+     * exceeds the remaining balance, whatever the answer would have cost.
+     */
+    maxTokens?: number;
   };
   /**
    * Optional WhatsApp Cloud API transport. It is an adapter over capture and
@@ -55,6 +61,14 @@ export function configPathFromArgs(args: string[]): string {
   const path = args[flag + 1];
   if (!path || path.startsWith("--")) throw new Error("--config requires a path");
   return resolve(path);
+}
+
+function askMaxTokens(value: unknown): number {
+  const tokens = Number(value);
+  if (!Number.isInteger(tokens) || tokens < 1) {
+    throw new Error(`config: ask.maxTokens must be a positive whole number, got ${JSON.stringify(value)}`);
+  }
+  return tokens;
 }
 
 export function loadConfig(path = defaultConfigPath()): Config {
@@ -122,6 +136,7 @@ export function loadConfig(path = defaultConfigPath()): Config {
       apiKey: credential(raw.ask, "apiKey", provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
       baseUrl: raw.ask.baseUrl,
       maxChunks: Number(raw.ask.maxChunks ?? 8),
+      ...(raw.ask.maxTokens === undefined ? {} : { maxTokens: askMaxTokens(raw.ask.maxTokens) }),
     };
   }
 

@@ -53,7 +53,10 @@ export class OpenAiCompatibleLlm implements Llm {
   private readonly apiKey: string | undefined;
   private readonly model: string;
 
-  constructor(opts: { baseUrl: string; apiKey?: string; model: string }) {
+  private readonly maxTokens: number;
+
+  constructor(opts: { baseUrl: string; apiKey?: string; model: string; maxTokens?: number }) {
+    this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.baseUrl = normalizeBaseUrl(
       requireField(opts.baseUrl, "llm.baseUrl", 'ollama: "http://127.0.0.1:11434/v1"'),
     );
@@ -105,6 +108,11 @@ export class OpenAiCompatibleLlm implements Llm {
           body: JSON.stringify({
             model: this.model,
             stream: true,
+            // Sent even though the field is optional here: omitting it means
+            // the gateway's own default, which can be the model's maximum and
+            // large enough to be rejected as unaffordable before a token is
+            // generated.
+            max_tokens: this.maxTokens,
             // The system prompt is a message with role "system" in this format.
             // The Anthropic adapter below does the opposite, and that contrast
             // is the whole reason both files' worth of code exists.
@@ -211,11 +219,18 @@ export class OpenAiCompatibleLlm implements Llm {
 }
 
 /**
- * Streaming is what makes a generous cap safe: the same request unstreamed hits
- * the HTTP timeout before a long answer lands. 8192 is the floor every current
- * model accepts, and answers over a pile of notes do run long.
+ * The output cap, sent on every request, and low by design.
+ *
+ * It is not only a spend limit. A gateway checks the balance against
+ * `max_tokens` before running anything, so an uncapped request inherits the
+ * model's own maximum - 65536 on some - and is refused outright as
+ * unaffordable, however short the answer would have been. Not sending the field
+ * is therefore the expensive choice, not the permissive one.
+ *
+ * 2048 is a long answer over a handful of notes. Raise it with `ask.maxTokens`
+ * when the questions warrant it and the balance covers it.
  */
-const ANTHROPIC_MAX_TOKENS = 8192;
+export const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 /**
  * Anthropic via the official SDK.
@@ -228,7 +243,10 @@ export class AnthropicLlm implements Llm {
   private readonly client: Anthropic;
   private readonly model: string;
 
-  constructor(opts: { apiKey?: string; model: string }) {
+  private readonly maxTokens: number;
+
+  constructor(opts: { apiKey?: string; model: string; maxTokens?: number }) {
+    this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.model = requireField(opts.model, "llm.model", 'e.g. "claude-sonnet-5"');
     const apiKey = opts.apiKey?.trim();
     // A bare `new Anthropic()` resolves ANTHROPIC_API_KEY from the environment,
@@ -253,7 +271,7 @@ export class AnthropicLlm implements Llm {
     // when llm.model is bumped to the next release.
     const s = this.client.messages.stream({
       model: this.model,
-      max_tokens: ANTHROPIC_MAX_TOKENS,
+      max_tokens: this.maxTokens,
       system: opts.system,
       messages: opts.messages,
     });
@@ -276,8 +294,8 @@ export class AnthropicLlm implements Llm {
 }
 
 export type LlmConfig =
-  | { provider: "openai-compatible"; baseUrl: string; apiKey?: string; model: string }
-  | { provider: "anthropic"; apiKey?: string; model: string };
+  | { provider: "openai-compatible"; baseUrl: string; apiKey?: string; model: string; maxTokens?: number }
+  | { provider: "anthropic"; apiKey?: string; model: string; maxTokens?: number };
 
 /**
  * Field validation lives in the constructors, not here, so that constructing an

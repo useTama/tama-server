@@ -14,7 +14,8 @@ import { ConsoleNotifier, NtfyNotifier, safeNotify, type Notifier } from "./noti
 import { scheduleDigest, recordCapture, recordFailure, buildDigest, renderDigest } from "./digest.ts";
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
-import { ask, askOnce } from "./ask.ts";
+import { ask, askOnce, type PromptOptions } from "./ask.ts";
+import { resolveView, type View } from "./views.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
@@ -179,7 +180,43 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   });
 }
 
-type CaptureDevice = { id: string; deviceName: string };
+type CaptureDevice = { id: string; deviceName: string; audience?: string };
+
+/**
+ * What a caller is allowed to see and how the answer should sound, derived from
+ * the token rather than from the request.
+ *
+ * A client naming its own audience could name a different one, and the client
+ * most likely to be compromised is the unofficial WhatsApp bridge holding a
+ * browser session. So the bridge carries one token per audience and the server
+ * looks up the rest.
+ *
+ * No audience on the token means the owner's own device: everything, cited,
+ * which is what every token minted before audiences existed meant.
+ */
+function audienceProfile(name: string | undefined): { view?: View; prompt: PromptOptions } {
+  const worldName = config.world?.name;
+  if (!name) return { prompt: { name: worldName, voice: "friend", cite: true } };
+
+  const audience = config.audiences?.[name];
+  if (!audience) {
+    // The audience was removed from the config but its token still exists.
+    // Failing closed rather than falling back to the owner's view: a stale
+    // token must not inherit more access than it had.
+    throw new Error(`token names audience ${JSON.stringify(name)}, which is not in the config`);
+  }
+  return {
+    view: resolveView(config.views, audience.view),
+    prompt: {
+      name: worldName,
+      voice: audience.voice,
+      style: audience.length,
+      cite: audience.cite,
+      onNoMatch: audience.onNoMatch,
+      note: audience.note,
+    },
+  };
+}
 
 /** Shared delivery semantics for native clients and the WhatsApp adapter. */
 async function runCapture(req: Request, device: CaptureDevice, key: string | null): Promise<Response> {
@@ -248,7 +285,7 @@ const whatsapp = config.whatsapp
           retriever,
           llm,
           maxChunks: config.ask?.maxChunks,
-          style: "chat",
+          prompt: { name: config.world?.name, style: "chat", cite: false },
         });
         const ms = Math.round(performance.now() - started);
         console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms <${whatsappSource(input.sender, config.whatsapp!.appSecret)}>`)} `);
@@ -340,7 +377,7 @@ const server = Bun.serve({
     }
 
     const isAdmin = adminTokenOk(bearer, config.server.adminToken);
-    const device = isAdmin ? { id: "admin", deviceName: "admin" } : verifyToken(db, bearer);
+    const device: CaptureDevice | null = isAdmin ? { id: "admin", deviceName: "admin" } : verifyToken(db, bearer);
     if (!device) return json({ error: "unauthorized" }, 401);
 
     if (url.pathname === "/capture" && req.method === "POST") {
@@ -352,17 +389,25 @@ const server = Bun.serve({
     // anything that can write to the vault can already read it back.
     if (url.pathname === "/ask" && req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { question?: string; stream?: boolean; style?: string };
-      // A client that renders the answer in a chat bubble says so, and gets
-      // plain text, no note paths, and a couple of sentences. Anything else
-      // keeps the prose answer a terminal or a web UI wants.
-      const style = b.style === "chat" ? "chat" as const : "prose" as const;
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
+
+      let profile: { view?: View; prompt: PromptOptions };
+      try {
+        profile = audienceProfile(device.audience);
+      } catch (e) {
+        console.error("ask refused:", e instanceof Error ? e.message : e);
+        return json({ error: "this device is no longer configured" }, 403);
+      }
+      // The owner may still ask for the chat shape from a chat client; an
+      // audience's own length is not overridable, because a scoped chat asking
+      // for prose is asking for note paths it was not given.
+      if (!device.audience && b.style === "chat") profile.prompt.style = "chat";
 
       // Retrieval works with no model configured, so say which half is missing
       // rather than pretending the whole endpoint does not exist.
       if (!llm) {
-        const chunks = await retriever.search(question, config.ask?.maxChunks ?? 8);
+        const chunks = await retriever.search(question, config.ask?.maxChunks ?? 8, profile.view);
         return json(
           {
             error: "no language model configured, so questions cannot be answered",
@@ -381,7 +426,7 @@ const server = Bun.serve({
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, style })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
               }
             } catch (e) {
@@ -404,7 +449,7 @@ const server = Bun.serve({
       const started = performance.now();
       let answer = "";
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, style })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") answer = ev.answer;
         else if (ev.type === "error") {
@@ -414,7 +459,9 @@ const server = Bun.serve({
       }
       const ms = Math.round(performance.now() - started);
       console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms <${device.deviceName}>`)}`);
-      return json({ ok: true, question, answer, sources, ms });
+      // Withheld, not just uncited: a path in the JSON is the same disclosure
+      // as a path in the answer, and a chat client logs what it receives.
+      return json({ ok: true, question, answer, sources: profile.prompt.cite === false ? [] : sources, ms });
     }
 
     // --- admin only ---

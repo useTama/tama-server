@@ -24,7 +24,15 @@ export function openDb(path: string): Database {
       device_name TEXT NOT NULL,
       created_at  TEXT NOT NULL,
       last_used   TEXT,
-      revoked_at  TEXT
+      revoked_at  TEXT,
+      -- Which audience this token speaks as. NULL is the owner: everything,
+      -- unrestricted, which is what every token minted before audiences
+      -- existed has to keep meaning.
+      --
+      -- It lives on the token rather than in the request because a client that
+      -- names its own audience can name a different one. The bridge holds one
+      -- token per audience; the server decides what each may see.
+      audience    TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -132,6 +140,13 @@ export function openDb(path: string): Database {
   const whatsappColumns = db.query("PRAGMA table_info(whatsapp_messages)").all() as { name: string }[];
   if (whatsappColumns.length && !whatsappColumns.some((c) => c.name === "reply")) {
     db.exec("ALTER TABLE whatsapp_messages ADD COLUMN reply TEXT");
+  }
+
+  // Added after the first releases, so an existing database needs it. Cheaper
+  // and clearer than a migrations table for one additive, nullable column.
+  const columns = db.query("PRAGMA table_info(tokens)").all() as { name: string }[];
+  if (!columns.some((c) => c.name === "audience")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN audience TEXT");
   }
 
   return db;

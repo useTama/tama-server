@@ -15,26 +15,31 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-export type TokenRow = { id: string; device_name: string; created_at: string; last_used: string | null };
+export type TokenRow = { id: string; device_name: string; created_at: string; last_used: string | null; audience: string | null };
 
-export function mintToken(db: Database, deviceName: string): { id: string; token: string } {
+export function mintToken(db: Database, deviceName: string, audience?: string): { id: string; token: string } {
   const id = randomBytes(8).toString("hex");
   const token = randomBytes(32).toString("hex");
   db.query(
-    "INSERT INTO tokens (id, hash, device_name, created_at) VALUES (?, ?, ?, ?)",
-  ).run(id, sha256(token), deviceName.slice(0, 64), new Date().toISOString());
+    "INSERT INTO tokens (id, hash, device_name, created_at, audience) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, sha256(token), deviceName.slice(0, 64), new Date().toISOString(), audience ?? null);
   return { id, token };
 }
 
 /** Returns the device name if the token is valid and not revoked. */
-export function verifyToken(db: Database, token: string): { id: string; deviceName: string } | null {
+/**
+ * `audience` is null for the owner's own devices, which is every token minted
+ * before audiences existed. Returning it here is what lets a route decide what
+ * a caller may see without trusting the caller to say.
+ */
+export function verifyToken(db: Database, token: string): { id: string; deviceName: string; audience?: string } | null {
   if (!token) return null;
   const row = db
-    .query("SELECT id, device_name FROM tokens WHERE hash = ? AND revoked_at IS NULL")
-    .get(sha256(token)) as { id: string; device_name: string } | null;
+    .query("SELECT id, device_name, audience FROM tokens WHERE hash = ? AND revoked_at IS NULL")
+    .get(sha256(token)) as { id: string; device_name: string; audience: string | null } | null;
   if (!row) return null;
   db.query("UPDATE tokens SET last_used = ? WHERE id = ?").run(new Date().toISOString(), row.id);
-  return { id: row.id, deviceName: row.device_name };
+  return { id: row.id, deviceName: row.device_name, ...(row.audience ? { audience: row.audience } : {}) };
 }
 
 export function revokeToken(db: Database, id: string): boolean {
@@ -45,7 +50,7 @@ export function revokeToken(db: Database, id: string): boolean {
 
 export function listTokens(db: Database): TokenRow[] {
   return db
-    .query("SELECT id, device_name, created_at, last_used FROM tokens WHERE revoked_at IS NULL ORDER BY created_at")
+    .query("SELECT id, device_name, created_at, last_used, audience FROM tokens WHERE revoked_at IS NULL ORDER BY created_at")
     .all() as TokenRow[];
 }
 

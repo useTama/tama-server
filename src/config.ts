@@ -1,6 +1,8 @@
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { SARVAM_URL, type SttConfig } from "./stt.ts";
+import { BUILTIN_VIEWS, resolveView, type View } from "./views.ts";
+import type { AnswerStyle, Voice } from "./ask.ts";
 
 export type Config = {
   vault: { path: string; inbox: string };
@@ -33,6 +35,20 @@ export type Config = {
     maxTokens?: number;
   };
   /**
+   * What the user named this. The wizard asks, so the assistant should use it
+   * rather than calling itself Tama at someone who named it something else.
+   */
+  world?: { name?: string };
+  /** Named subsets of the vault, referenced by audiences. See views.ts. */
+  views?: Record<string, View>;
+  /**
+   * Who may talk to this vault, and what they get. Keyed by name, because a
+   * client refers to an audience by name and more than one client will: the
+   * same audience is reachable over WhatsApp, Slack and the web UI, so only the
+   * matching belongs in a client's own config.
+   */
+  audiences?: Record<string, Audience>;
+  /**
    * Optional WhatsApp Cloud API transport. It is an adapter over capture and
    * ask, not a dependency of either path: deleting this block removes every
    * WhatsApp route and leaves the core HTTP API unchanged.
@@ -61,6 +77,69 @@ export function configPathFromArgs(args: string[]): string {
   const path = args[flag + 1];
   if (!path || path.startsWith("--")) throw new Error("--config requires a path");
   return resolve(path);
+}
+
+/**
+ * An audience is deliberately all closed sets except `note`.
+ *
+ * Every field a person configures per group has a small number of legal values,
+ * so `tama settings` can offer menus and a config file can be reviewed at a
+ * glance. The one freeform field carries facts about the room, never policy.
+ */
+export type Audience = {
+  /** A view name. Defaults to `none`, so a misconfigured audience knows nothing. */
+  view: string;
+  voice: Voice;
+  /** Whether answers may name note paths. Off for anywhere shared. */
+  cite: boolean;
+  length: AnswerStyle;
+  onNoMatch: "say-so" | "just-talk";
+  /** Whether a group is answered always, or only when the bot is mentioned. */
+  mention: "always" | "when-mentioned";
+  /** Never captures into the vault. Groups default to false. */
+  capture: boolean;
+  note?: string;
+};
+
+const VOICE_NAMES: Voice[] = ["neutral", "friend", "roast"];
+
+function parseAudience(name: string, raw: any, views: Record<string, View>): Audience {
+  const enumerated = <T extends string>(field: string, value: unknown, allowed: readonly T[], fallback: T): T => {
+    if (value === undefined) return fallback;
+    if (!allowed.includes(value as T)) {
+      throw new Error(`config: audiences.${name}.${field} must be one of ${allowed.join(", ")}, got ${JSON.stringify(value)}`);
+    }
+    return value as T;
+  };
+
+  // Resolved here rather than at request time so a typo is a startup failure.
+  // A view name that silently meant "everything" is the exact accident this
+  // mechanism exists to prevent, and the audience that gets it wrong is
+  // typically the one shared with other people.
+  const view = String(raw?.view ?? "none");
+  resolveView(views, view);
+
+  const audience: Audience = {
+    view,
+    voice: enumerated("voice", raw?.voice, VOICE_NAMES, "friend"),
+    cite: raw?.cite === undefined ? view === "everything" : Boolean(raw.cite),
+    length: enumerated("length", raw?.length, ["prose", "chat"] as const, "chat"),
+    onNoMatch: enumerated("onNoMatch", raw?.onNoMatch, ["say-so", "just-talk"] as const, "say-so"),
+    mention: enumerated("mention", raw?.mention, ["always", "when-mentioned"] as const, "always"),
+    capture: Boolean(raw?.capture ?? false),
+  };
+  if (raw?.note !== undefined) audience.note = String(raw.note);
+
+  // The combination that turns the assistant into a fabricator: nothing to read
+  // and licence to answer anyway. Legal for a banter-only group, so it is a
+  // warning rather than an error, but it should never be arrived at silently.
+  if (audience.onNoMatch === "just-talk" && audience.view !== "none") {
+    console.error(
+      `config: audiences.${name} answers even when nothing was found, while also being able to read ${audience.view}. ` +
+        `That mixes grounded and ungrounded answers in one chat, and a reader cannot tell which they got.`,
+    );
+  }
+  return audience;
 }
 
 function askMaxTokens(value: unknown): number {
@@ -140,6 +219,27 @@ export function loadConfig(path = defaultConfigPath()): Config {
     };
   }
 
+  const rawViews = (raw.views ?? {}) as Record<string, unknown>;
+  const views: Record<string, View> = {};
+  for (const [name, raw] of Object.entries(rawViews)) {
+    if (name in BUILTIN_VIEWS) {
+      throw new Error(`config: views.${name} would shadow a built-in view. rename it`);
+    }
+    const include = (raw as any)?.include;
+    const exclude = (raw as any)?.exclude;
+    for (const [field, value] of [["include", include], ["exclude", exclude]] as const) {
+      if (value !== undefined && (!Array.isArray(value) || value.some((g) => typeof g !== "string"))) {
+        throw new Error(`config: views.${name}.${field} must be a list of path patterns`);
+      }
+    }
+    views[name] = { ...(include === undefined ? {} : { include }), ...(exclude === undefined ? {} : { exclude }) };
+  }
+
+  const audiences: Record<string, Audience> = {};
+  for (const [name, entry] of Object.entries((raw.audiences ?? {}) as Record<string, unknown>)) {
+    audiences[name] = parseAudience(name, entry, views);
+  }
+
   let whatsapp: Config["whatsapp"];
   if (raw.whatsapp) {
     const phoneNumberId = String(raw.whatsapp.phoneNumberId ?? "").trim();
@@ -191,6 +291,9 @@ export function loadConfig(path = defaultConfigPath()): Config {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
     whatsapp,
+    ...(raw.world?.name ? { world: { name: String(raw.world.name) } } : {}),
+    views,
+    audiences,
     stt: {
       provider: sttProvider,
       // `baseUrl` is what the ask block calls the same thing, so accept either.

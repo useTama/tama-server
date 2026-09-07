@@ -284,3 +284,9 @@ reaches a server whose port is loopback-only:
 ```sh
 echo "fixed the mention detection" | ssh ubuntu@YOUR_SERVER 'cd tama && tama session tama'
 ```
+
+## POST /mcp
+
+The same capabilities as the routes above, spoken as Model Context Protocol, so
+Claude Code and Claude Desktop can use the vault as tools. Same bearer token,
+same audience scoping. See [mcp.md](mcp.md).

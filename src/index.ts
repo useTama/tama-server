@@ -19,6 +19,7 @@ import { ask, askOnce, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { appendSession } from "./session.ts";
+import { handleMcp, MCP_TOOL_NAMES } from "./mcp.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
@@ -365,6 +366,7 @@ const server = Bun.serve({
         // Advertised so a client can hide or show an ask affordance instead of
         // discovering the answer by getting a 501 mid-question.
         ask: llm ? { available: true, provider: llm.name } : { available: false },
+        mcp: { available: true, tools: MCP_TOOL_NAMES.length },
         whatsapp: { available: Boolean(whatsapp) },
       });
     }
@@ -431,6 +433,36 @@ const server = Bun.serve({
     if (url.pathname === "/capture" && req.method === "POST") {
       const key = req.headers.get("idempotency-key");
       return runCapture(req, device, key);
+    }
+
+    // The same five capabilities as the routes above, spoken as MCP. Placed
+    // after the bearer check so it inherits one auth surface rather than
+    // inventing a second: the spec's OAuth mandate is for internet-facing
+    // servers, and a personal daemon behind a static token is explicitly
+    // sufficient.
+    if (url.pathname === "/mcp") {
+      let profile: { view?: View; prompt: PromptOptions };
+      try {
+        profile = audienceProfile(device.audience);
+      } catch (e) {
+        console.error("mcp refused:", e instanceof Error ? e.message : e);
+        return json({ error: "this device is no longer configured" }, 403);
+      }
+      return handleMcp(req, {
+        deviceName: device.deviceName,
+        audience: device.audience,
+        view: profile.view,
+        // An audience reads. A group's token holding a write tool would be the
+        // first way a room could put something into somebody's notes.
+        mayWrite: !device.audience,
+      }, {
+        retriever,
+        vault,
+        db,
+        vaultRoot: config.vault.path,
+        maxChunks: config.ask?.maxChunks ?? 8,
+        worldName: config.world?.name,
+      });
     }
 
     // Writing at a chosen path is the owner's own device only. An audience

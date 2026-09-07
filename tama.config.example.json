@@ -5,6 +5,9 @@
     "openai-compatible: POST {url}/audio/transcriptions. Needs url and model.",
     "  Groq:   { provider: openai-compatible, url: https://api.groq.com/openai/v1, model: whisper-large-v3 }",
     "  OpenAI: { provider: openai-compatible, url: https://api.openai.com/v1, model: whisper-1 }",
+    "sarvam:            POST {url}/speech-to-text. Indian languages and code-mixed speech.",
+    "  Sarvam: { provider: sarvam, model: saaras:v3, language: unknown }",
+    "  url and model default; language is BCP-47 (hi-IN, en-IN, ta-IN) or unknown to auto-detect.",
     "Either provider may carry a credential, sent as Bearer: apiKey, apiKeyEnv, or apiKeyFile.",
     "apiKeyFile is a path relative to this file; setup writes those with mode 0600."
   ],

@@ -1,6 +1,6 @@
 import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import type { SttConfig } from "./stt.ts";
+import { SARVAM_URL, type SttConfig } from "./stt.ts";
 
 export type Config = {
   vault: { path: string; inbox: string };
@@ -89,11 +89,16 @@ export function loadConfig(path = defaultConfigPath()): Config {
   // stt.provider selects a wire format, so an unrecognized value has to fail
   // here and not as an opaque 404 on the first capture of the day.
   const sttProvider = raw.stt?.provider ?? "whisper-cpp";
-  if (sttProvider !== "whisper-cpp" && sttProvider !== "openai-compatible") {
-    throw new Error(`config: stt.provider must be "whisper-cpp" or "openai-compatible", got ${JSON.stringify(sttProvider)}`);
+  if (sttProvider !== "whisper-cpp" && sttProvider !== "openai-compatible" && sttProvider !== "sarvam") {
+    throw new Error(`config: stt.provider must be "whisper-cpp", "openai-compatible" or "sarvam", got ${JSON.stringify(sttProvider)}`);
   }
+  // Sarvam serves a default model and whisper.cpp serves whatever it was
+  // started with; only the OpenAI shape genuinely cannot guess.
   if (sttProvider === "openai-compatible" && !raw.stt?.model) {
     throw new Error("config: stt.model is required for the openai-compatible provider (e.g. whisper-large-v3)");
+  }
+  if (sttProvider === "sarvam" && !credential(raw.stt)) {
+    throw new Error("config: sarvam needs an API key. set stt.apiKey, stt.apiKeyEnv or stt.apiKeyFile");
   }
 
   // Absent `ask` is the normal case, not an error. Only validate once someone
@@ -174,8 +179,9 @@ export function loadConfig(path = defaultConfigPath()): Config {
     stt: {
       provider: sttProvider,
       // `baseUrl` is what the ask block calls the same thing, so accept either.
-      url: raw.stt?.baseUrl ?? raw.stt?.url ?? "http://127.0.0.1:8081",
+      url: raw.stt?.baseUrl ?? raw.stt?.url ?? (sttProvider === "sarvam" ? SARVAM_URL : "http://127.0.0.1:8081"),
       model: raw.stt?.model ? String(raw.stt.model) : undefined,
+      language: raw.stt?.language ? String(raw.stt.language) : undefined,
       apiKey: credential(raw.stt),
     },
     server: { port: raw.server?.port ?? 8080, adminToken: String(raw.server.adminToken) },

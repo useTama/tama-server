@@ -38,10 +38,27 @@ test("ntfy requires a topic", async () => {
 
 test("stt defaults to whisper.cpp and rejects a provider it cannot speak to", async () => {
   const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
-  expect(loadConfig(bare).stt).toEqual({ provider: "whisper-cpp", url: "http://127.0.0.1:8081", model: undefined, apiKey: undefined });
+  expect(loadConfig(bare).stt).toEqual({ provider: "whisper-cpp", url: "http://127.0.0.1:8081", model: undefined, language: undefined, apiKey: undefined });
 
-  const sarvam = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, stt: { provider: "sarvam", url: "https://api.sarvam.ai" } });
-  expect(() => loadConfig(sarvam)).toThrow(/stt.provider must be/);
+  const unknown = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" }, stt: { provider: "deepgram", url: "https://api.deepgram.com" } });
+  expect(() => loadConfig(unknown)).toThrow(/stt.provider must be/);
+});
+
+test("sarvam defaults its own base url and carries a language hint", async () => {
+  const keyless = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "sarvam" } });
+  expect(() => loadConfig(keyless)).toThrow(/sarvam needs an API key/);
+
+  // No url and no model: both are Sarvam's to default, unlike the OpenAI shape.
+  const path = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" },
+    stt: { provider: "sarvam", apiKey: "sk-fixture", language: "hi-IN" } });
+  expect(loadConfig(path).stt).toEqual({
+    provider: "sarvam",
+    url: "https://api.sarvam.ai",
+    model: undefined,
+    language: "hi-IN",
+    apiKey: "sk-fixture",
+  });
 });
 
 test("a hosted stt provider must name a model, and baseUrl reads the same as url", async () => {
@@ -55,6 +72,7 @@ test("a hosted stt provider must name a model, and baseUrl reads the same as url
     provider: "openai-compatible",
     url: "https://api.groq.com/openai/v1",
     model: "whisper-large-v3",
+    language: undefined,
     apiKey: undefined,
   });
 });

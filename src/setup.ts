@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
 import { assertSeparateImportRoots, collectMarkdown, importMarkdownFolder } from "./import.ts";
 import { configPathFromArgs, loadConfig } from "./config.ts";
-import { Stt, SPEECH_MODEL, type SttConfig } from "./stt.ts";
+import { Stt, SPEECH_MODEL, SARVAM_URL, SARVAM_DEFAULT_MODEL, type SttConfig } from "./stt.ts";
 import * as whisper from "./whisper.ts";
 import { tama, red, grey, bold, ok, warn } from "./ui.ts";
 
@@ -290,10 +290,10 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     // whether a key is likely, but they are separate lines because "where is
     // whisper running" is the question the user can actually answer.
     const sttChoice = await choose("Speech-to-text", [
-      { value: "here", label: "Whisper on this machine" },
+      { value: "api", label: "A transcription API (Groq, OpenAI, Sarvam, …)" },
+      { value: "here", label: "Whisper on this machine (private; needs CPU and a model download)" },
       { value: "remote", label: "Whisper on another machine" },
-      { value: "api", label: "A transcription API (Groq, OpenAI, …)" },
-    ], current?.stt.provider === "openai-compatible" ? "api" : "here");
+    ], current?.stt.provider === "whisper-cpp" ? "here" : "api");
 
     let stt: SttAnswer;
     let sttKey: string | undefined;
@@ -301,11 +301,12 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       const providers = [
         { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
         { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
+        { value: "sarvam", label: "Sarvam (Indian languages, code-mixed speech)", url: SARVAM_URL, keys: "https://dashboard.sarvam.ai" },
       ];
       const chosen = await choose("Choose your transcription provider", [
         ...providers,
         { value: "custom", label: "Custom provider (OpenAI-compatible /audio/transcriptions)" },
-      ], "groq");
+      ], current?.stt.provider === "sarvam" ? "sarvam" : "groq");
       const preset = providers.find(p => p.value === chosen);
       console.log(warn("Your recordings will be uploaded to this provider."));
       if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
@@ -320,34 +321,60 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
         }
         sttKey = await secret("API key");
       }
-      console.log(grey("Loading available models…"));
-      let speech: string[] = [];
-      let verified = false;
-      // Only the network call is guarded. Cancelling out of the menu below has
-      // to stay a cancellation, not get reported as an unreachable provider.
-      try {
-        speech = (await listModels(baseUrl, sttKey)).filter(m => SPEECH_MODEL.test(m)).slice(0, 12);
-        verified = true;
-      } catch {
-        console.log(warn("Could not list models. Check the address and API key; you can still enter a model name."));
+      if (chosen === "sarvam") {
+        // Sarvam publishes no model listing to shop from, and has two models
+        // worth offering, so this menu is the documented set, not a discovery call.
+        const model = await choose("Choose a Sarvam model", [
+          { value: "saaras:v3", label: "saaras:v3 (default)" },
+          { value: "saaras:v4", label: "saaras:v4 (newer)" },
+        ], current?.stt.model ?? SARVAM_DEFAULT_MODEL);
+        // Sarvam takes a spoken-language hint that whisper infers for itself.
+        const language = await choose("Spoken language", [
+          { value: "unknown", label: "Detect automatically" },
+          { value: "en-IN", label: "English (India)" },
+          { value: "hi-IN", label: "Hindi" },
+          { value: "bn-IN", label: "Bengali" },
+          { value: "ta-IN", label: "Tamil" },
+          { value: "te-IN", label: "Telugu" },
+          { value: "mr-IN", label: "Marathi" },
+          { value: "kn-IN", label: "Kannada" },
+        ], current?.stt.language ?? "unknown");
+        stt = { provider: "sarvam", url: baseUrl, model, language };
+        // No unauthenticated listing route exists here, so this is reachability
+        // only. A wrong key first shows up on the first capture, not now.
+        console.log(await new Stt({ ...stt, apiKey: sttKey }).health()
+          ? ok(`Sarvam reachable ${grey("(the API key is not verified until the first capture)")}.`)
+          : warn("Could not reach Sarvam. Check the address and your network."));
+      } else {
+        console.log(grey("Loading available models…"));
+        let speech: string[] = [];
+        let verified = false;
+        // Only the network call is guarded. Cancelling out of the menu below has
+        // to stay a cancellation, not get reported as an unreachable provider.
+        try {
+          speech = (await listModels(baseUrl, sttKey)).filter(m => SPEECH_MODEL.test(m)).slice(0, 12);
+          verified = true;
+        } catch {
+          console.log(warn("Could not list models. Check the address and API key; you can still enter a model name."));
+        }
+        if (verified && speech.length === 0) console.log(warn("No transcription models in this account's listing. Enter one by name below."));
+        let model = speech.length > 0
+          ? await choose("Choose a transcription model", [
+              ...speech.map(m => ({ value: m, label: m })),
+              { value: "__manual__", label: "Enter a model name myself" },
+            ], speech[0]!)
+          : "";
+        if (!model || model === "__manual__") {
+          do { model = await ask("Model name", current?.stt.model ?? "whisper-large-v3"); } while (!model);
+        }
+        stt = { provider: "openai-compatible", url: baseUrl, model };
+        // Listing models proves the address and the key. Whether this particular
+        // model accepts audio is only knowable by sending some, which setup does
+        // not do: a transcription request costs money and needs a recording.
+        console.log(verified
+          ? ok(`Provider reachable and the API key works ${grey("(audio transcription not yet tested)")}.`)
+          : warn("Could not verify the provider or the key. Setup can be saved, but transcription is not verified."));
       }
-      if (verified && speech.length === 0) console.log(warn("No transcription models in this account's listing. Enter one by name below."));
-      let model = speech.length > 0
-        ? await choose("Choose a transcription model", [
-            ...speech.map(m => ({ value: m, label: m })),
-            { value: "__manual__", label: "Enter a model name myself" },
-          ], speech[0]!)
-        : "";
-      if (!model || model === "__manual__") {
-        do { model = await ask("Model name", current?.stt.model ?? "whisper-large-v3"); } while (!model);
-      }
-      stt = { provider: "openai-compatible", url: baseUrl, model };
-      // Listing models proves the address and the key. Whether this particular
-      // model accepts audio is only knowable by sending some, which setup does
-      // not do: a transcription request costs money and needs a recording.
-      console.log(verified
-        ? ok(`Provider reachable and the API key works ${grey("(audio transcription not yet tested)")}.`)
-        : warn("Could not verify the provider or the key. Setup can be saved, but transcription is not verified."));
     } else {
       console.log(grey(sttChoice === "here"
         ? "Start whisper-server on this machine, then enter its address below."

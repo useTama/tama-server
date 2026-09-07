@@ -38,6 +38,8 @@ import { appendSession } from "./session.ts";
 
 /** Everything a tool needs, passed in so this file owns no state. */
 export type McpDeps = {
+  /** Called after a write, so an MCP append is committed like any other. */
+  onWrite?: () => void;
   retriever: Retriever;
   vault: Vault;
   db: Database;
@@ -180,6 +182,7 @@ const TOOLS: Tool[] = [
       if (!relPath || !text.trim()) return { text: "path and text are both required", isError: true };
       try {
         const result = await deps.vault.appendMarkdown(relPath, text);
+        deps.onWrite?.();
         return { text: `${result.created ? "Created" : "Appended to"} ${result.relPath} (${result.bytes} bytes).` };
       } catch (e) {
         return { text: e instanceof Error ? e.message : "could not write that note", isError: true };
@@ -216,6 +219,7 @@ const TOOLS: Tool[] = [
           learned: list(args.learned),
           next: list(args.next),
         });
+        deps.onWrite?.();
         return { text: `${result.created ? "Started" : "Appended to"} ${result.relPath} (${result.bytes} bytes).` };
       } catch (e) {
         return { text: e instanceof Error ? e.message : "could not record the session", isError: true };

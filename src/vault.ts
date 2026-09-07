@@ -54,6 +54,83 @@ export class Vault {
   }
 
   /** Invariant 3: refuse to run against an unprotected vault. */
+  /**
+   * Commit whatever has changed, if anything has.
+   *
+   * The vault has been git-tracked since the first release and nothing ever
+   * committed, so the repository had one commit from `git init` and a hundred
+   * uncommitted files. That made the git requirement decorative: `git checkout`
+   * recovers nothing when there is no commit to recover to, and a working copy
+   * elsewhere cannot pull from a tree that is permanently dirty.
+   *
+   * So tama commits its own writes. Debounced by the caller, because a burst of
+   * captures should be one commit rather than nine.
+   */
+  async commit(message?: string): Promise<{ committed: boolean; detail: string }> {
+    if (this.dryRun) return { committed: false, detail: "dry run" };
+    await this.ensureGitignore();
+
+    const run = async (args: string[]): Promise<{ code: number; out: string }> => {
+      const child = Bun.spawn(["git", "-C", this.root, ...args], { stdout: "pipe", stderr: "pipe" });
+      const [out, err] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { code: await child.exited, out: `${out}${err}` };
+    };
+
+    // -uall, because plain --porcelain collapses an untracked directory into
+    // one entry: the first commit of a new vault reported "Projects/" rather
+    // than the note inside it, which is the one thing the message is for.
+    const status = await run(["status", "--porcelain", "-uall"]);
+    if (status.code !== 0) return { committed: false, detail: status.out.trim() };
+    const changed = status.out.trim().split("\n").filter(Boolean);
+    if (changed.length === 0) return { committed: false, detail: "nothing to commit" };
+
+    // Named in the message, because a log of "tama: 1 change" tells you nothing
+    // six weeks later and the paths are what you would search for.
+    const paths = changed.map((line) => line.slice(3)).filter(Boolean);
+    const subject = message
+      ?? (paths.length === 1
+        ? `tama: ${paths[0]}`
+        : `tama: ${paths.length} notes (${paths.slice(0, 3).join(", ")}${paths.length > 3 ? ", …" : ""})`);
+
+    const add = await run(["add", "-A"]);
+    if (add.code !== 0) return { committed: false, detail: add.out.trim() };
+    const commit = await run(["commit", "-q", "-m", subject.slice(0, 200)]);
+    if (commit.code !== 0) return { committed: false, detail: commit.out.trim() };
+    return { committed: true, detail: subject };
+  }
+
+  /**
+   * The lines the vault's own repository needs ignored.
+   *
+   * `.tama/` is the write journal: tama's bookkeeping, not the user's notes,
+   * and it was being committed into their history. The rest is per-machine
+   * editor state that appears the moment a working copy is opened in Obsidian
+   * and churns on every pane change.
+   *
+   * Appended, never rewritten. It is the user's file and they may have their
+   * own entries in it.
+   */
+  private async ensureGitignore(): Promise<void> {
+    const wanted = [".tama/", ".obsidian/workspace.json", ".obsidian/cache/", ".DS_Store", ".trash/"];
+    const path = join(this.root, ".gitignore");
+    let existing = "";
+    try {
+      existing = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
+    }
+    const have = new Set(existing.split("\n").map((l) => l.trim()));
+    const missing = wanted.filter((line) => !have.has(line));
+    if (missing.length === 0) return;
+
+    const header = existing.includes("# tama") ? "" : "# tama: bookkeeping and per-machine editor state\n";
+    const body = `${existing && !existing.endsWith("\n") ? "\n" : ""}${header}${missing.join("\n")}\n`;
+    await appendFile(path, body, "utf8");
+  }
+
   async preflight(): Promise<void> {
     if (!existsSync(this.root)) throw new Error(`vault does not exist: ${this.root}`);
     const s = await stat(this.root);

@@ -36,6 +36,25 @@ cd "$TAMA_DIR"
 # common way to break a working install, so the wrapper always passes it.
 compose() { docker compose --profile whatsapp-webjs "$@"; }
 
+# Where the vault is on this host, or empty when it is still a Docker volume.
+# Read from .env rather than the config, because the config's path is a
+# container path and this runs outside.
+vault_dir() {
+  [ -f .env ] || return 0
+  dir=$(sed -n 's/^TAMA_VAULT_DIR=//p' .env | tail -1)
+  [ -n "$dir" ] && [ -d "$dir" ] && printf '%s' "$dir"
+}
+
+require_vault_dir() {
+  dir=$(vault_dir)
+  if [ -z "$dir" ]; then
+    echo "The vault is still inside a Docker volume, so git on this host cannot reach it." >&2
+    echo "Move it to a folder first: docs/deploy-docker.md section 13b" >&2
+    return 1
+  fi
+  printf '%s' "$dir"
+}
+
 # The wizards still build, so that a `git pull` takes effect rather than running
 # whatever the image happened to contain - a stale settings image is how you end
 # up answering questions the running code does not read. Cached, that is about a
@@ -57,6 +76,55 @@ case $command in
   health)   curl -s localhost:8080/health ;;
   # The vault is a git repo; committing is how a note becomes recoverable.
   commit)   compose exec -T tama sh -c 'git -C /vault add -A && (git -C /vault diff --cached --quiet || git -C /vault commit -qm "tama commit") && git -C /vault log --oneline | head -1' ;;
+
+  # Where the notes actually are. Asked often enough to deserve a verb: by
+  # default they live in a Docker volume, which is a path nobody would guess.
+  vault)
+    dir=$(vault_dir)
+    if [ -n "$dir" ]; then
+      echo "vault:   $dir"
+      echo "notes:   $(find "$dir" -name '*.md' -not -path '*/.*' 2>/dev/null | wc -l | tr -d ' ')"
+      echo "git:     $(git -C "$dir" log --oneline -1 2>/dev/null || echo 'no commits yet')"
+      uncommitted=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      [ "$uncommitted" = "0" ] || echo "pending: $uncommitted uncommitted change(s)"
+      remote=$(git -C "$dir" remote get-url --push origin 2>/dev/null || true)
+      echo "remote:  ${remote:-none. set one with: tama remote <url>}"
+    else
+      echo "vault:   inside the Docker volume tama_tama-vault"
+      echo "         /var/lib/docker/volumes/tama_tama-vault/_data (root-owned)"
+      echo "notes:   $(compose exec -T tama sh -c 'find /vault -name "*.md" | wc -l' 2>/dev/null | tr -d ' \r')"
+      echo ""
+      echo "To make it a folder you can open, and push to a remote:"
+      echo "  see docs/deploy-docker.md section 13b"
+    fi
+    ;;
+
+  # Pushing happens on the host, not in the container: the host has the SSH
+  # keys and the agent, and putting a deploy key inside an image to push
+  # somebody's private notes is the wrong shape.
+  remote)
+    dir=$(require_vault_dir) || exit 1
+    if [ $# -eq 0 ]; then git -C "$dir" remote -v; exit 0; fi
+    if git -C "$dir" remote get-url origin >/dev/null 2>&1; then
+      git -C "$dir" remote set-url origin "$1"
+    else
+      git -C "$dir" remote add origin "$1"
+    fi
+    echo "remote set. first push:  tama sync"
+    ;;
+
+  sync)
+    dir=$(require_vault_dir) || exit 1
+    git -C "$dir" add -A
+    git -C "$dir" diff --cached --quiet || git -C "$dir" commit -qm "tama: sync $(date -Iseconds)"
+    if ! git -C "$dir" remote get-url --push origin >/dev/null 2>&1; then
+      echo "committed. no remote yet, so nothing was pushed." >&2
+      echo "  set one:  tama remote git@github.com:you/vault-private.git" >&2
+      exit 0
+    fi
+    branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
+    git -C "$dir" push -u origin "$branch"
+    ;;
   notes)    compose exec -T tama sh -c 'find /vault -name "*.md" | wc -l' ;;
   # Reads the summary on stdin, so an agent can pipe one straight in.
   session)
@@ -88,6 +156,9 @@ tama health                 the /health JSON
 tama ask "question"         ask your notes from the terminal
 tama session PROJECT        record what a session did; summary on stdin
 tama notes                  how many Markdown notes are in the vault
+tama vault                  where the notes are, and their git state
+tama remote [url]           set or show the vault's git remote
+tama sync                   commit the vault and push it
 tama commit                 commit the vault's git repo
 tama update                 git pull, then rebuild and restart
 USAGE

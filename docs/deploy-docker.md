@@ -566,6 +566,53 @@ The old volume is left in place until you are satisfied, then
 settings and the server all agree. Setting it for one and not the others would
 mean the wizard writing to one vault and the server reading another.
 
+`tama vault` says where it is and what git thinks of it, whichever it is:
+
+```
+vault:   /home/ubuntu/vault
+notes:   128
+git:     a1b2c3d tama: Inbox/2026-09-07-2312-voice.md
+remote:  none. set one with: tama remote <url>
+```
+
+## 13c. Optional: push the vault somewhere else
+
+The vault commits itself: tama writes a note, and fifteen seconds later it is
+committed, so `git checkout` can always recover one and a working copy
+elsewhere can always pull. Pushing is a separate decision.
+
+**Pushing runs on the host, not in a container.** The host has your SSH keys
+and agent; putting a deploy key inside an image so it can push somebody's
+private notes is the wrong shape. This is also the second reason to move the
+vault out of the volume: git on the host cannot reach a root-owned volume path.
+
+```sh
+tama remote git@github.com:you/vault-private.git    # or any git URL
+tama sync                                            # commit, then push
+```
+
+Any remote works, and GitHub is only one of them. A bare repo on a machine you
+already own needs no account and no third party:
+
+```sh
+# on your laptop, once
+git init --bare ~/tama-vault.git
+
+# on the server
+tama remote ssh://you@your-laptop/~/tama-vault.git
+tama sync
+```
+
+Then clone it wherever you want to read or edit:
+
+```sh
+git clone ssh://ubuntu@YOUR_SERVER/~/vault "2nd Brain"
+```
+
+Nothing about this is required. The notes are already durable on the server and
+already versioned. A remote is how you get a copy somewhere the server cannot
+take with it, and how a laptop working copy stays in step.
+
 ## 14. Backups
 
 The vault is a git repo inside the `tama-vault` volume. Two things to do:

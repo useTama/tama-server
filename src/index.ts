@@ -168,6 +168,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
     source: device,
   });
 
+  commitSoon();
   console.log(`${green("capture")} ${result.relPath} ${grey(`${result.bytes}B ${seconds.toFixed(1)}s ${ms}ms [${t.basis}] <${device}>`)}`);
 
   // The delivery confirmation. This response IS the "did it go through" answer,
@@ -303,6 +304,39 @@ function watchConfig(): void {
   }
 }
 watchConfig();
+
+/**
+ * Commit the vault shortly after it changes.
+ *
+ * Debounced rather than per write: a burst of captures, or an agent appending
+ * three times while it finishes, should be one commit. Fifteen seconds is long
+ * enough to coalesce a burst and short enough that a crash loses at most that.
+ *
+ * Fire and forget: a failing commit must never fail the write that triggered
+ * it. The note is already on disk, which is the promise that matters.
+ */
+let commitTimer: ReturnType<typeof setTimeout> | undefined;
+function commitSoon(): void {
+  clearTimeout(commitTimer);
+  commitTimer = setTimeout(() => {
+    void vault
+      .commit()
+      .then((r) => {
+        if (r.committed) console.log(`${grey("committed")} ${r.detail}`);
+      })
+      .catch((e) => console.error("vault commit failed:", e instanceof Error ? e.message : e));
+  }, 15_000);
+  commitTimer.unref?.();
+}
+
+// A pending commit at shutdown would be lost, and the writes it covers would
+// sit uncommitted until the next one. Flush instead.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    clearTimeout(commitTimer);
+    void vault.commit().finally(() => process.exit(0));
+  });
+}
 
 const whatsapp = config.whatsapp
   ? new WhatsAppIntegration({
@@ -456,6 +490,7 @@ const server = Bun.serve({
         // first way a room could put something into somebody's notes.
         mayWrite: !device.audience,
       }, {
+        onWrite: commitSoon,
         retriever,
         vault,
         db,
@@ -494,6 +529,7 @@ const server = Bun.serve({
           bytes: result.bytes,
           ...(("created" in result) ? { created: result.created } : {}),
         };
+        commitSoon();
         console.log(`${green("note")} ${result.relPath} ${grey(`${result.bytes}B ${b.mode === "create" ? "created" : "appended"} <${device.deviceName}>`)}`);
         if (key) idem.complete(db, device.id, key, body);
         return json(body);
@@ -538,6 +574,7 @@ const server = Bun.serve({
           next: asList(b.next),
         });
         const body = { ok: true, ...result };
+        commitSoon();
         console.log(`${green("session")} ${result.relPath} ${grey(`${result.bytes}B ${result.created ? "started" : "appended"} <${device.deviceName}>`)}`);
         if (key) idem.complete(db, device.id, key, body);
         return json(body);

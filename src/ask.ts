@@ -1,5 +1,5 @@
 import type { Chunk, Retriever } from "./retrieval.ts";
-import type { Llm, LlmMessage } from "./llm.ts";
+import type { Llm, LlmMessage, LlmUsage } from "./llm.ts";
 import type { View } from "./views.ts";
 
 /**
@@ -14,7 +14,12 @@ import type { View } from "./views.ts";
 export type AskEvent =
   | { type: "sources"; sources: Array<{ path: string; score: number }> }
   | { type: "delta"; text: string }
-  | { type: "done"; answer: string }
+  /**
+   * `usage` is absent when the provider reported none, which is normal on a
+   * local model. `stopReason: "length"` is the one worth reacting to: the
+   * answer was cut at max_tokens and otherwise looks exactly like a short one.
+   */
+  | { type: "done"; answer: string; usage?: LlmUsage }
   | { type: "error"; message: string };
 
 const DEFAULT_MAX_CHUNKS = 8;
@@ -452,8 +457,13 @@ export async function* ask(opts: {
   const messages = buildMessages(question, chunks, opts.speaker, opts.speakerIsOwner, opts.history, opts.summary);
 
   let answer = "";
+  let usage: LlmUsage | undefined;
   try {
-    for await (const delta of opts.llm.stream({ system: systemPrompt(opts.prompt ?? {}), messages })) {
+    for await (const delta of opts.llm.stream({
+      system: systemPrompt(opts.prompt ?? {}),
+      messages,
+      onUsage: (u) => { usage = u; },
+    })) {
       if (!delta) continue;
       // Per delta rather than at the end, so a streaming client sees the same
       // text as a buffered one. An em dash is a single code point, so it cannot
@@ -470,7 +480,7 @@ export async function* ask(opts: {
     return;
   }
 
-  yield { type: "done", answer };
+  yield { type: "done", answer, ...(usage ? { usage } : {}) };
 }
 
 /** Non-streaming convenience for callers that just want the finished answer. */
@@ -486,15 +496,18 @@ export async function askOnce(opts: {
   history?: LlmMessage[];
   summary?: string;
   searchQuery?: string;
-}): Promise<{ answer: string; sources: Array<{ path: string; score: number }> }> {
+}): Promise<{ answer: string; sources: Array<{ path: string; score: number }>; usage?: LlmUsage }> {
   let sources: Array<{ path: string; score: number }> = [];
   let answer = "";
+  let usage: LlmUsage | undefined;
   for await (const ev of ask(opts)) {
     if (ev.type === "sources") sources = ev.sources;
-    else if (ev.type === "done") answer = ev.answer;
-    else if (ev.type === "error") throw new Error(ev.message);
+    else if (ev.type === "done") {
+      answer = ev.answer;
+      usage = ev.usage;
+    } else if (ev.type === "error") throw new Error(ev.message);
   }
-  return { answer, sources };
+  return { answer, sources, ...(usage ? { usage } : {}) };
 }
 
 export { IDENTITY, GROUND_RULES, NO_ASSISTANT_TELLS, CHAT_RULES, VOICES, renderChunks, buildMessages };

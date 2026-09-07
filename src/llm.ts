@@ -24,9 +24,51 @@ import Anthropic from "@anthropic-ai/sdk";
  */
 export type LlmMessage = { role: "user" | "assistant"; content: string };
 
+/**
+ * What a completion cost and how it ended.
+ *
+ * Reported through a callback rather than returned, because `stream` yields
+ * text and both facts arrive at the end - after the last token for usage, and
+ * only with the final event for the stop reason. Returning them would mean
+ * changing what the generator yields, which every caller would have to unpack.
+ */
+export type LlmUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  /**
+   * Why generation stopped. `length` is the one that matters: it means the
+   * answer was truncated at max_tokens, which looks exactly like a short answer
+   * to everyone downstream. Normalised across providers because "stop" and
+   * "end_turn" are the same thing said twice.
+   */
+  stopReason?: "stop" | "length" | "tool" | "filtered" | "other";
+  /** Tokens the provider says it served from a cache. Absent when unreported. */
+  cachedInputTokens?: number;
+};
+
 export interface Llm {
   readonly name: string;
-  stream(opts: { system: string; messages: LlmMessage[] }): AsyncIterable<string>;
+  stream(opts: {
+    system: string;
+    messages: LlmMessage[];
+    /**
+     * Called once, after the stream ends. Never throws into the stream: a
+     * caller that fails to log must not fail the answer that was already
+     * delivered.
+     */
+    onUsage?: (usage: LlmUsage) => void;
+  }): AsyncIterable<string>;
+}
+
+/** Providers spell the same handful of endings several different ways. */
+export function normaliseStopReason(raw: unknown): LlmUsage["stopReason"] {
+  const reason = String(raw ?? "").toLowerCase();
+  if (!reason) return undefined;
+  if (reason === "length" || reason === "max_tokens" || reason === "model_length") return "length";
+  if (reason === "stop" || reason === "end_turn" || reason === "stop_sequence" || reason === "eos") return "stop";
+  if (reason.includes("tool") || reason.includes("function")) return "tool";
+  if (reason.includes("content") || reason.includes("safety") || reason.includes("filter")) return "filtered";
+  return "other";
 }
 
 /**
@@ -73,7 +115,19 @@ export class OpenAiCompatibleLlm implements Llm {
     this.name = `openai-compatible:${this.model}`;
   }
 
-  async *stream(opts: { system: string; messages: LlmMessage[] }): AsyncIterable<string> {
+  async *stream(opts: { system: string; messages: LlmMessage[]; onUsage?: (u: LlmUsage) => void }): AsyncIterable<string> {
+    // Accumulated across frames: providers split usage and finish_reason over
+    // separate events, and some send neither.
+    const usage: LlmUsage = {};
+    const reportUsage = () => {
+      if (!opts.onUsage || Object.keys(usage).length === 0) return;
+      // Never let a logging callback break an answer that already arrived.
+      try {
+        opts.onUsage(usage);
+      } catch (e) {
+        console.error("onUsage threw:", e instanceof Error ? e.message : e);
+      }
+    };
     const url = `${this.baseUrl}/chat/completions`;
 
     // The watchdog fires on silence, never on duration. A long answer over a
@@ -113,6 +167,10 @@ export class OpenAiCompatibleLlm implements Llm {
             // large enough to be rejected as unaffordable before a token is
             // generated.
             max_tokens: this.maxTokens,
+            // Off by default in this API shape, and without it a truncated
+            // answer is indistinguishable from a short one. Harmless on
+            // providers that ignore it.
+            stream_options: { include_usage: true },
             // The system prompt is a message with role "system" in this format.
             // The Anthropic adapter below does the opposite, and that contrast
             // is the whole reason both files' worth of code exists.
@@ -179,14 +237,20 @@ export class OpenAiCompatibleLlm implements Llm {
             }
             const frame = decodeSseFrame(line);
             if (frame.kind === "text") yield frame.text;
-            else if (frame.kind === "done") return;
-            else if (frame.kind === "error") {
+            else if (frame.kind === "usage") Object.assign(usage, frame.usage);
+            else if (frame.kind === "done") {
+              reportUsage();
+              return;
+            } else if (frame.kind === "error") {
               throw new Error(`${this.name}: provider failed mid-stream: ${frame.message}`);
             }
           }
 
           if (done) {
-            if (sawData) return;
+            if (sawData) {
+              reportUsage();
+              return;
+            }
             // Streaming-shaped interface, non-streaming provider: emit the whole
             // completion as a single chunk so the caller never learns the
             // difference.
@@ -258,7 +322,7 @@ export class AnthropicLlm implements Llm {
     this.name = `anthropic:${this.model}`;
   }
 
-  async *stream(opts: { system: string; messages: LlmMessage[] }): AsyncIterable<string> {
+  async *stream(opts: { system: string; messages: LlmMessage[]; onUsage?: (u: LlmUsage) => void }): AsyncIterable<string> {
     // `system` is its own top-level parameter, not a message with role
     // "system". That is the core wire difference from OpenAI and the reason
     // this adapter is not a config change on the other one.
@@ -282,9 +346,32 @@ export class AnthropicLlm implements Llm {
       // An explicit abort here would be redundant, and calling one before
       // iteration has registered its listeners is what produces the SDK's
       // stray unhandled rejection.
+      const usage: LlmUsage = {};
       for await (const event of s) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           yield event.delta.text;
+        }
+        // Input tokens land on message_start, output and the stop reason on
+        // message_delta. Two events, one accounting.
+        if (event.type === "message_start") {
+          const u = event.message?.usage;
+          if (typeof u?.input_tokens === "number") usage.inputTokens = u.input_tokens;
+          if (typeof (u as { cache_read_input_tokens?: number })?.cache_read_input_tokens === "number") {
+            usage.cachedInputTokens = (u as { cache_read_input_tokens?: number }).cache_read_input_tokens;
+          }
+        }
+        if (event.type === "message_delta") {
+          if (typeof event.usage?.output_tokens === "number") usage.outputTokens = event.usage.output_tokens;
+          const stop = normaliseStopReason(event.delta?.stop_reason);
+          if (stop) usage.stopReason = stop;
+        }
+      }
+      if (opts.onUsage && Object.keys(usage).length > 0) {
+        // Never let a logging callback break an answer that already arrived.
+        try {
+          opts.onUsage(usage);
+        } catch (e) {
+          console.error("onUsage threw:", e instanceof Error ? e.message : e);
         }
       }
     } catch (e) {
@@ -325,6 +412,7 @@ export function makeLlm(cfg: LlmConfig): Llm {
 export type SseFrame =
   | { kind: "text"; text: string }
   | { kind: "error"; message: string }
+  | { kind: "usage"; usage: LlmUsage }
   | { kind: "done" }
   | { kind: "skip" };
 
@@ -359,7 +447,8 @@ export function decodeSseFrame(line: string): SseFrame {
 
   const f = frame as {
     error?: unknown;
-    choices?: Array<{ delta?: { content?: unknown } } | undefined>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+    choices?: Array<{ delta?: { content?: unknown }; finish_reason?: unknown } | undefined>;
   };
   // vLLM and several gateways report a failure as a frame, long after a 200 has
   // gone out. Skipping it truncates the answer with no sign that anything went
@@ -374,9 +463,22 @@ export function decodeSseFrame(line: string): SseFrame {
   // is the model thinking out loud, not the answer, and the caller renders
   // whatever it is handed.
   const content = f.choices?.[0]?.delta?.content;
-  return typeof content === "string" && content.length > 0
-    ? { kind: "text", text: content }
-    : { kind: "skip" };
+  if (typeof content === "string" && content.length > 0) return { kind: "text", text: content };
+
+  // Usage and the stop reason arrive on their own frames near the end, usually
+  // one with an empty choices array. They were being skipped, which is why a
+  // truncated answer was indistinguishable from a short one.
+  const usage: LlmUsage = {};
+  if (typeof f.usage?.prompt_tokens === "number") usage.inputTokens = f.usage.prompt_tokens;
+  if (typeof f.usage?.completion_tokens === "number") usage.outputTokens = f.usage.completion_tokens;
+  if (typeof f.usage?.prompt_tokens_details?.cached_tokens === "number") {
+    usage.cachedInputTokens = f.usage.prompt_tokens_details.cached_tokens;
+  }
+  const stop = normaliseStopReason(f.choices?.[0]?.finish_reason);
+  if (stop) usage.stopReason = stop;
+  if (Object.keys(usage).length > 0) return { kind: "usage", usage };
+
+  return { kind: "skip" };
 }
 
 /**

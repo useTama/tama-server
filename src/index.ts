@@ -678,10 +678,14 @@ const server = Bun.serve({
 
       const started = performance.now();
       let answer = "";
+      let usage: import("./llm.ts").LlmUsage | undefined;
       let sources: Array<{ path: string; score: number }> = [];
       for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
         if (ev.type === "sources") sources = ev.sources;
-        else if (ev.type === "done") answer = ev.answer;
+        else if (ev.type === "done") {
+          answer = ev.answer;
+          usage = ev.usage;
+        }
         else if (ev.type === "error") {
           console.error("ask failed:", ev.message);
           // A provider's error text is written for whoever runs the server. It
@@ -704,10 +708,33 @@ const server = Bun.serve({
         // trade. A failure leaves the turns in place to try again next time.
         void summarise(db, thread, llm).catch((e) => console.error("summarise failed:", e));
       }
-      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""} <${device.deviceName}>`)}`);
+      // Tokens on the same line as the answer, because a system that spends
+      // money with no instrument reporting it is how a 402 becomes a surprise.
+      const spend = usage
+        ? ` ${usage.inputTokens ?? "?"}in/${usage.outputTokens ?? "?"}out${usage.cachedInputTokens ? ` (${usage.cachedInputTokens} cached)` : ""}`
+        : "";
+      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms${spend}${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""} <${device.deviceName}>`)}`);
+      if (usage?.stopReason === "length") {
+        // The failure this exists to catch: an answer cut at max_tokens looks
+        // exactly like a short answer to everyone downstream, including the
+        // person reading it.
+        console.error(
+          `${orange("ask")} answer was truncated at ${config.ask?.maxTokens ?? 2048} output tokens. ` +
+            `raise ask.maxTokens, or ask a narrower question`,
+        );
+        recordFailure(db, { kind: "ask-truncated", detail: `${usage.outputTokens ?? "?"} output tokens`, source: device.deviceName });
+      }
       // Withheld, not just uncited: a path in the JSON is the same disclosure
       // as a path in the answer, and a chat client logs what it receives.
-      return json({ ok: true, question, answer, sources: profile.prompt.cite === false ? [] : sources, ms });
+      return json({
+        ok: true,
+        question,
+        answer,
+        sources: profile.prompt.cite === false ? [] : sources,
+        ms,
+        ...(usage ? { usage } : {}),
+        ...(usage?.stopReason === "length" ? { truncated: true } : {}),
+      });
     }
 
     // --- admin only ---

@@ -54,7 +54,7 @@ The first-run wizard, `tama setup`, offers the same thing under **WhatsApp** →
 
 | Question | What it means |
 |---|---|
-| Numbers allowed to message it | Other phones that may send notes and ask questions. Country code, digits only. Enter for none — your own self-chat always works. |
+| Your own other numbers | Your second phone, your work number. They are treated as you: the whole vault, your own token, the self-chat setting. Anyone who is not you needs an audience instead. |
 | Plain text in your own chat with yourself | **Answer it** makes that chat your assistant. **Ignore it** keeps it a scratchpad, and a prefix asks. |
 | Prefix that marks a question | Only asked in "ignore" mode. Defaults to `?`. |
 

@@ -81,7 +81,8 @@ function loadSettings() {
         match: (Array.isArray(a.match) ? a.match : []).map((m) => String(m)),
       })),
     token: process.env.TAMA_TOKEN || file.token || "",
-    // Digits only, country code included: "919876543210".
+    // The owner's other numbers, digits only with the country code. Treated as
+    // the owner rather than as guests: another phone is the same person.
     allowed: new Set(numbers.map((n) => String(n).replace(/[^\d]/g, "")).filter(Boolean)),
     askPrefix: process.env.WA_ASK_PREFIX || file.askPrefix || "?",
     // Answering is the default: a bot that stays silent when you talk to it
@@ -377,7 +378,13 @@ async function onMessage(message) {
     }
   }
 
-  const isSelfChat = (selfNumber && ids.has(selfNumber)) || chatId === selfId;
+  // The allowlist is the owner's other numbers, not a guest list. A second
+  // phone is still Shivansh, so it gets the self treatment: the owner's own
+  // token, the whole vault, and the self-chat text setting. Anybody who is not
+  // the owner needs an audience, which is what decides what they may see.
+  const isSelfChat = (selfNumber && ids.has(selfNumber))
+    || chatId === selfId
+    || [...ids].some((id) => ALLOWED.has(id));
 
   // Your own outgoing half of someone else's one-to-one chat is not input. In a
   // group you are a participant, so your own messages count.
@@ -386,10 +393,10 @@ async function onMessage(message) {
     return;
   }
 
-  if (!isSelfChat && !audience && ![...ids].some((id) => ALLOWED.has(id))) {
+  if (!isSelfChat && !audience) {
     // Print every candidate. If none of them is the number the user recognises,
-    // this line is what tells them which value to allow instead.
-    seen(`ignored, none of [${[...ids].join(", ")}] matches an audience or the allowed list`);
+    // this line is what tells them which value to add.
+    seen(`ignored, none of [${[...ids].join(", ")}] is one of your numbers or an audience`);
     return;
   }
 
@@ -468,7 +475,7 @@ client.on("ready", () => {
   selfNumber = (client.info?.wid?.user ?? "").replace(/[^\d]/g, "");
   log("ready as", selfId);
   log("tama", TAMA_URL);
-  log("allowed senders", ALLOWED.size ? [...ALLOWED].join(", ") : "none (your own self-chat only)");
+  log("your numbers", ALLOWED.size ? [...ALLOWED, selfNumber].join(", ") : `${selfNumber} (this phone only)`);
   log("self-chat text", SELF_CHAT_TEXT === "ask" ? "answered as a question" : `ignored unless prefixed with "${ASK_PREFIX}"`);
   for (const a of AUDIENCES) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
   // Settings runs in a container with no WhatsApp session, so it cannot ask

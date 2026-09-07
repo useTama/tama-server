@@ -43,20 +43,22 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
   // in .env. Both are answered by writing the file here.
   console.log(`\n${bold("WhatsApp bridge")}`);
   if (current) {
-    console.log(`${grey("  allowed numbers:")} ${current.allowedFrom.length ? current.allowedFrom.join(", ") : grey("none — only your own self-chat")}`);
+    console.log(`${grey("  your numbers:  ")} ${current.allowedFrom.length ? current.allowedFrom.join(", ") : grey("none besides the linked phone")}`);
     console.log(`${grey("  self-chat text: ")} ${current.selfChatText === "ask" ? "answered as a question" : `ignored unless prefixed with "${current.askPrefix}"`}`);
     console.log(`${grey("  device token:   ")} ${grey(`set, ${current.token.length} characters`)}`);
   } else {
     console.log(grey("  Not configured here yet. Answering these questions writes it,"));
     console.log(grey("  including a device token, so nothing needs pairing by hand."));
   }
+  console.log(grey("  These are your own phones: they get the whole vault, like this one does."));
+  console.log(grey("  Anyone else needs an audience, which is what decides what they can see."));
 
   let allowedFrom: string[] | null = null;
   do {
     const raw = await ask(
       current
-        ? "Numbers allowed to message it, comma-separated (Enter to keep, \"none\" to clear)"
-        : "Numbers allowed to message it, comma-separated (Enter for only your own self-chat)",
+        ? "Your own other numbers, comma-separated (Enter to keep, \"none\" to clear)"
+        : "Your own other numbers, comma-separated (Enter for just this phone)",
       current?.allowedFrom.join(",") ?? "",
     );
     if (raw.trim().toLowerCase() === "none") allowedFrom = [];

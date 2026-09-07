@@ -96,8 +96,15 @@ export type Audience = {
   cite: boolean;
   length: AnswerStyle;
   onNoMatch: "say-so" | "just-talk";
-  /** Whether a group is answered always, or only when the bot is mentioned. */
-  mention: "always" | "when-mentioned";
+  /**
+   * How much of a group's traffic it answers.
+   *
+   * "in-conversation" is the one people actually want: it answers when spoken
+   * to and then keeps answering for as long as the exchange lasts, the way a
+   * person in the group would, rather than needing to be tagged every line or
+   * replying to all seventeen people all day.
+   */
+  mention: "always" | "when-mentioned" | "in-conversation";
   /** Never captures into the vault. Groups default to false. */
   capture: boolean;
   note?: string;
@@ -136,7 +143,7 @@ function parseAudience(name: string, raw: any, views: Record<string, View>): Aud
     cite: raw?.cite === undefined ? view === "everything" : Boolean(raw.cite),
     length: enumerated("length", raw?.length, ["prose", "chat"] as const, "chat"),
     onNoMatch: enumerated("onNoMatch", raw?.onNoMatch, ["say-so", "just-talk"] as const, "say-so"),
-    mention: enumerated("mention", raw?.mention, ["always", "when-mentioned"] as const, "always"),
+    mention: enumerated("mention", raw?.mention, ["always", "when-mentioned", "in-conversation"] as const, "in-conversation"),
     capture: Boolean(raw?.capture ?? false),
   };
   if (raw?.note !== undefined) audience.note = String(raw.note);

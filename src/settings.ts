@@ -205,9 +205,10 @@ async function editAudience(
   }
 
   const mention = await choose("In a group, when should it reply?", [
-    { value: "when-mentioned" as const, label: "only when mentioned — quieter, harder to mute" },
-    { value: "always" as const, label: "every message" },
-  ], current?.mention ?? "when-mentioned");
+    { value: "in-conversation" as const, label: "when it is part of the conversation — answers, then goes quiet" },
+    { value: "when-mentioned" as const, label: "only when mentioned or replied to" },
+    { value: "always" as const, label: "every message — chatty, and in a big group that means muted" },
+  ], current?.mention ?? "in-conversation");
 
   const note = await ask("One line about this room, or Enter for none", current?.note ?? "");
 
@@ -350,7 +351,7 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
       a.cite ? "cites paths" : "no paths",
       a.length,
       a.onNoMatch === "just-talk" ? "answers anything" : "admits gaps",
-      a.mention === "when-mentioned" ? "when mentioned" : "every message",
+      a.mention === "when-mentioned" ? "when spoken to" : a.mention === "in-conversation" ? "follows the conversation" : "every message",
     ].join(", ");
     const voice = a.voice === "custom" ? `custom: ${(a.voicePrompt ?? "").slice(0, 40)}` : a.voice;
     console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${voice}  ${grey(behaviour)}`);

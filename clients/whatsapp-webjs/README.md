@@ -90,7 +90,7 @@ per audience, and every field is a menu:
 | Length | a couple of sentences, or full prose |
 | Note paths | withheld automatically on anything but `everything` |
 | When notes are empty | admit it, or just reply to what was said |
-| In a group | every message, or only when mentioned |
+| In a group | follows the conversation, only when spoken to, or every message |
 | One line about the room | free text, context only, never policy |
 | Who is in the room | a line per person, so a reply can be about them rather than generic |
 

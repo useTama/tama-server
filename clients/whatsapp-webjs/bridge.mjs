@@ -77,7 +77,7 @@ function loadSettings() {
       .map((a) => ({
         name: String(a.name ?? "unnamed"),
         token: String(a.token),
-        mention: a.mention === "when-mentioned" ? "when-mentioned" : "always",
+        mention: ["when-mentioned", "in-conversation", "always"].includes(a.mention) ? a.mention : "in-conversation",
         match: (Array.isArray(a.match) ? a.match : []).map((m) => String(m)),
       })),
     token: process.env.TAMA_TOKEN || file.token || "",
@@ -89,6 +89,40 @@ function loadSettings() {
     // reads as broken, whatever the reasoning behind the silence.
     selfChatText: process.env.WA_SELF_CHAT_TEXT || file.selfChatText || "ask",
   };
+}
+
+/**
+ * How long an exchange stays open, and how much it may say inside one.
+ *
+ * "in-conversation" answers while a conversation is live, which needs a
+ * definition of live: three minutes since it last spoke in that chat. The cap
+ * is the other half. A group of seventeen with a chatty bot is a muted group,
+ * and a loop between two bots is a bill.
+ */
+const CONVERSATION_MS = 3 * 60_000;
+const REPLY_BUDGET = 8;
+const BUDGET_MS = 10 * 60_000;
+
+/** When it last spoke in a chat, and when each of those replies happened. */
+const lastSpoke = new Map();
+const spokeAt = new Map();
+
+function recordReply(chatId) {
+  const now = Date.now();
+  lastSpoke.set(chatId, now);
+  spokeAt.set(chatId, [...(spokeAt.get(chatId) ?? []).filter((t) => now - t < BUDGET_MS), now]);
+}
+
+function withinBudget(chatId) {
+  const now = Date.now();
+  const recent = (spokeAt.get(chatId) ?? []).filter((t) => now - t < BUDGET_MS);
+  spokeAt.set(chatId, recent);
+  return recent.length < REPLY_BUDGET;
+}
+
+function inConversation(chatId) {
+  const last = lastSpoke.get(chatId);
+  return Boolean(last && Date.now() - last < CONVERSATION_MS);
 }
 
 const stamp = () => new Date().toISOString().slice(11, 19);
@@ -221,6 +255,7 @@ let selfNumber = "";
 
 async function reply(message, text) {
   const chatId = message.fromMe ? message.to : message.from;
+  recordReply(chatId);
   for (const chunk of splitReply(text)) {
     const key = utterance(chatId, chunk);
     saying.add(key);
@@ -587,11 +622,22 @@ async function onMessage(message) {
   if (audience) {
     // "when mentioned" is what keeps a busy group from muting the bot. An @
     // mention resolves to the linked number, so match on that.
-    // The owner never has to tag their own bot. "when mentioned" exists so a
-    // group of sixteen people does not get a reply to every message; it was
+    // The owner never has to tag their own bot. Gating on a mention exists so
+    // a group of sixteen people does not get a reply to every message; it was
     // never meant to make the person who set it up queue up like a stranger.
-    if (audience.mention === "when-mentioned" && !isOwner && !(await mentionsUs(message, text))) {
-      seen(`ignored, ${audience.name} replies only when mentioned`);
+    if (audience.mention !== "always" && !isOwner) {
+      const addressed = await mentionsUs(message, text);
+      const following = audience.mention === "in-conversation" && inConversation(chatId);
+      if (!addressed && !following) {
+        seen(`ignored, ${audience.name} was not spoken to`);
+        return;
+      }
+    }
+
+    // The cap applies whatever the mode, including "always". Nothing else here
+    // stops a loop with another bot, or a bad day in a very busy group.
+    if (isGroup && !withinBudget(chatId)) {
+      seen(`ignored, ${audience.name} has said enough in the last ten minutes`);
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
@@ -643,6 +689,7 @@ client.on("ready", () => {
   log("your numbers", ALLOWED.size ? [...ALLOWED, selfNumber].join(", ") : `${selfNumber} (this phone only)`);
   log("self-chat text", SELF_CHAT_TEXT === "ask" ? "answered as a question" : `ignored unless prefixed with "${ASK_PREFIX}"`);
   for (const a of AUDIENCES) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
+  log("group limits", `a conversation stays open ${CONVERSATION_MS / 60_000} min, at most ${REPLY_BUDGET} replies per ${BUDGET_MS / 60_000} min`);
   // Settings runs in a container with no WhatsApp session, so it cannot ask
   // someone to type a group id. Publish what this session can see instead.
   void publishChats();

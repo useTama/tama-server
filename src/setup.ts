@@ -30,7 +30,7 @@ export type BridgeSettings = {
    * else: the server derives the view, voice and flags from the token, so a
    * wrong match rule misroutes a question without widening what it can read.
    */
-  audiences?: Array<{ name: string; token: string; match: string[]; mention: "always" | "when-mentioned" }>;
+  audiences?: Array<{ name: string; token: string; match: string[]; mention: "always" | "when-mentioned" | "in-conversation" }>;
   /**
    * Groups this WhatsApp session can see, written by the bridge on connect so
    * `tama settings` can offer them as a menu. Settings has no session of its

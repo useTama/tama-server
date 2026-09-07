@@ -96,10 +96,14 @@ if (!TAMA_TOKEN) {
 }
 
 /**
- * Retries only the failures that are worth retrying: a refused connection
- * while tama is still booting, and the 503 the MAX_INFLIGHT gate returns when
- * two captures are already transcribing. A 4xx is the user's problem and is
- * reported as-is.
+ * Retries only the failures that are worth retrying: a refused connection while
+ * tama is still booting, and the 503 the MAX_INFLIGHT gate returns when two
+ * captures are already transcribing.
+ *
+ * Not 502. That is tama reporting that the model provider refused - out of
+ * credit, wrong key, no such model - and asking three times changes none of
+ * those. It also used to end in a thrown error and no WhatsApp reply at all,
+ * so a permanent failure looked exactly like the bridge being broken.
  */
 async function post(path, { headers = {}, body }) {
   let lastError;
@@ -112,7 +116,7 @@ async function post(path, { headers = {}, body }) {
         body,
         signal: AbortSignal.timeout(300_000),
       });
-      if (res.status === 503 || res.status >= 500) {
+      if (res.status === 503 || (res.status >= 500 && res.status !== 502)) {
         lastError = new Error(`HTTP ${res.status}`);
         continue;
       }
@@ -422,8 +426,17 @@ client.on("disconnected", (reason) => {
 // message_create covers incoming and outgoing both, so self-chat works; the
 // plain "message" event would miss it.
 client.on("message_create", (message) => {
-  onMessage(message).catch((error) => {
-    console.error("handler failed:", error instanceof Error ? error.message : error);
+  onMessage(message).catch(async (error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("handler failed:", detail);
+    // Whatever went wrong, the person who sent the message is still waiting.
+    // Failing quietly is what made a plain out-of-credit error look like a
+    // dead bridge for an hour.
+    try {
+      await reply(message, `Something went wrong handling that: ${detail}`);
+    } catch (replyError) {
+      console.error("could not report the failure either:", replyError instanceof Error ? replyError.message : replyError);
+    }
   });
 });
 

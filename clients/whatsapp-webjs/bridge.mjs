@@ -58,6 +58,13 @@ function loadSettings() {
   const numbers = process.env.WA_ALLOWED
     ? process.env.WA_ALLOWED.split(",")
     : Array.isArray(file.allowedFrom) ? file.allowedFrom : [];
+  // Env wins, which means an old .env can silently outvote what the wizard just
+  // wrote. Say so rather than letting someone re-answer the same questions.
+  for (const [name, fileValue] of [["TAMA_TOKEN", file.token], ["WA_ALLOWED", file.allowedFrom]]) {
+    if (process.env[name] && fileValue !== undefined) {
+      console.error(stamp(), `warning: ${name} in the environment overrides ${SETTINGS_PATH}; remove it from .env to use the settings file`);
+    }
+  }
   return {
     token: process.env.TAMA_TOKEN || file.token || "",
     // Digits only, country code included: "919876543210".

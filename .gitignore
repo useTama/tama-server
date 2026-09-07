@@ -5,3 +5,5 @@ data/
 *.log
 tama.config.json
 bun.lockb
+.env
+config/

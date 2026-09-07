@@ -339,32 +339,49 @@ async function onMessage(message) {
     seen("ignored, no chat id");
     return;
   }
+  if (chatId.endsWith("@broadcast") || chatId === "status@broadcast") {
+    seen("ignored, a broadcast");
+    return;
+  }
 
-  // Groups are never captured: a second brain filling up with other people's
-  // chatter is a worse failure than missing a note. Ask the chat whether it is
-  // a group rather than matching an id suffix, because the suffixes changed -
-  // treating everything that was not `@c.us` as "not a direct chat" silently
-  // dropped every message from a chat WhatsApp had moved to `@lid`.
+  // Ask the chat whether it is a group rather than matching an id suffix,
+  // because the suffixes changed: treating everything that was not `@c.us` as
+  // "not a direct chat" silently dropped every message from a chat WhatsApp had
+  // moved to `@lid`.
   let isGroup = chatId.endsWith("@g.us");
   try {
     const chat = await message.getChat();
     if (chat) isGroup = chat.isGroup === true;
   } catch { /* keep the suffix guess */ }
-  if (isGroup || chatId.endsWith("@broadcast") || chatId === "status@broadcast") {
-    seen("ignored, not a one-to-one chat");
-    return;
-  }
 
   const ids = await senderIdentifiers(message, chatId);
-  // A group is silent unless an audience claims it. That is the old blanket
-  // ignore, kept, with an opt-in.
-  const audience = AUDIENCES.find((a) => a.match.some((m) => ids.has(m.replace(/[^\d]/g, "")) || m === chatId));
-  // Self-chat by number, not by chat id: under `@lid` addressing the id of your
-  // own chat is not derivable from your own wid.
+  // Resolved before the group check, not after. The other way round meant a
+  // group was rejected for being a group before anything could claim it, which
+  // made every audience matching a group dead code.
+  const audience = AUDIENCES.find((a) =>
+    a.match.some((m) => m === chatId || ids.has(String(m).replace(/[^\d]/g, ""))),
+  );
+
+  if (isGroup) {
+    if (!audience) {
+      // Still worth knowing about: one message in a group is now enough for
+      // `tama settings` to offer it by name, so nobody has to find an id.
+      if (!published.has(chatId)) {
+        published.add(chatId);
+        void publishChats();
+        seen("ignored, no audience claims this group - published so settings can offer it");
+        return;
+      }
+      seen("ignored, no audience claims this group");
+      return;
+    }
+  }
+
   const isSelfChat = (selfNumber && ids.has(selfNumber)) || chatId === selfId;
 
-  // Your own outgoing half of someone else's chat is not input.
-  if (message.fromMe && !isSelfChat) {
+  // Your own outgoing half of someone else's one-to-one chat is not input. In a
+  // group you are a participant, so your own messages count.
+  if (message.fromMe && !isSelfChat && !isGroup) {
     seen("ignored, your own message to someone else");
     return;
   }
@@ -395,9 +412,22 @@ async function onMessage(message) {
     return;
   }
 
-  // Self-chat is also a scratchpad, so plain text there is left alone and
-  // only the prefix asks. In a chat with someone else there is nothing to
-  // mistake, and text behaves as it does on the Cloud API path.
+  if (audience) {
+    // "when mentioned" is what keeps a busy group from muting the bot. An @
+    // mention resolves to the linked number, so match on that.
+    if (audience.mention === "when-mentioned") {
+      const mentioned = selfNumber
+        && (text.includes(selfNumber)
+          || (message._data?.mentionedJidList ?? []).some((j) => String(j).includes(selfNumber)));
+      if (!mentioned) {
+        seen(`ignored, ${audience.name} replies only when mentioned`);
+        return;
+      }
+    }
+    seen(`ask as ${audience.name}`);
+    return askQuestion(message, text, audience);
+  }
+
   if (isSelfChat && SELF_CHAT_TEXT === "ignore") {
     if (!text.startsWith(ASK_PREFIX)) {
       seen(`ignored, self-chat text without the "${ASK_PREFIX}" prefix`);
@@ -421,19 +451,6 @@ async function onMessage(message) {
     }
     seen("ask");
     return askQuestion(message, question);
-  }
-  if (audience) {
-    // "when mentioned" is what keeps a busy group from muting the bot. Match on
-    // the linked number, since that is what an @ mention resolves to.
-    if (audience.mention === "when-mentioned") {
-      const mentioned = selfNumber && (text.includes(selfNumber) || (message._data?.mentionedJidList ?? []).some((j) => String(j).includes(selfNumber)));
-      if (!mentioned) {
-        seen(`ignored, ${audience.name} replies only when mentioned`);
-        return;
-      }
-    }
-    seen(`ask as ${audience.name}`);
-    return askQuestion(message, text, audience);
   }
   seen("ask");
   return askQuestion(message, text);
@@ -493,7 +510,14 @@ client.on("message_create", (message) => {
  * `tama settings` can offer them as a menu rather than asking for
  * 120363...@g.us. Only ids and names, and only groups: a dump of every private
  * chat would put the user's whole contact list in a config file.
+ *
+ * Called on connect and again whenever a message arrives from a group that is
+ * not in the list yet. Without that second trigger, connecting a group meant
+ * restarting the bridge, or reading an id out of this log and pasting it - both
+ * of which are the deployment showing through the product.
  */
+const published = new Set();
+
 async function publishChats() {
   try {
     const chats = await client.getChats();
@@ -504,6 +528,8 @@ async function publishChats() {
     const file = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
     file.chats = groups;
     writeFileSync(SETTINGS_PATH, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    published.clear();
+    for (const g of groups) published.add(g.id);
     log("published", `${groups.length} groups for tama settings to offer`);
   } catch (error) {
     // Non-fatal: it only costs the settings menu its group list.

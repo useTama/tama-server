@@ -311,12 +311,18 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
   const names = Object.keys(audiences);
   const viewNames = [...Object.keys(BUILTIN_VIEWS), ...Object.keys(config.views ?? {})];
 
+  // Read here so the list can answer the question the old one could not: is
+  // this audience actually reachable, and from where.
+  const bridge = await readBridge(bridgePath);
+  const chatName = (id: string) => bridge?.chats?.find((c) => c.id === id)?.name ?? id;
+
   console.log(`\n${bold("Audiences")}`);
   if (names.length === 0) {
     console.log(grey("  None yet. Your own devices need none: a token with no audience sees everything."));
   }
   for (const name of names) {
     const a = audiences[name]!;
+    const wired = bridge?.audiences?.find((w) => w.name === name);
     const behaviour = [
       a.cite ? "cites paths" : "no paths",
       a.length,
@@ -325,6 +331,14 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     ].join(", ");
     const voice = a.voice === "custom" ? `custom: ${(a.voicePrompt ?? "").slice(0, 40)}` : a.voice;
     console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${voice}  ${grey(behaviour)}`);
+    console.log(wired && wired.match.length > 0
+      ? grey(`  ${" ".repeat(14)} in ${wired.match.map(chatName).join(", ")}`)
+      : warn(`  ${" ".repeat(12)} not connected to any chat yet, so nothing reaches it`));
+  }
+
+  if (bridge && (bridge.chats?.length ?? 0) === 0) {
+    console.log(grey("\n  The WhatsApp bridge has not published a group list. Start it once and come"));
+    console.log(grey("  back, and groups will be offered here by name."));
   }
 
   const pick = await choose("Which one?", [
@@ -414,21 +428,40 @@ async function pickChats(
   const chosen: string[] = [];
 
   if (groups.length === 0) {
-    console.log(warn("The bridge has not published its group list yet."));
-    console.log(grey("  It writes one when it connects, so start it once and come back:"));
-    console.log(`  ${bold("tama start")}${grey(", then tama settings again")}`);
+    console.log(warn("This bridge has not published a group list yet, so groups cannot be offered by name."));
+    console.log(grey("  It writes one each time it connects to WhatsApp. Either start it and come back,"));
+    console.log(grey("  or paste a group id below if you have one."));
   }
 
   for (;;) {
     const options = [
       ...groups
         .filter((g) => !chosen.includes(g.id))
-        .map((g) => ({ value: g.id, label: `${g.name || "unnamed group"} ${chosen.length === 0 && current.includes(g.id) ? "(current)" : ""}`.trim() })),
-      { value: "__number__", label: "a phone number instead" },
+        .map((g) => ({
+          value: g.id,
+          label: `${g.name || "unnamed group"}${current.includes(g.id) ? " (currently connected)" : ""}`,
+        })),
+      // A group cannot be expressed as a phone number, and a new group appears
+      // in no published list until the bridge reconnects, so there has to be a
+      // way to say one by hand.
+      { value: "__group__", label: "paste a group id (ends in @g.us)" },
+      { value: "__number__", label: "a phone number, for a one-to-one chat" },
       { value: "__done__", label: chosen.length ? "done" : "cancel" },
     ];
     const picked = await choose(chosen.length ? "Add another chat, or finish" : "Which chat is this audience?", options, options[0]!.value);
     if (picked === "__done__") break;
+    if (picked === "__group__") {
+      console.log(grey("  A group id looks like 120363043211234567@g.us. In WhatsApp it is not shown"));
+      console.log(grey("  anywhere, so the reliable way is to send one message in the group and read"));
+      console.log(grey("  it off the bridge's own log, which prints the chat id of everything it sees."));
+      const id = (await ask("Group id", "")).trim();
+      if (!/^\d+@g\.us$/.test(id)) {
+        console.log(warn("That is not a group id. They are digits followed by @g.us."));
+        continue;
+      }
+      chosen.push(id);
+      continue;
+    }
     if (picked === "__number__") {
       const numbers = whatsappSenders(await ask("Number, country code and digits only", ""));
       if (!numbers) {

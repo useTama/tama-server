@@ -93,9 +93,20 @@ per audience, and every field is a menu:
 | In a group | every message, or only when mentioned |
 | One line about the room | free text, context only, never policy |
 
-Saving one mints its token and writes it straight into this client's settings,
-against the chat you pick from the groups the bridge can see. Nothing is pasted
-by hand.
+Saving one mints its token and writes it into this client's settings. Then
+connect it from the group itself:
+
+```
+/tama the-boys
+```
+
+Sent by you, in the group. That is the whole step. WhatsApp shows a group's
+internal id nowhere on any platform, so the alternatives are picking the group
+from a menu once the bridge has seen it, or finding the id in a log to paste
+back — both of which mean leaving the room you are already in.
+
+`/tama` on its own says what is waiting to be claimed. Only your own numbers are
+obeyed; in a group everyone can type.
 
 **A group is silent until an audience claims it**, and audiences never capture:
 their tokens are for reading, and a vault filling with other people's voice

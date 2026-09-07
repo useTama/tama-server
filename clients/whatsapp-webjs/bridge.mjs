@@ -327,6 +327,60 @@ async function senderIdentifiers(message, chatId) {
   return found;
 }
 
+/**
+ * Persist a change to this client's own settings file.
+ *
+ * Read, mutate, write: the file is also written by `tama settings`, and
+ * rewriting it from the in-memory view would drop anything added there since
+ * this process started.
+ */
+function patchSettings(mutate) {
+  const file = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+  mutate(file);
+  writeFileSync(SETTINGS_PATH, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+  return file;
+}
+
+/**
+ * Attach an audience to the chat it was sent from.
+ *
+ * The alternative was: find a group id WhatsApp shows nowhere, or send a
+ * message and then go to a terminal to pick the group from a menu. Both make
+ * someone leave the room they are already standing in. `/tama 315` in the group
+ * is the whole step.
+ *
+ * Only the owner may do this. In a group everyone can type, so the command is
+ * accepted from the linked phone and the owner's other numbers and from nobody
+ * else, which is the same boundary the rest of the bridge uses.
+ */
+async function claimChat(message, chatId, name) {
+  const target = name.trim();
+  const waiting = (settings.audiences ?? []).filter((a) => a.match.length === 0).map((a) => a.name);
+
+  if (!target) {
+    await reply(message, waiting.length
+      ? `send "/tama ${waiting[0]}" here to set this chat up as ${waiting.length === 1 ? "it" : "one of: " + waiting.join(", ")}`
+      : "nothing is waiting for a chat. make an audience with tama settings first.");
+    return;
+  }
+
+  const audience = (settings.audiences ?? []).find((a) => a.name === target);
+  if (!audience) {
+    await reply(message, `no audience called "${target}". ${waiting.length ? `waiting: ${waiting.join(", ")}` : "make one with tama settings first."}`);
+    return;
+  }
+
+  patchSettings((file) => {
+    file.audiences = (file.audiences ?? []).map((a) =>
+      a.name === target ? { ...a, match: [...new Set([...(a.match ?? []), chatId])] } : a,
+    );
+  });
+  // In memory too, so it takes effect now rather than at the next restart.
+  audience.match = [...new Set([...audience.match, chatId])];
+  log("claimed", chatId, "as", target);
+  await reply(message, `done. this chat is "${target}" now.`);
+}
+
 async function onMessage(message) {
   if (message.id?._serialized && ours.has(message.id._serialized)) return;
 
@@ -363,8 +417,12 @@ async function onMessage(message) {
     a.match.some((m) => m === chatId || ids.has(String(m).replace(/[^\d]/g, ""))),
   );
 
+  // "Is this the owner", independent of which chat it arrived in. In a group
+  // this is how a command is told apart from the other sixteen people talking.
+  const isOwner = Boolean((selfNumber && ids.has(selfNumber)) || [...ids].some((id) => ALLOWED.has(id)) || (message.fromMe && isGroup));
+
   if (isGroup) {
-    if (!audience) {
+    if (!audience && !isOwner) {
       // Still worth knowing about: one message in a group is now enough for
       // `tama settings` to offer it by name, so nobody has to find an id.
       if (!published.has(chatId)) {
@@ -374,6 +432,16 @@ async function onMessage(message) {
         return;
       }
       seen("ignored, no audience claims this group");
+      return;
+    }
+    if (!audience && isOwner && !/^\/tama\b/i.test((message.body ?? "").trim())) {
+      // The owner talking in a group that is not set up yet. Publish it so the
+      // menu can offer it, and stay quiet: they were talking to their friends.
+      if (!published.has(chatId)) {
+        published.add(chatId);
+        void publishChats();
+      }
+      seen("ignored, this group has no audience. send /tama to set one up");
       return;
     }
   }
@@ -402,6 +470,14 @@ async function onMessage(message) {
 
   const isVoice = message.hasMedia && (message.type === "ptt" || message.type === "audio");
   const text = (message.body ?? "").trim();
+
+  // Checked before the audience gate, so a group with no audience yet can still
+  // be claimed - which is the only moment the command is useful.
+  const claim = /^\/tama\b\s*(.*)$/i.exec(text);
+  if (claim && isOwner) {
+    seen("claim");
+    return claimChat(message, chatId, claim[1] ?? "");
+  }
 
   if (isVoice) {
     // An audience never captures. A second brain filling with other people's

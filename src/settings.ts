@@ -335,7 +335,9 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${voice}  ${grey(behaviour)}`);
     console.log(wired && wired.match.length > 0
       ? grey(`  ${" ".repeat(14)} in ${wired.match.map(chatName).join(", ")}`)
-      : warn(`  ${" ".repeat(12)} not connected to any chat yet, so nothing reaches it`));
+      : wired
+        ? grey(`  ${" ".repeat(14)} waiting for a chat: send "/tama ${name}" in it`)
+        : warn(`  ${" ".repeat(12)} no token yet, so nothing reaches it`));
   }
 
   if (bridge && (bridge.chats?.length ?? 0) === 0) {
@@ -394,16 +396,22 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     // shown once and pasted by hand is the step this whole section exists to
     // remove, and it is also the step where a token ends up in a shell history.
     const match = await pickChats(bridgePath, existing, name);
+    await writeSettings(bridgePath, {
+      ...(existing ?? bridgeSettings("", [], "?")),
+      audiences: [
+        ...(existing?.audiences ?? []).filter((a) => a.name !== name),
+        { name, token, match, mention: audience.mention },
+      ],
+    });
     if (match.length === 0) {
-      console.log(warn("No chat chosen, so nothing was connected. The audience is saved; run this again to attach it."));
+      // Written with no chats on purpose. An audience waiting to be claimed is
+      // what makes the in-chat command work, and claiming it from the group is
+      // the better path anyway: WhatsApp shows a group id nowhere, so the
+      // alternative is finding one in a log to type into a menu.
+      console.log(ok(`"${name}" is ready and waiting for a chat.`));
+      console.log(`  In the group, send ${bold(`/tama ${name}`)}`);
+      console.log(grey("  From your own number. That is the whole step: no ids, no coming back here."));
     } else {
-      await writeSettings(bridgePath, {
-        ...(existing ?? bridgeSettings("", [], "?")),
-        audiences: [
-          ...(existing?.audiences ?? []).filter((a) => a.name !== name),
-          { name, token, match, mention: audience.mention },
-        ],
-      });
       console.log(ok(`Connected "${name}" to ${match.length} chat${match.length === 1 ? "" : "s"}.`));
       console.log(grey("  Its token is in the bridge's settings file. It cannot exceed this audience's"));
       console.log(grey("  view whatever the bridge asks for, because the server decides from the token."));
@@ -430,9 +438,8 @@ async function pickChats(
   const chosen: string[] = [];
 
   if (groups.length === 0) {
-    console.log(warn("This bridge has not published a group list yet, so groups cannot be offered by name."));
-    console.log(grey("  It writes one each time it connects to WhatsApp. Either start it and come back,"));
-    console.log(grey("  or paste a group id below if you have one."));
+    console.log(grey("  No groups to offer yet: the bridge lists them once it has seen them."));
+    console.log(grey("  Claiming from the group is usually easier anyway."));
   }
 
   for (;;) {
@@ -446,12 +453,13 @@ async function pickChats(
       // A group cannot be expressed as a phone number, and a new group appears
       // in no published list until the bridge reconnects, so there has to be a
       // way to say one by hand.
-      { value: "__group__", label: "paste a group id (ends in @g.us)" },
+      { value: "__claim__", label: `claim it from the group — send "/tama ${name}" there` },
       { value: "__number__", label: "a phone number, for a one-to-one chat" },
-      { value: "__done__", label: chosen.length ? "done" : "cancel" },
+      { value: "__group__", label: "paste a group id (ends in @g.us)" },
+      { value: "__done__", label: chosen.length ? "done" : "skip for now" },
     ];
     const picked = await choose(chosen.length ? "Add another chat, or finish" : "Which chat is this audience?", options, options[0]!.value);
-    if (picked === "__done__") break;
+    if (picked === "__done__" || picked === "__claim__") break;
     if (picked === "__group__") {
       console.log(grey("  A group id looks like 120363043211234567@g.us. In WhatsApp it is not shown"));
       console.log(grey("  anywhere, so the reliable way is to send one message in the group and read"));

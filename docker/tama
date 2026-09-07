@@ -71,7 +71,30 @@ case $command in
   start|up) compose up -d --build "$@" ;;
   stop)     compose stop "$@" ;;
   restart)  compose up -d --build "$@" ;;
-  status|ps) compose ps "$@" ;;
+  status|ps)
+    compose ps "$@"
+    # Three separate debugging sessions ended at "you never restarted". The
+    # containers carry their build time and the checkout carries its commit
+    # time, so staleness is answerable rather than inferred from which log
+    # lines are missing.
+    head_time=$(git log -1 --format=%ct 2>/dev/null || echo 0)
+    if [ "$head_time" != "0" ]; then
+      stale=""
+      for c in $(compose ps -q 2>/dev/null); do
+        built=$(docker inspect -f '{{.Created}}' "$c" 2>/dev/null || true)
+        [ -n "$built" ] || continue
+        built_ts=$(date -d "$built" +%s 2>/dev/null || echo 0)
+        [ "$built_ts" != "0" ] && [ "$built_ts" -lt "$head_time" ] && stale="yes"
+      done
+      echo ""
+      if [ -n "$stale" ]; then
+        echo "Your checkout is newer than what is running: $(git log -1 --format='%h %s')"
+        echo "  tama restart"
+      else
+        echo "Running $(git log -1 --format='%h %s')"
+      fi
+    fi
+    ;;
   logs)     compose logs -f --tail 100 "${@:-tama}" ;;
   health)   curl -s localhost:8080/health ;;
   # The vault is a git repo; committing is how a note becomes recoverable.

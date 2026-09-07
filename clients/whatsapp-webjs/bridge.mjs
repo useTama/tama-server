@@ -19,6 +19,7 @@
  */
 
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
@@ -840,6 +841,12 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 }
 
 watchSettings();
+// A short hash of this file, so "did my change take effect" is answerable from
+// the log instead of inferred from which lines are absent.
+try {
+  const own = readFileSync(new URL(import.meta.url));
+  log("bridge", `build ${createHash("sha1").update(own).digest("hex").slice(0, 7)}`);
+} catch { /* not worth failing a start over */ }
 log("starting; first run prints a QR code");
 clearStaleChromiumLocks(SESSION_DIR);
 client.initialize();

@@ -259,22 +259,46 @@ async function askQuestion(message, question) {
 }
 
 /**
- * Which phone number a message is from, in the digits-only form the allowlist
- * uses.
+ * Every digit string that could identify the sender, because no single one of
+ * them is reliable.
  *
- * The chat id is not that number any more. WhatsApp now addresses many chats as
- * `<opaque id>@lid` rather than `<number>@c.us`, so parsing digits out of the id
- * yields an internal identifier that matches nothing. The contact record still
- * carries the real number, so ask for it, and keep the id as the fallback for
- * the plain `@c.us` case.
+ * WhatsApp now addresses many one-to-one chats as `<opaque id>@lid` instead of
+ * `<number>@c.us`. Which fields then carry the actual phone number depends on
+ * the WhatsApp Web build and on whether the contact is in your address book -
+ * `getContact()` can answer with the lid id itself. Rather than pick a winner
+ * and be wrong on somebody's install, collect the candidates and let a match on
+ * any of them count.
+ *
+ * The allowlist is a list of things the user says they trust, so widening what
+ * counts as "this sender" does not widen who gets in: an unlisted number still
+ * matches nothing.
  */
-async function senderNumber(message, chatId) {
+async function senderIdentifiers(message, chatId) {
+  const found = new Set();
+  const add = (value) => {
+    const digits = String(value ?? "").replace(/@.*$/, "").replace(/[^\d]/g, "");
+    if (digits) found.add(digits);
+  };
+
+  add(chatId);
+  // Raw fields, guarded: newer builds carry the phone-number jid alongside the
+  // lid one, under names that have changed more than once.
+  const raw = message._data ?? {};
+  for (const key of ["senderPn", "participantPn", "author", "from", "peerRecipientPn"]) add(raw[key]);
+  add(raw.id?.remote);
+
   try {
     const contact = await message.getContact();
-    const number = contact?.number ?? contact?.id?.user;
-    if (number) return String(number).replace(/[^\d]/g, "");
-  } catch { /* fall through to the id */ }
-  return String(chatId).replace(/@.*$/, "").replace(/[^\d]/g, "");
+    add(contact?.number);
+    add(contact?.id?.user);
+    // A lid contact usually has the real number one hop away.
+    if (contact?.id?.server === "lid") {
+      const alt = await client.getContactById(String(contact.id.user) + "@c.us").catch(() => undefined);
+      add(alt?.number);
+    }
+  } catch { /* the ids above are enough to log something actionable */ }
+
+  return found;
 }
 
 async function onMessage(message) {
@@ -306,10 +330,10 @@ async function onMessage(message) {
     return;
   }
 
-  const number = await senderNumber(message, chatId);
+  const ids = await senderIdentifiers(message, chatId);
   // Self-chat by number, not by chat id: under `@lid` addressing the id of your
   // own chat is not derivable from your own wid.
-  const isSelfChat = (selfNumber && number === selfNumber) || chatId === selfId;
+  const isSelfChat = (selfNumber && ids.has(selfNumber)) || chatId === selfId;
 
   // Your own outgoing half of someone else's chat is not input.
   if (message.fromMe && !isSelfChat) {
@@ -317,8 +341,10 @@ async function onMessage(message) {
     return;
   }
 
-  if (!isSelfChat && !ALLOWED.has(number)) {
-    seen(`ignored, ${number} is not on the allowed list`);
+  if (!isSelfChat && ![...ids].some((id) => ALLOWED.has(id))) {
+    // Print every candidate. If none of them is the number the user recognises,
+    // this line is what tells them which value to allow instead.
+    seen(`ignored, none of [${[...ids].join(", ")}] is on the allowed list`);
     return;
   }
 

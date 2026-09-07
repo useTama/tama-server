@@ -14,6 +14,11 @@
 # It resolves its own location, so the symlink works from any directory.
 set -e
 
+# Compose warns on every invocation that it wants to build with Bake but buildx
+# is missing. It is advice about a build backend, printed before a command that
+# may not build anything.
+export COMPOSE_BAKE=${COMPOSE_BAKE:-false}
+
 self=$0
 # Follow the symlink so TAMA_DIR is the repo, not /usr/local/bin.
 while [ -L "$self" ]; do
@@ -31,12 +36,19 @@ cd "$TAMA_DIR"
 # common way to break a working install, so the wrapper always passes it.
 compose() { docker compose --profile whatsapp-webjs "$@"; }
 
+# The wizards still build, so that a `git pull` takes effect rather than running
+# whatever the image happened to contain - a stale settings image is how you end
+# up answering questions the running code does not read. Cached, that is about a
+# second, and there is no reason to print thirty lines of layer cache hits for
+# it.
+wizard() { docker compose --progress quiet run --rm --build "$@"; }
+
 command=${1:-help}
 [ $# -gt 0 ] && shift
 
 case $command in
-  setup)    docker compose run --rm --build setup "$@" ;;
-  settings) docker compose run --rm --build settings "$@" ;;
+  setup)    wizard setup "$@" ;;
+  settings) wizard settings "$@" ;;
   start|up) compose up -d --build "$@" ;;
   stop)     compose stop "$@" ;;
   restart)  compose up -d --build "$@" ;;

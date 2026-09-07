@@ -19,6 +19,8 @@
  */
 
 import { createRequire } from "node:module";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 
 // whatsapp-web.js is CommonJS and has no named ESM exports.
@@ -104,9 +106,34 @@ function splitReply(text) {
   return chunks;
 }
 
+/**
+ * Chromium writes a SingletonLock naming the host that holds the profile. A
+ * container that died without closing the browser leaves it behind, and the
+ * next container has a different hostname, so Chromium reads the lock as
+ * "another computer is using this profile" and refuses to start. Nothing else
+ * can be holding it: the profile lives in a volume only this service mounts.
+ */
+function clearStaleChromiumLocks(dir, depth = 3) {
+  if (depth < 0 || !existsSync(dir)) return;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.name.startsWith("Singleton")) {
+      rmSync(full, { force: true, recursive: true });
+      log("cleared stale Chromium lock", full);
+    } else if (entry.isDirectory()) {
+      clearStaleChromiumLocks(full, depth - 1);
+    }
+  }
+}
+
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESSION_DIR }),
   puppeteer: {
+    // Explicit, because supplying a puppeteer object replaces whatsapp-web.js's
+    // default wholesale - including the headless flag it would have set. There
+    // is no display in a container, so omitting this fails with "Can't open
+    // display" rather than falling back.
+    headless: true,
     executablePath: CHROMIUM_PATH,
     // --no-sandbox is required to run Chromium as root in a container; the
     // shm flag stops it dying on Docker's 64MB default /dev/shm.
@@ -299,4 +326,5 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 }
 
 log("starting; first run prints a QR code");
+clearStaleChromiumLocks(SESSION_DIR);
 client.initialize();

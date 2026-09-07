@@ -119,6 +119,16 @@ in `tama.config.json`. The bridge replies saying so.
 whatsapp-webjs`. A `skip sender not allowed` line means `WA_ALLOWED` does not
 contain that number in country-code-plus-digits form.
 
+**`Error: Can't open display`.** A container has no display, so Chromium must be
+headless. `bridge.mjs` sets `headless: true` explicitly, because supplying a `puppeteer`
+object to whatsapp-web.js replaces its defaults wholesale rather than merging with them.
+If you edit that block, keep the flag.
+
+**`The profile appears to be in use by another Chromium process ... on another computer`.**
+A container that died without closing the browser left a `SingletonLock` naming its old
+hostname. The bridge clears these on startup; if you hit it anyway, wipe the session
+volume as above and scan again.
+
 **Chromium dies immediately.** Out of memory. The browser wants ~500 MB on top
 of tama; a 1 GB box cannot run both this and local whisper.
 

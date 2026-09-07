@@ -1,5 +1,5 @@
 /**
- * Speech to text. Two wire formats, one client.
+ * Speech to text. Three wire formats, one client.
  *
  * `whisper-cpp` is whisper.cpp's bundled HTTP server, held resident. Local and
  * free is not a fallback here, it is the product: capture needs no language
@@ -12,28 +12,54 @@
  * copies their `/audio/transcriptions` route. It exists because a phone-sized
  * machine cannot always run whisper itself, and it is opt-in for the obvious
  * reason: it uploads the recording.
+ *
+ * `sarvam` is Sarvam AI's `/speech-to-text`. It gets its own branch rather than
+ * riding on `openai-compatible` because all three of the things that matter
+ * differ: the route, the auth header (`api-subscription-key`, not Bearer), and
+ * the response field (`transcript`, not `text`). It is here because Indian
+ * languages and code-mixed Hindi-English are where it beats whisper, and that
+ * is a real capture language for real users, not a rounding error.
  */
 export type SttConfig = {
-  provider: "whisper-cpp" | "openai-compatible";
-  /** whisper.cpp's server root, or the OpenAI-compatible API base. */
+  provider: "whisper-cpp" | "openai-compatible" | "sarvam";
+  /** whisper.cpp's server root, the OpenAI-compatible API base, or Sarvam's. */
   url: string;
-  /** Required by openai-compatible. whisper.cpp serves whatever it was started with. */
+  /** Required by openai-compatible; Sarvam defaults it; whisper.cpp ignores it. */
   model?: string;
+  /**
+   * BCP-47 hint for providers that accept one (`hi-IN`, `en-IN`). Sarvam takes
+   * `unknown` to auto-detect, which is the default and usually right.
+   */
+  language?: string;
   apiKey?: string;
 };
+
+/** What Sarvam serves when no model is named. */
+export const SARVAM_DEFAULT_MODEL = "saaras:v3";
+export const SARVAM_URL = "https://api.sarvam.ai";
 
 export class Stt {
   constructor(private config: SttConfig) {}
 
   /** The route a capture actually posts to. Worth naming in a failure message. */
   get endpoint(): string {
-    return this.config.provider === "whisper-cpp"
-      ? `${this.config.url}/inference`
-      : `${this.config.url}/audio/transcriptions`;
+    switch (this.config.provider) {
+      case "whisper-cpp": return `${this.config.url}/inference`;
+      case "sarvam": return `${this.config.url}/speech-to-text`;
+      default: return `${this.config.url}/audio/transcriptions`;
+    }
   }
 
+  /**
+   * Sarvam authenticates with its own header name. Sending it as Bearer gets a
+   * 401 that reads like a bad key rather than a wrong protocol, so the shape is
+   * chosen per provider and never guessed.
+   */
   private headers(): Record<string, string> {
-    return this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {};
+    if (!this.config.apiKey) return {};
+    return this.config.provider === "sarvam"
+      ? { "api-subscription-key": this.config.apiKey }
+      : { authorization: `Bearer ${this.config.apiKey}` };
   }
 
   /**
@@ -44,7 +70,10 @@ export class Stt {
    * Credentials get checked where a wrong answer is actionable: in setup.
    */
   async health(): Promise<boolean> {
-    const probe = this.config.provider === "whisper-cpp" ? `${this.config.url}/` : `${this.config.url}/models`;
+    // Sarvam publishes no model listing, so its own base URL is the probe.
+    const probe = this.config.provider === "openai-compatible"
+      ? `${this.config.url}/models`
+      : `${this.config.url}/`;
     try {
       const r = await fetch(probe, { headers: this.headers(), signal: AbortSignal.timeout(2000) });
       return r.status < 500;
@@ -56,11 +85,19 @@ export class Stt {
   async transcribe(wav16k: Uint8Array): Promise<string> {
     const form = new FormData();
     form.append("file", new Blob([wav16k as BufferSource], { type: "audio/wav" }), "audio.wav");
-    form.append("response_format", "json");
-    // The hosted shape names a model per request. whisper.cpp serves the one it
-    // was started with and takes a sampling temperature instead.
-    if (this.config.provider === "whisper-cpp") form.append("temperature", "0");
-    else form.append("model", this.config.model ?? "");
+
+    if (this.config.provider === "sarvam") {
+      form.append("model", this.config.model || SARVAM_DEFAULT_MODEL);
+      // `unknown` is Sarvam's own auto-detect value. Omitting the field entirely
+      // is not the same thing on every model, so it is always sent.
+      form.append("language_code", this.config.language || "unknown");
+    } else {
+      form.append("response_format", "json");
+      // The hosted shape names a model per request. whisper.cpp serves the one it
+      // was started with and takes a sampling temperature instead.
+      if (this.config.provider === "whisper-cpp") form.append("temperature", "0");
+      else form.append("model", this.config.model ?? "");
+    }
 
     const res = await fetch(this.endpoint, {
       method: "POST",
@@ -71,9 +108,14 @@ export class Stt {
     if (!res.ok) throw new Error(`stt ${res.status}: ${(await res.text()).slice(0, 200)}`);
 
     const ct = res.headers.get("content-type") ?? "";
-    const raw = ct.includes("json")
-      ? (((await res.json()) as { text?: string; transcription?: string }).text ?? "")
-      : await res.text();
+    let raw: string;
+    if (ct.includes("json")) {
+      // whisper.cpp and the OpenAI shape answer `text`; Sarvam answers `transcript`.
+      const body = (await res.json()) as { text?: string; transcript?: string };
+      raw = body.text ?? body.transcript ?? "";
+    } else {
+      raw = await res.text();
+    }
     return stripNonSpeech(raw);
   }
 }

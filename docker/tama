@@ -185,6 +185,11 @@ case $command in
     git -C "$dir" push -u origin "$branch"
     ;;
   notes)    compose exec -T tama sh -c 'find /vault -name "*.md" | wc -l' ;;
+  # A client needs a token; two curl calls against /pair was the alternative.
+  token)
+    if [ $# -eq 0 ]; then echo 'usage: tama token NAME [--as AUDIENCE]' >&2; exit 2; fi
+    compose exec -T tama bun run src/tama.ts token "$@" ;;
+
   # Reads the summary on stdin, so an agent can pipe one straight in.
   session)
     if [ $# -eq 0 ]; then echo 'usage: tama session PROJECT [--shipped X] [--next Y] < summary.md' >&2; exit 2; fi
@@ -213,6 +218,7 @@ tama status                 what is running
 tama logs [service]         follow logs; defaults to tama
 tama health                 the /health JSON
 tama ask "question"         ask your notes from the terminal
+tama token NAME             mint a device token for a client (iOS, MCP, a script)
 tama session PROJECT        record what a session did; summary on stdin
 tama notes                  how many Markdown notes are in the vault
 tama vault                  where the notes are, and their git state

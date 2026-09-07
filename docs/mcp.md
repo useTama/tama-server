@@ -96,24 +96,32 @@ them.
 The server binds `127.0.0.1:8080`, so a laptop needs a tunnel. **Run this on
 the laptop, not on the server** - the server has no key to itself:
 
+**On the server**, mint a token for this client:
+
 ```sh
-# on your Mac
-ssh -N -L 8080:localhost:8080 ubuntu@YOUR_SERVER
+tama token mcp-laptop
 ```
 
-Leave it running, then in another terminal:
+It prints once. `--as AUDIENCE` instead if you want it scoped to a view.
+
+**On your Mac**, open the tunnel and leave it running:
 
 ```sh
-claude mcp add --transport http tama http://localhost:8080/mcp \
-  --header "Authorization: Bearer $TOKEN"
+ssh -N -L 8788:localhost:8080 ubuntu@YOUR_SERVER
 ```
 
-`$TOKEN` is a device token from `tama settings` (Devices, or an audience's
-token for a scoped one). Check it took:
+The left number is yours to choose; only the right one has to be 8080. 8788
+rather than 8080 so it cannot collide with a dev server you already run.
+
+**On your Mac**, in another terminal:
 
 ```sh
+claude mcp add --transport http tama http://localhost:8788/mcp \
+  --header "Authorization: Bearer PASTE_THE_TOKEN"
 claude mcp list
 ```
+
+Then in any Claude Code session, ask something only your notes would know.
 
 A tunnel that has to be up is friction, and it is the third feature waiting on
 a domain: with HTTPS in front, this is a plain URL and no tunnel at all.

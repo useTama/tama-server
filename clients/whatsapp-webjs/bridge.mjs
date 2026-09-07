@@ -19,7 +19,7 @@
  */
 
 import { createRequire } from "node:module";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 
@@ -65,7 +65,21 @@ function loadSettings() {
       console.error(stamp(), `warning: ${name} in the environment overrides ${SETTINGS_PATH}; remove it from .env to use the settings file`);
     }
   }
+  // An audience is a match rule plus the token minted for it. The bridge holds
+  // one token per audience and never decides what any of them may see: the
+  // server derives the view, voice and flags from the token. So a wrong rule
+  // here sends a question to the wrong audience, which is bad, but it cannot
+  // widen what that audience can read.
+  const audiences = Array.isArray(file.audiences) ? file.audiences : [];
   return {
+    audiences: audiences
+      .filter((a) => a && a.token)
+      .map((a) => ({
+        name: String(a.name ?? "unnamed"),
+        token: String(a.token),
+        mention: a.mention === "when-mentioned" ? "when-mentioned" : "always",
+        match: (Array.isArray(a.match) ? a.match : []).map((m) => String(m)),
+      })),
     token: process.env.TAMA_TOKEN || file.token || "",
     // Digits only, country code included: "919876543210".
     allowed: new Set(numbers.map((n) => String(n).replace(/[^\d]/g, "")).filter(Boolean)),
@@ -81,6 +95,7 @@ const log = (...parts) => console.log(stamp(), ...parts);
 
 const settings = loadSettings();
 const TAMA_TOKEN = settings.token;
+const AUDIENCES = settings.audiences;
 const ALLOWED = settings.allowed;
 const ASK_PREFIX = settings.askPrefix;
 const SELF_CHAT_TEXT = settings.selfChatText;
@@ -105,14 +120,14 @@ if (!TAMA_TOKEN) {
  * those. It also used to end in a thrown error and no WhatsApp reply at all,
  * so a permanent failure looked exactly like the bridge being broken.
  */
-async function post(path, { headers = {}, body }) {
+async function post(path, { headers = {}, body, token = TAMA_TOKEN }) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 5000 * 2 ** (attempt - 1)));
     try {
       const res = await fetch(`${TAMA_URL}${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${TAMA_TOKEN}`, ...headers },
+        headers: { authorization: `Bearer ${token}`, ...headers },
         body,
         signal: AbortSignal.timeout(300_000),
       });
@@ -242,13 +257,16 @@ async function capture(message) {
   await reply(message, `I couldn't save that voice note: ${body.error ?? `HTTP ${res.status}`}`);
 }
 
-async function askQuestion(message, question) {
+async function askQuestion(message, question, audience) {
   const res = await post("/ask", {
+    token: audience?.token,
     headers: { "content-type": "application/json" },
     // Ask for the chat shape: no markdown, since WhatsApp shows the asterisks,
     // no note paths, since nobody here can open one, and a couple of sentences
     // rather than an essay in a bubble.
-    body: JSON.stringify({ question, style: "chat" }),
+    // No style, no audience name: an audience's shape comes from its token.
+    // The owner's own token has no audience, so it asks for the chat shape.
+    body: JSON.stringify(audience ? { question } : { question, style: "chat" }),
   });
   const body = await res.json().catch(() => ({}));
 
@@ -338,6 +356,9 @@ async function onMessage(message) {
   }
 
   const ids = await senderIdentifiers(message, chatId);
+  // A group is silent unless an audience claims it. That is the old blanket
+  // ignore, kept, with an opt-in.
+  const audience = AUDIENCES.find((a) => a.match.some((m) => ids.has(m.replace(/[^\d]/g, "")) || m === chatId));
   // Self-chat by number, not by chat id: under `@lid` addressing the id of your
   // own chat is not derivable from your own wid.
   const isSelfChat = (selfNumber && ids.has(selfNumber)) || chatId === selfId;
@@ -348,10 +369,10 @@ async function onMessage(message) {
     return;
   }
 
-  if (!isSelfChat && ![...ids].some((id) => ALLOWED.has(id))) {
+  if (!isSelfChat && !audience && ![...ids].some((id) => ALLOWED.has(id))) {
     // Print every candidate. If none of them is the number the user recognises,
     // this line is what tells them which value to allow instead.
-    seen(`ignored, none of [${[...ids].join(", ")}] is on the allowed list`);
+    seen(`ignored, none of [${[...ids].join(", ")}] matches an audience or the allowed list`);
     return;
   }
 
@@ -359,6 +380,13 @@ async function onMessage(message) {
   const text = (message.body ?? "").trim();
 
   if (isVoice) {
+    // An audience never captures. A second brain filling with other people's
+    // voice notes is the failure the group ignore was always about, and an
+    // audience's token is scoped for reading rather than writing.
+    if (audience) {
+      seen(`ignored, ${audience.name} does not capture`);
+      return;
+    }
     seen("capture");
     return capture(message);
   }
@@ -394,6 +422,19 @@ async function onMessage(message) {
     seen("ask");
     return askQuestion(message, question);
   }
+  if (audience) {
+    // "when mentioned" is what keeps a busy group from muting the bot. Match on
+    // the linked number, since that is what an @ mention resolves to.
+    if (audience.mention === "when-mentioned") {
+      const mentioned = selfNumber && (text.includes(selfNumber) || (message._data?.mentionedJidList ?? []).some((j) => String(j).includes(selfNumber)));
+      if (!mentioned) {
+        seen(`ignored, ${audience.name} replies only when mentioned`);
+        return;
+      }
+    }
+    seen(`ask as ${audience.name}`);
+    return askQuestion(message, text, audience);
+  }
   seen("ask");
   return askQuestion(message, text);
 }
@@ -412,6 +453,10 @@ client.on("ready", () => {
   log("tama", TAMA_URL);
   log("allowed senders", ALLOWED.size ? [...ALLOWED].join(", ") : "none (your own self-chat only)");
   log("self-chat text", SELF_CHAT_TEXT === "ask" ? "answered as a question" : `ignored unless prefixed with "${ASK_PREFIX}"`);
+  for (const a of AUDIENCES) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
+  // Settings runs in a container with no WhatsApp session, so it cannot ask
+  // someone to type a group id. Publish what this session can see instead.
+  void publishChats();
 });
 
 client.on("auth_failure", (m) => {
@@ -442,6 +487,29 @@ client.on("message_create", (message) => {
     }
   });
 });
+
+/**
+ * Write the groups this session can see back into the settings file, so
+ * `tama settings` can offer them as a menu rather than asking for
+ * 120363...@g.us. Only ids and names, and only groups: a dump of every private
+ * chat would put the user's whole contact list in a config file.
+ */
+async function publishChats() {
+  try {
+    const chats = await client.getChats();
+    const groups = chats
+      .filter((c) => c.isGroup)
+      .map((c) => ({ id: c.id?._serialized, name: c.name }))
+      .filter((c) => c.id);
+    const file = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+    file.chats = groups;
+    writeFileSync(SETTINGS_PATH, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    log("published", `${groups.length} groups for tama settings to offer`);
+  } catch (error) {
+    // Non-fatal: it only costs the settings menu its group list.
+    console.error("could not publish the chat list:", error?.message ?? error);
+  }
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {

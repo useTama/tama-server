@@ -525,6 +525,47 @@ Pass all three through in the `tama` service's `environment:`, restart, and conf
 
 ---
 
+## 13b. Optional: keep the vault as a folder you can open
+
+By default the vault is a Docker named volume. That needs no setup and survives
+a rebuild, and it is also invisible: `~/tama` has no notes in it, and the real
+path is `/var/lib/docker/volumes/tama_tama-vault/_data`, root-owned. For a
+product whose pitch is "a folder you own", that is the wrong default once there
+is anything in it.
+
+To make it a real directory:
+
+```sh
+cd ~/tama
+echo 'TAMA_VAULT_DIR=/home/ubuntu/vault' >> .env
+
+# Copy what is already there, from inside a container so permissions are simple
+mkdir -p ~/vault
+docker run --rm -v tama_tama-vault:/from:ro -v "$HOME/vault":/to alpine \
+  sh -c 'cp -a /from/. /to/'
+sudo chown -R "$USER:$USER" ~/vault
+
+tama restart
+tama notes                      # same count as before
+ls ~/vault                      # your notes, as files
+```
+
+Then the vault is a normal git repo you can open in an editor, push to a private
+remote, and clone down to Obsidian:
+
+```sh
+cd ~/vault
+git remote add origin git@github.com:you/vault-private.git
+git push -u origin main
+```
+
+The old volume is left in place until you are satisfied, then
+`docker volume rm tama_tama-vault`.
+
+**Every service that mounts the vault reads the same variable**, so the wizard,
+settings and the server all agree. Setting it for one and not the others would
+mean the wizard writing to one vault and the server reading another.
+
 ## 14. Backups
 
 The vault is a git repo inside the `tama-vault` volume. Two things to do:

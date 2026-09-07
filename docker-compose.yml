@@ -9,6 +9,12 @@
 #
 #   docker compose run --rm settings
 #
+# The vault is a named volume by default. To keep it as a folder you can open,
+# edit and push to a private git remote:
+#
+#   TAMA_VAULT_DIR=/home/ubuntu/vault, in .env, then move the data across once.
+#   See docs/deploy-docker.md.
+#
 # Do not pre-copy tama.config.docker.json into config/ before the wizard: that
 # template's placeholder adminToken is rejected on load by design. The template
 # is for configuring by hand instead of running the wizard.
@@ -35,7 +41,11 @@ services:
       TAMA_CONFIG: /etc/tama/tama.config.json
     volumes:
       - ./config:/etc/tama:ro
-      - tama-vault:/vault
+      # Defaults to a named volume, which needs no setup and survives a
+      # rebuild. Set TAMA_VAULT_DIR to a path and the vault becomes a folder
+      # you can ls, edit and git push - which is what most people want once
+      # there is anything in it, since "a folder you own" is the whole pitch.
+      - ${TAMA_VAULT_DIR:-tama-vault}:/vault
       - tama-data:/data
 
   # The setup wizard, run interactively and then thrown away. Same image, same
@@ -51,7 +61,7 @@ services:
       TAMA_DATA_DIR: /data
     volumes:
       - ./config:/etc/tama
-      - tama-vault:/vault
+      - ${TAMA_VAULT_DIR:-tama-vault}:/vault
       - tama-data:/data
 
   # Same image and volumes as setup, one section at a time instead of the whole
@@ -59,13 +69,19 @@ services:
   # or revoke a device, rather than editing .env by hand.
   #
   #   docker compose run --rm settings
+#
+# The vault is a named volume by default. To keep it as a folder you can open,
+# edit and push to a private git remote:
+#
+#   TAMA_VAULT_DIR=/home/ubuntu/vault, in .env, then move the data across once.
+#   See docs/deploy-docker.md.
   settings:
     profiles: ["settings"]
     build: .
     command: ["bun", "run", "src/tama.ts", "settings", "--config", "/etc/tama/tama.config.json"]
     volumes:
       - ./config:/etc/tama
-      - tama-vault:/vault
+      - ${TAMA_VAULT_DIR:-tama-vault}:/vault
       - tama-data:/data
 
   # Never built or started without --profile local-stt. There is deliberately

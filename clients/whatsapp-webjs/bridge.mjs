@@ -188,6 +188,7 @@ const client = new Client({
 const ours = new Set();
 
 let selfId = "";
+let selfNumber = "";
 
 async function reply(message, text) {
   for (const chunk of splitReply(text)) {
@@ -257,6 +258,25 @@ async function askQuestion(message, question) {
   await reply(message, body.answer ?? "");
 }
 
+/**
+ * Which phone number a message is from, in the digits-only form the allowlist
+ * uses.
+ *
+ * The chat id is not that number any more. WhatsApp now addresses many chats as
+ * `<opaque id>@lid` rather than `<number>@c.us`, so parsing digits out of the id
+ * yields an internal identifier that matches nothing. The contact record still
+ * carries the real number, so ask for it, and keep the id as the fallback for
+ * the plain `@c.us` case.
+ */
+async function senderNumber(message, chatId) {
+  try {
+    const contact = await message.getContact();
+    const number = contact?.number ?? contact?.id?.user;
+    if (number) return String(number).replace(/[^\d]/g, "");
+  } catch { /* fall through to the id */ }
+  return String(chatId).replace(/@.*$/, "").replace(/[^\d]/g, "");
+}
+
 async function onMessage(message) {
   if (message.id?._serialized && ours.has(message.id._serialized)) return;
 
@@ -266,23 +286,39 @@ async function onMessage(message) {
   // without this line there is no way to tell "filtered" from "never arrived".
   const seen = (verdict) => log("seen", message.type ?? "?", chatId ?? "?", message.fromMe ? "fromMe" : "inbound", "->", verdict);
 
-  // Groups are never captured. A second brain filling up with other people's
-  // chatter is a worse failure than missing a note.
-  if (!chatId || !chatId.endsWith("@c.us")) {
-    seen("ignored, not a direct chat");
+  if (!chatId) {
+    seen("ignored, no chat id");
     return;
   }
 
-  const isSelfChat = chatId === selfId;
+  // Groups are never captured: a second brain filling up with other people's
+  // chatter is a worse failure than missing a note. Ask the chat whether it is
+  // a group rather than matching an id suffix, because the suffixes changed -
+  // treating everything that was not `@c.us` as "not a direct chat" silently
+  // dropped every message from a chat WhatsApp had moved to `@lid`.
+  let isGroup = chatId.endsWith("@g.us");
+  try {
+    const chat = await message.getChat();
+    if (chat) isGroup = chat.isGroup === true;
+  } catch { /* keep the suffix guess */ }
+  if (isGroup || chatId.endsWith("@broadcast") || chatId === "status@broadcast") {
+    seen("ignored, not a one-to-one chat");
+    return;
+  }
+
+  const number = await senderNumber(message, chatId);
+  // Self-chat by number, not by chat id: under `@lid` addressing the id of your
+  // own chat is not derivable from your own wid.
+  const isSelfChat = (selfNumber && number === selfNumber) || chatId === selfId;
+
   // Your own outgoing half of someone else's chat is not input.
   if (message.fromMe && !isSelfChat) {
     seen("ignored, your own message to someone else");
     return;
   }
 
-  const number = chatId.replace(/@c\.us$/, "");
   if (!isSelfChat && !ALLOWED.has(number)) {
-    seen(`ignored, ${number} is not in WA_ALLOWED`);
+    seen(`ignored, ${number} is not on the allowed list`);
     return;
   }
 
@@ -338,6 +374,7 @@ client.on("authenticated", () => log("authenticated; session saved to", SESSION_
 
 client.on("ready", () => {
   selfId = client.info?.wid?._serialized ?? "";
+  selfNumber = (client.info?.wid?.user ?? "").replace(/[^\d]/g, "");
   log("ready as", selfId);
   log("tama", TAMA_URL);
   log("allowed senders", ALLOWED.size ? [...ALLOWED].join(", ") : "none (your own self-chat only)");

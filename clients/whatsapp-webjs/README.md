@@ -78,6 +78,34 @@ brain.` and a path.
 Keep `--profile whatsapp-webjs` on every later `docker compose` command, or
 Compose treats this container as an orphan and stops it.
 
+### Groups, and one persona per audience
+
+`tama settings` → **Audiences** is where a group gets its own behaviour. One row
+per audience, and every field is a menu:
+
+| Field | What it decides |
+|---|---|
+| Sees | a view: `none`, `everything`, or one you named. This is the boundary |
+| Voice | `friend`, `neutral`, or `roast` |
+| Length | a couple of sentences, or full prose |
+| Note paths | withheld automatically on anything but `everything` |
+| When notes are empty | admit it, or just reply to what was said |
+| In a group | every message, or only when mentioned |
+| One line about the room | free text, context only, never policy |
+
+Saving one mints its token and writes it straight into this client's settings,
+against the chat you pick from the groups the bridge can see. Nothing is pasted
+by hand.
+
+**A group is silent until an audience claims it**, and audiences never capture:
+their tokens are for reading, and a vault filling with other people's voice
+notes is what the blanket group ignore was always for.
+
+The boundary is the view, not the voice. A prompt asking the model not to
+mention something does not work, because the notes are already in its context by
+then. The audience's token carries its view and the server derives everything
+from that, so a compromised bridge cannot widen what a group reads.
+
 ### Changing it later
 
 `tama settings` again (or `tama-server settings` on a source checkout). The

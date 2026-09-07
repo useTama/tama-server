@@ -148,3 +148,20 @@ test("bridge settings record the numbers and prefix chosen for a scratchpad self
     selfChatText: "ignore",
   });
 });
+
+test("editing the owner's bridge settings keeps audiences and the chat list", () => {
+  // bridgeSettings is what the bridge section writes, and it replaces the file.
+  // Dropping these would silently disconnect every group and empty the menu
+  // that reconnects them.
+  const kept = bridgeSettings("tok", ["919792975227"], "?", "ask", {
+    audiences: [{ name: "the-boys", token: "t2", match: ["120363@g.us"], mention: "when-mentioned" }],
+    chats: [{ id: "120363@g.us", name: "the boys" }],
+  });
+  expect(kept.audiences).toEqual([
+    { name: "the-boys", token: "t2", match: ["120363@g.us"], mention: "when-mentioned" },
+  ]);
+  expect(kept.chats).toEqual([{ id: "120363@g.us", name: "the boys" }]);
+
+  // Absent rather than present-and-empty, so a config file stays readable.
+  expect("audiences" in bridgeSettings("tok", [], "?")).toBe(false);
+});

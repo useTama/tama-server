@@ -24,6 +24,19 @@ type AskConfig =
 export type BridgeSettings = {
   token: string;
   allowedFrom: string[];
+  /**
+   * One entry per audience the bridge answers as, each holding the token minted
+   * for it. The bridge decides which entry a message belongs to and nothing
+   * else: the server derives the view, voice and flags from the token, so a
+   * wrong match rule misroutes a question without widening what it can read.
+   */
+  audiences?: Array<{ name: string; token: string; match: string[]; mention: "always" | "when-mentioned" }>;
+  /**
+   * Groups this WhatsApp session can see, written by the bridge on connect so
+   * `tama settings` can offer them as a menu. Settings has no session of its
+   * own and cannot ask anyone to type a group id.
+   */
+  chats?: Array<{ id: string; name?: string }>;
   /** Marks a question when self-chat text is otherwise ignored. */
   askPrefix: string;
   /**
@@ -46,10 +59,21 @@ export function bridgeSettings(
   allowedFrom: string[],
   askPrefix: string,
   selfChatText: "ask" | "ignore" = "ask",
+  rest: Partial<Pick<BridgeSettings, "audiences" | "chats">> = {},
 ): BridgeSettings {
   // An empty allowlist is meaningful rather than missing: it means nobody but
   // you, in your own chat with yourself.
-  return { token, allowedFrom, askPrefix: askPrefix.trim() || "?", selfChatText };
+  // Audiences and the published chat list survive an edit to the owner's own
+  // settings: the bridge section rewrites this file, and dropping them would
+  // silently disconnect every group and empty the menu that connects them.
+  return {
+    token,
+    allowedFrom,
+    askPrefix: askPrefix.trim() || "?",
+    selfChatText,
+    ...(rest.audiences ? { audiences: rest.audiences } : {}),
+    ...(rest.chats ? { chats: rest.chats } : {}),
+  };
 }
 
 /** What setup can produce. `apiKey` is never one of them: it goes to its own file. */

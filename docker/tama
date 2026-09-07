@@ -74,7 +74,7 @@ case $command in
   help|--help|-h)
     cat <<'USAGE'
 tama setup                  first-run wizard: vault, transcription, Ask, WhatsApp
-tama settings               change one thing: WhatsApp numbers, devices
+tama settings               audiences, views, WhatsApp numbers, devices
 tama start                  build and start everything configured
 tama restart                apply a config or settings change
 tama stop                   stop the containers, volumes survive

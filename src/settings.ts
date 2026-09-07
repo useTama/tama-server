@@ -90,7 +90,7 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
     }
   }
 
-  const next = bridgeSettings(token, allowedFrom, askPrefix, selfChatText);
+  const next = bridgeSettings(token, allowedFrom, askPrefix, selfChatText, current ?? {});
   await writeSettings(bridgePath, next);
   console.log(ok(`Saved to ${bridgePath}.`));
   // Environment variables win over this file, so a pre-wizard install that
@@ -276,7 +276,7 @@ async function vaultNotes(vaultPath: string): Promise<string[]> {
 }
 
 /** One row per audience, and a token minted per audience when it is saved. */
-async function audiencesSection(configPath: string, dbPath: string, config: Config): Promise<void> {
+async function audiencesSection(configPath: string, dbPath: string, bridgePath: string, config: Config): Promise<void> {
   const audiences = config.audiences ?? {};
   const names = Object.keys(audiences);
   const viewNames = [...Object.keys(BUILTIN_VIEWS), ...Object.keys(config.views ?? {})];
@@ -331,21 +331,85 @@ async function audiencesSection(configPath: string, dbPath: string, config: Conf
     return;
   }
 
-  await editAudience(configPath, name, audiences[name], viewNames);
+  const audience = await editAudience(configPath, name, audiences[name], viewNames);
 
-  if (await yes(`Mint a device token for "${name}" now?`, audiences[name] === undefined)) {
+  const existing = await readBridge(bridgePath);
+  const alreadyWired = existing?.audiences?.some((a) => a.name === name);
+  if (await yes(alreadyWired ? `Re-issue "${name}" a token?` : `Connect "${name}" to a WhatsApp chat now?`, !alreadyWired)) {
     const db = openDb(dbPath);
+    let token: string;
     try {
-      const minted = mintToken(db, `audience:${name}`, name);
-      console.log(ok("Token minted. It is shown once."));
-      console.log(`  ${bold(minted.token)}`);
-      console.log(grey("  Give this to the client that talks to that audience. It cannot exceed the"));
-      console.log(grey("  audience's view, whatever the client asks for, because the server decides."));
+      token = mintToken(db, `audience:${name}`, name).token;
     } finally {
       db.close();
     }
+    // Written straight into the bridge's settings rather than printed. A token
+    // shown once and pasted by hand is the step this whole section exists to
+    // remove, and it is also the step where a token ends up in a shell history.
+    const match = await pickChats(bridgePath, existing, name);
+    if (match.length === 0) {
+      console.log(warn("No chat chosen, so nothing was connected. The audience is saved; run this again to attach it."));
+    } else {
+      await writeSettings(bridgePath, {
+        ...(existing ?? bridgeSettings("", [], "?")),
+        audiences: [
+          ...(existing?.audiences ?? []).filter((a) => a.name !== name),
+          { name, token, match, mention: audience.mention },
+        ],
+      });
+      console.log(ok(`Connected "${name}" to ${match.length} chat${match.length === 1 ? "" : "s"}.`));
+      console.log(grey("  Its token is in the bridge's settings file. It cannot exceed this audience's"));
+      console.log(grey("  view whatever the bridge asks for, because the server decides from the token."));
+    }
   }
   console.log(`${bold("tama restart")} ${grey("to apply it")}`);
+}
+
+/**
+ * Which chats an audience answers in.
+ *
+ * Groups come from the list the bridge publishes on connect, because settings
+ * runs in a container with no WhatsApp session and cannot reasonably ask
+ * anyone to type 120363...@g.us. A number is still accepted by hand, since a
+ * one-to-one chat that has never messaged you does not appear in any list.
+ */
+async function pickChats(
+  bridgePath: string,
+  existing: BridgeSettings | undefined,
+  name: string,
+): Promise<string[]> {
+  const groups = existing?.chats ?? [];
+  const current = existing?.audiences?.find((a) => a.name === name)?.match ?? [];
+  const chosen: string[] = [];
+
+  if (groups.length === 0) {
+    console.log(warn("The bridge has not published its group list yet."));
+    console.log(grey("  It writes one when it connects, so start it once and come back:"));
+    console.log(`  ${bold("tama start")}${grey(", then tama settings again")}`);
+  }
+
+  for (;;) {
+    const options = [
+      ...groups
+        .filter((g) => !chosen.includes(g.id))
+        .map((g) => ({ value: g.id, label: `${g.name || "unnamed group"} ${chosen.length === 0 && current.includes(g.id) ? "(current)" : ""}`.trim() })),
+      { value: "__number__", label: "a phone number instead" },
+      { value: "__done__", label: chosen.length ? "done" : "cancel" },
+    ];
+    const picked = await choose(chosen.length ? "Add another chat, or finish" : "Which chat is this audience?", options, options[0]!.value);
+    if (picked === "__done__") break;
+    if (picked === "__number__") {
+      const numbers = whatsappSenders(await ask("Number, country code and digits only", ""));
+      if (!numbers) {
+        console.log(warn("Use an international number, digits only."));
+        continue;
+      }
+      chosen.push(...numbers);
+      continue;
+    }
+    chosen.push(picked);
+  }
+  return chosen;
 }
 
 /**
@@ -465,7 +529,7 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
       await runSetup(argv);
       return;
     }
-    if (section === "audiences") await audiencesSection(configPath, dbPath, config);
+    if (section === "audiences") await audiencesSection(configPath, dbPath, bridgePath, config);
     if (section === "views") await viewsSection(configPath, config);
     if (section === "bridge") await bridgeSection(bridgePath, dbPath);
     if (section === "devices") await devicesSection(dbPath);

@@ -22,7 +22,11 @@ export const ask = async (label: string, fallback: string) => {
   finally { rl.close(); }
 };
 export const secret = async (label: string): Promise<string> => {
-  output.write(`${red("›")} ${label}${grey(" (hidden; Enter to skip)")}: `);
+  // The label carries its own "or Enter to ..." where one applies, so only the
+  // hidden-input note is added here. "Enter to skip" on a prompt that already
+  // has a saved value reads as "and then it will not work".
+  const hint = /enter to/i.test(label) ? " (hidden)" : " (hidden; Enter to skip)";
+  output.write(`${red("›")} ${label}${grey(hint)}: `);
   return new Promise((done, fail) => {
     let value = "";
     const wasRaw = input.isRaw;

@@ -664,9 +664,25 @@ async function writeSecret(configPath: string, section: string, value: string, p
   return name;
 }
 
-/** Ask for a key, or keep the saved one. Blank means keep. */
-async function maybeNewKey(configPath: string, section: string, saved: string | undefined): Promise<string | undefined> {
-  const entered = await secret(saved ? "API key (Enter to keep the saved one)" : "API key");
+/**
+ * Ask for a key, or keep the saved one. Blank means keep.
+ *
+ * The reference is read from the raw config rather than the parsed one:
+ * `loadConfig` resolves `apiKeyFile` into a live key, so the parsed shape does
+ * not say where the key came from - and a prompt that cannot tell whether a
+ * key exists says "Enter to skip", which reads as "and then it will not work".
+ */
+async function maybeNewKey(configPath: string, section: "stt" | "ask"): Promise<string | undefined> {
+  let saved: string | undefined;
+  try {
+    const raw = JSON.parse(await readFile(configPath, "utf8"));
+    saved = raw?.[section]?.apiKeyFile ? String(raw[section].apiKeyFile) : undefined;
+    if (!saved && (raw?.[section]?.apiKey || raw?.[section]?.apiKeyEnv)) {
+      console.log(grey("  A key is already configured. Enter keeps it."));
+    }
+  } catch { /* no config to read a reference out of */ }
+
+  const entered = await secret(saved ? "API key, or Enter to keep the saved one" : "API key");
   if (!entered) return undefined;
   return writeSecret(configPath, section, entered, saved);
 }
@@ -700,7 +716,7 @@ async function sttSection(configPath: string, config: Config): Promise<void> {
   const preset = providers.find((p) => p.value === chosen)!;
   console.log(warn("  Your recordings will be uploaded to this provider."));
   console.log(`${grey("  Get a key:")} ${preset.keys}`);
-  const keyFile = await maybeNewKey(configPath, "stt", (config.stt as { apiKeyFile?: string }).apiKeyFile);
+  const keyFile = await maybeNewKey(configPath, "stt");
 
   let model: string | undefined;
   let language: string | undefined;
@@ -778,7 +794,7 @@ async function askSection(configPath: string, config: Config): Promise<void> {
     const preset = presets.find((p) => p.value === chosen)!;
     console.log(warn("  Your questions and the note excerpts that answer them go to this provider."));
     console.log(`${grey("  Get a key:")} ${preset.keys}`);
-    keyFile = await maybeNewKey(configPath, "ask", (config.ask as { apiKeyFile?: string } | undefined)?.apiKeyFile);
+    keyFile = await maybeNewKey(configPath, "ask");
   }
 
   console.log(grey("  Loading available models…"));

@@ -95,13 +95,17 @@ function loadSettings() {
  * How long an exchange stays open, and how much it may say inside one.
  *
  * "in-conversation" answers while a conversation is live, which needs a
- * definition of live: three minutes since it last spoke in that chat. The cap
- * is the other half. A group of seventeen with a chatty bot is a muted group,
- * and a loop between two bots is a bill.
+ * definition of live: a few minutes since it last spoke in that chat.
+ *
+ * The cap is a runaway guard, not a politeness setting, and the first numbers
+ * confused the two. Eight replies in ten minutes is a normal afternoon in a
+ * group of seventeen that finds the bot funny, so it went quiet mid-conversation
+ * and looked broken. Thirty still stops a loop with another bot, which is the
+ * thing actually worth stopping, since that is somebody's bill.
  */
-const CONVERSATION_MS = 3 * 60_000;
-const REPLY_BUDGET = 8;
-const BUDGET_MS = 10 * 60_000;
+const CONVERSATION_MS = Number(process.env.WA_CONVERSATION_MINUTES ?? 5) * 60_000;
+const REPLY_BUDGET = Number(process.env.WA_REPLY_BUDGET ?? 30);
+const BUDGET_MS = Number(process.env.WA_BUDGET_MINUTES ?? 10) * 60_000;
 
 /** When it last spoke in a chat, and when each of those replies happened. */
 const lastSpoke = new Map();
@@ -637,7 +641,8 @@ async function onMessage(message) {
     // The cap applies whatever the mode, including "always". Nothing else here
     // stops a loop with another bot, or a bad day in a very busy group.
     if (isGroup && !withinBudget(chatId)) {
-      seen(`ignored, ${audience.name} has said enough in the last ten minutes`);
+      // Said out loud, because a silent bot mid-conversation reads as a bug.
+      seen(`ignored, ${audience.name} hit its cap of ${REPLY_BUDGET} replies per ${BUDGET_MS / 60_000} min. raise it with WA_REPLY_BUDGET`);
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);

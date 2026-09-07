@@ -103,6 +103,12 @@ services:
       # override it when set, for a one-off or a pre-wizard deployment.
       TAMA_TOKEN: "${TAMA_TOKEN:-}"
       WA_ALLOWED: "${WA_ALLOWED:-}"
+      # A runaway guard, not a politeness setting. Raise the budget for a group
+      # that talks; it exists to stop a loop with another bot, not to ration a
+      # conversation.
+      WA_REPLY_BUDGET: "${WA_REPLY_BUDGET:-30}"
+      WA_BUDGET_MINUTES: "${WA_BUDGET_MINUTES:-10}"
+      WA_CONVERSATION_MINUTES: "${WA_CONVERSATION_MINUTES:-5}"
     volumes:
       # Read-only, and the same directory the server and wizard share. The
       # bridge reads its settings file at startup, so changes need a restart.

@@ -434,6 +434,8 @@ const server = Bun.serve({
         );
       }
 
+      // Captured for the stream's closure, which cannot see `device`.
+      const audienceOfDevice = device.audience;
       if (b.stream) {
         // Server-sent events, one JSON object per event, so a client can show
         // sources immediately and text as it arrives.
@@ -445,7 +447,9 @@ const server = Bun.serve({
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
               }
             } catch (e) {
-              const message = e instanceof Error ? e.message : String(e);
+              const raw = e instanceof Error ? e.message : String(e);
+              console.error("ask stream failed:", raw);
+              const message = audienceOfDevice ? "the model could not answer that right now" : raw;
               controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", message })}\n\n`));
             } finally {
               controller.close();
@@ -469,7 +473,15 @@ const server = Bun.serve({
         else if (ev.type === "done") answer = ev.answer;
         else if (ev.type === "error") {
           console.error("ask failed:", ev.message);
-          return json({ error: ev.message }, 502);
+          // A provider's error text is written for whoever runs the server. It
+          // names the model, the endpoint, and in OpenRouter's case a URL
+          // containing a key identifier - and an audience's reply goes into a
+          // room full of other people. This one relayed a 402 into a group of
+          // seventeen, key link included.
+          return json(
+            { error: device.audience ? "the model could not answer that right now" : ev.message },
+            502,
+          );
         }
       }
       const ms = Math.round(performance.now() - started);

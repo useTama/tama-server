@@ -300,7 +300,12 @@ async function askQuestion(message, question, audience, who) {
   }
   if (!res.ok) {
     log("ask failed", res.status, body.error ?? "");
-    await reply(message, `I couldn't answer that: ${body.error ?? `HTTP ${res.status}`}`);
+    // Never relay the detail into a room the owner does not control. The
+    // server already withholds it from an audience; this is the second half of
+    // the same rule, for the case where the failure happened here.
+    await reply(message, audience
+      ? "abhi dimaag kaam nahi kar raha, thodi der baad bol"
+      : `I couldn't answer that: ${body.error ?? `HTTP ${res.status}`}`);
     return;
   }
   log("ask", `"${question.slice(0, 60)}"`, `-> ${body.sources?.length ?? 0} sources ${body.ms ?? "?"}ms`);
@@ -661,11 +666,20 @@ client.on("message_create", (message) => {
   onMessage(message).catch(async (error) => {
     const detail = error instanceof Error ? error.message : String(error);
     console.error("handler failed:", detail);
+    // Who this chat belongs to, recomputed cheaply: a failure reply must not
+    // put internals into a room the owner does not control, and by this point
+    // the decision made inside onMessage is out of reach.
+    const chatId = message.fromMe ? message.to : message.from;
+    const inAudience = AUDIENCES.some((a) => a.match.some((m) => m === chatId));
     // Whatever went wrong, the person who sent the message is still waiting.
     // Failing quietly is what made a plain out-of-credit error look like a
     // dead bridge for an hour.
     try {
-      await reply(message, `Something went wrong handling that: ${detail}`);
+      // Same reasoning: a stack of internals in a group chat tells sixteen
+      // people about your deployment and helps none of them.
+      await reply(message, inAudience
+        ? "kuch toot gaya, baad me dekhta hoon"
+        : `Something went wrong handling that: ${detail}`);
     } catch (replyError) {
       console.error("could not report the failure either:", replyError instanceof Error ? replyError.message : replyError);
     }

@@ -11,7 +11,8 @@
     "setup": "bun run src/tama.ts setup",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/tama.ts --compile --outfile dist/tama-server"
+    "build": "bun build src/tama.ts --compile --outfile dist/tama-server",
+    "eval": "bun test test/eval"
   },
   "devDependencies": {
     "@types/bun": "latest",

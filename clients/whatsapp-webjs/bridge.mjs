@@ -256,6 +256,8 @@ const utterance = (chatId, text) => `${chatId}\u0000${text.trim()}`;
 
 let selfId = "";
 let selfNumber = "";
+/** So the prefix hint is a note, not a nag. */
+let toldAboutPrefix = false;
 
 async function reply(message, text) {
   const chatId = message.fromMe ? message.to : message.from;
@@ -274,10 +276,40 @@ async function reply(message, text) {
   }
 }
 
+/**
+ * Fetch the audio, with retries.
+ *
+ * `downloadMedia()` throws minified internal errors from WhatsApp Web - a
+ * voice note failed here with the message "r" - and it is usually transient:
+ * the media is fetched from WhatsApp's servers when asked for, and asking again
+ * a second later tends to work. Failing on the first attempt loses a note the
+ * user has already spoken, which is the one outcome this whole product exists
+ * to prevent.
+ */
+async function downloadAudio(message) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500 * attempt));
+    try {
+      const media = await message.downloadMedia();
+      if (media?.data) return media;
+      lastError = new Error("no data returned");
+    } catch (error) {
+      lastError = error;
+    }
+    log("media download failed", `attempt ${attempt + 1}: ${lastError?.message ?? lastError}`);
+  }
+  throw lastError ?? new Error("could not download the audio");
+}
+
 async function capture(message) {
-  const media = await message.downloadMedia();
-  if (!media?.data) {
-    await reply(message, "That voice note did not download, so nothing was saved.");
+  let media;
+  try {
+    media = await downloadAudio(message);
+  } catch (error) {
+    log("capture failed", `download: ${error?.message ?? error}`);
+    // Named for what the user can do about it. "r" told them nothing.
+    await reply(message, "couldn't download that voice note from whatsapp. send it again?");
     return;
   }
   const audio = Buffer.from(media.data, "base64");
@@ -657,6 +689,14 @@ async function onMessage(message) {
   if (isSelfChat && SELF_CHAT_TEXT === "ignore") {
     if (!text.startsWith(ASK_PREFIX)) {
       seen(`ignored, self-chat text without the "${ASK_PREFIX}" prefix`);
+      // Said once per run, in the chat, because silence in your own chat with
+      // your own assistant reads as broken however deliberate it is. The log
+      // line above was the only signal, and nobody reads a log to find out why
+      // their own bot ignored them.
+      if (!toldAboutPrefix) {
+        toldAboutPrefix = true;
+        await reply(message, `put "${ASK_PREFIX}" in front to ask me something, or turn that off in tama settings under the whatsapp bridge`);
+      }
       return;
     }
     const question = text.slice(ASK_PREFIX.length).trim();

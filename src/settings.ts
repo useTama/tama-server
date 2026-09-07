@@ -205,10 +205,14 @@ async function editAudience(
   }
 
   const mention = await choose("In a group, when should it reply?", [
-    { value: "in-conversation" as const, label: "when it is part of the conversation — answers, then goes quiet" },
-    { value: "when-mentioned" as const, label: "only when mentioned or replied to" },
-    { value: "always" as const, label: "every message — chatty, and in a big group that means muted" },
+    { value: "in-conversation" as const, label: "mentions and replies, and then the rest of the exchange" },
+    { value: "when-mentioned" as const, label: "mentions and replies only, nothing in between" },
+    { value: "always" as const, label: "every message from everyone — in a big group that means muted" },
   ], current?.mention ?? "in-conversation");
+  if (mention === "in-conversation") {
+    console.log(grey("  It answers when tagged or replied to, then keeps answering for three minutes"));
+    console.log(grey("  after it last spoke, so a back-and-forth does not need tagging every line."));
+  }
 
   const note = await ask("One line about this room, or Enter for none", current?.note ?? "");
 

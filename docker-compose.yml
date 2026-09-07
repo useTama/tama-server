@@ -79,7 +79,11 @@ services:
     environment:
       TAMA_URL: http://tama:8080
       # A device token from pairing, NOT the admin token. See the client README.
-      TAMA_TOKEN: "${TAMA_TOKEN:?mint a device token first, see clients/whatsapp-webjs/README.md}"
+      # Deliberately not ${TAMA_TOKEN:?…}: interpolation happens when Compose
+      # parses the file, before profiles are applied, so a required variable
+      # here breaks `docker compose up` for everyone not running the bridge.
+      # bridge.mjs refuses to start without it and prints how to mint one.
+      TAMA_TOKEN: "${TAMA_TOKEN:-}"
       # Comma-separated, country code and digits only. Empty means your own
       # self-chat is the only thing listened to.
       WA_ALLOWED: ${WA_ALLOWED:-}

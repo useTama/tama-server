@@ -590,9 +590,9 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
     }
 
     const section = await choose("What would you like to change?", [
-      { value: "audiences" as const, label: "Audiences — who can talk to it, what they see, how it replies" },
-      { value: "views" as const, label: "Views — named slices of the vault that audiences can use" },
-      { value: "bridge" as const, label: "WhatsApp bridge — allowed numbers, self-chat behaviour, token" },
+      { value: "audiences" as const, label: "Audiences — everyone who is not you: groups, other people" },
+      { value: "views" as const, label: "Views — named slices of the vault, for audiences to see through" },
+      { value: "bridge" as const, label: "WhatsApp bridge — your own numbers, self-chat behaviour, token" },
       { value: "devices" as const, label: "Devices — list what is paired, revoke one" },
       { value: "wizard" as const, label: "Everything else — vault, transcription, Ask (full setup)" },
       { value: "done" as const, label: "Done" },

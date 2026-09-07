@@ -35,24 +35,30 @@ async function readBridge(path: string): Promise<BridgeSettings | undefined> {
  */
 async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> {
   const current = await readBridge(bridgePath);
-  if (!current) {
-    console.log(warn("The WhatsApp bridge is not set up yet."));
-    console.log(grey("  Run tama-server setup and pick \"Link your own WhatsApp number\" under WhatsApp."));
-    return;
-  }
 
+  // No settings file means one of two things, and neither is a dead end: the
+  // bridge was never set up, or it predates this file and its token still lives
+  // in .env. Both are answered by writing the file here.
   console.log(`\n${bold("WhatsApp bridge")}`);
-  console.log(`${grey("  allowed numbers:")} ${current.allowedFrom.length ? current.allowedFrom.join(", ") : grey("none — only your own self-chat")}`);
-  console.log(`${grey("  self-chat text: ")} ${current.selfChatText === "ask" ? "answered as a question" : `ignored unless prefixed with "${current.askPrefix}"`}`);
-  console.log(`${grey("  device token:   ")} ${grey(`set, ${current.token.length} characters`)}`);
+  if (current) {
+    console.log(`${grey("  allowed numbers:")} ${current.allowedFrom.length ? current.allowedFrom.join(", ") : grey("none — only your own self-chat")}`);
+    console.log(`${grey("  self-chat text: ")} ${current.selfChatText === "ask" ? "answered as a question" : `ignored unless prefixed with "${current.askPrefix}"`}`);
+    console.log(`${grey("  device token:   ")} ${grey(`set, ${current.token.length} characters`)}`);
+  } else {
+    console.log(grey("  Not configured here yet. Answering these questions writes it,"));
+    console.log(grey("  including a device token, so nothing needs pairing by hand."));
+  }
 
   let allowedFrom: string[] | null = null;
   do {
     const raw = await ask(
-      "Numbers allowed to message it, comma-separated (Enter to keep, \"none\" to clear)",
-      current.allowedFrom.join(","),
+      current
+        ? "Numbers allowed to message it, comma-separated (Enter to keep, \"none\" to clear)"
+        : "Numbers allowed to message it, comma-separated (Enter for only your own self-chat)",
+      current?.allowedFrom.join(",") ?? "",
     );
-    if (raw.trim().toLowerCase() === "none" || !raw.trim()) allowedFrom = raw.trim() ? [] : current.allowedFrom;
+    if (raw.trim().toLowerCase() === "none") allowedFrom = [];
+    else if (!raw.trim()) allowedFrom = current?.allowedFrom ?? [];
     else allowedFrom = whatsappSenders(raw);
     if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
   } while (!allowedFrom);
@@ -60,21 +66,23 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
   const selfChatText = await choose("Plain text in your own chat with yourself", [
     { value: "ask" as const, label: "Answer it — the chat is your assistant" },
     { value: "ignore" as const, label: "Ignore it — the chat stays a scratchpad, a prefix asks" },
-  ], current.selfChatText ?? "ask");
+  ], current?.selfChatText ?? "ask");
   const askPrefix = selfChatText === "ignore"
-    ? await ask("Prefix that marks a question there", current.askPrefix || "?")
-    : current.askPrefix || "?";
+    ? await ask("Prefix that marks a question there", current?.askPrefix || "?")
+    : current?.askPrefix || "?";
 
-  // Re-minting is the fix for a token that leaked or was revoked. It is offered
-  // rather than done, because the old one keeps working until it is revoked and
-  // silently swapping it would leave an unused token in the tokens table.
-  let token = current.token;
-  if (await yes("Mint a fresh device token for the bridge?", false)) {
+  // With no token on file there is nothing to keep, so mint without asking.
+  // When one exists, re-minting is the fix for a leak and is offered rather
+  // than done: the old token keeps working until it is revoked, and swapping
+  // silently would leave an unused one in the tokens table.
+  let token = current?.token ?? "";
+  const mint = !token || await yes("Mint a fresh device token for the bridge?", false);
+  if (mint) {
     const db = openDb(dbPath);
     try {
       token = mintToken(db, "whatsapp-bridge").token;
-      console.log(ok("New device token minted."));
-      console.log(grey("  The old one still works until you revoke it under Devices."));
+      console.log(ok("Device token minted."));
+      if (current?.token) console.log(grey("  The old one still works until you revoke it under Devices."));
     } finally {
       db.close();
     }
@@ -83,8 +91,11 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
   const next = bridgeSettings(token, allowedFrom, askPrefix, selfChatText);
   await writeSettings(bridgePath, next);
   console.log(ok(`Saved to ${bridgePath}.`));
-  console.log(`${bold("docker compose --profile whatsapp-webjs up -d")} ${grey("to apply it")}`);
-  console.log(grey("  The bridge reads this file at startup, so it needs the restart."));
+  // Environment variables win over this file, so a pre-wizard install that
+  // still sets them would quietly ignore everything just answered.
+  console.log(warn("If TAMA_TOKEN or WA_ALLOWED are still in .env, remove them — they override this file:"));
+  console.log(`  ${bold("sed -i '/^WA_ALLOWED=/d;/^TAMA_TOKEN=/d' .env")}`);
+  console.log(`${bold("tama restart")} ${grey("or docker compose --profile whatsapp-webjs up -d, to apply it")}`);
 }
 
 /** The other half of a leaked token: seeing what exists and taking one away. */

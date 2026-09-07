@@ -38,7 +38,7 @@ test("citing paths is the audience's call, not the surface's", () => {
 test("the core comes first and unchanged, whatever the audience", () => {
   // Prompt caching (#24) needs a stable prefix, and every audience should
   // inherit improvements to the core rather than only the uncustomised ones.
-  const core = systemPrompt({ voice: "neutral" }).split("Voice:")[0];
+  const core = systemPrompt({ voice: "neutral" }).split("Voice:")[0]!;
   for (const voice of ["neutral", "friend", "roast"] as const) {
     expect(systemPrompt({ voice }).startsWith(core)).toBe(true);
   }

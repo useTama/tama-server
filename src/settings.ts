@@ -12,11 +12,13 @@
  * existing config as its defaults, rather than growing a second writer for it.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { configPathFromArgs, loadConfig } from "./config.ts";
 import { bridgeSettings, runSetup, writeSettings, whatsappSenders, type BridgeSettings } from "./setup.ts";
+import { BUILTIN_VIEWS, partitionByView, type View } from "./views.ts";
+import type { Audience, Config } from "./config.ts";
 import { listTokens, mintToken, revokeToken } from "./auth.ts";
 import { openDb } from "./db.ts";
 import { ask, choose, requireTty, yes } from "./prompt.ts";
@@ -122,6 +124,315 @@ async function devicesSection(dbPath: string): Promise<void> {
   }
 }
 
+/**
+ * Every audience field is a menu, because #46's point is that nobody should
+ * type a glob or a prompt into a settings screen. The freeform exception is
+ * `note`, which carries facts about the room and never policy.
+ */
+async function editAudience(
+  configPath: string,
+  name: string,
+  current: Audience | undefined,
+  viewNames: string[],
+): Promise<Audience> {
+  const view = await choose("What can it see?", viewNames.map((v) => ({
+    value: v,
+    label: v === "none"
+      ? "none — no notes at all, it can only talk"
+      : v === "everything"
+        ? "everything — the whole vault, like your own devices"
+        : v,
+  })), current?.view ?? "none");
+
+  const voice = await choose("How should it talk?", [
+    { value: "friend" as const, label: "friend — warm and direct, the default" },
+    { value: "neutral" as const, label: "neutral — answers, no personality" },
+    { value: "roast" as const, label: "roast — gives as good as it gets, for a group of friends" },
+  ], current?.voice ?? "friend");
+
+  const length = await choose("How long should answers be?", [
+    { value: "chat" as const, label: "chat — a couple of sentences, plain text" },
+    { value: "prose" as const, label: "prose — full answers, markdown, for a terminal" },
+  ], current?.length ?? "chat");
+
+  // Defaulted from the view rather than asked blind: on anything but the
+  // owner's own view a path names a note to someone who was not given it.
+  const cite = view === "everything"
+    ? await yes("Cite note paths in answers?", current?.cite ?? true)
+    : false;
+  if (view !== "everything") {
+    console.log(grey("  Note paths are withheld: naming a file discloses it to a reader who was not shown it."));
+  }
+
+  const onNoMatch = await choose("When the notes have no answer", [
+    { value: "say-so" as const, label: "say so — admit it, and never fill the gap" },
+    { value: "just-talk" as const, label: "just talk — reply to what was said instead" },
+  ], current?.onNoMatch ?? "say-so");
+  if (onNoMatch === "just-talk" && view !== "none") {
+    console.log(warn("  This mixes grounded and ungrounded answers in one chat, and a reader cannot tell which they got."));
+    console.log(grey("  Fine for a banter group. For anything you rely on, prefer \"say so\"."));
+  }
+
+  const mention = await choose("In a group, when should it reply?", [
+    { value: "when-mentioned" as const, label: "only when mentioned — quieter, harder to mute" },
+    { value: "always" as const, label: "every message" },
+  ], current?.mention ?? "when-mentioned");
+
+  const note = await ask("One line about this room, or Enter for none", current?.note ?? "");
+
+  const audience: Audience = {
+    view, voice, length, cite, onNoMatch, mention,
+    // Never true. A group filling the vault with other people's chatter is the
+    // failure the blanket group ignore was avoiding, and nothing here changes it.
+    capture: false,
+    ...(note.trim() ? { note: note.trim() } : {}),
+  };
+
+  await patchConfig(configPath, (raw) => {
+    raw.audiences = { ...(raw.audiences ?? {}), [name]: audience };
+  });
+  console.log(ok(`Saved audience "${name}".`));
+  return audience;
+}
+
+/**
+ * A view is edited by picking folders that exist, with a count, because the
+ * failure with a path filter is not writing it but being unable to see what it
+ * did. Too narrow gives worse answers and no error; too wide leaks.
+ */
+async function editView(configPath: string, vaultPath: string, name: string, current: View | undefined): Promise<void> {
+  const notes = await vaultNotes(vaultPath);
+  const folders = [...new Set(notes.map((p) => (p.includes("/") ? p.slice(0, p.indexOf("/")) : ".")))].sort();
+  if (folders.length === 0) {
+    console.log(warn("The vault has no notes yet, so there is nothing to preview a view against."));
+  }
+
+  const include: string[] = [];
+  console.log(`\n${bold("Which top-level folders should it see?")} ${grey("one at a time, Enter to finish")}`);
+  for (;;) {
+    const remaining = folders.filter((f) => !include.includes(f === "." ? "*.md" : `${f}/**`));
+    if (remaining.length === 0) break;
+    const picked = await choose(include.length ? "Add another, or finish" : "Add a folder", [
+      ...remaining.map((f) => ({ value: f, label: f === "." ? "notes in the vault root" : `${f}/` })),
+      { value: "__done__", label: include.length ? "done" : "done (sees nothing)" },
+    ], remaining[0]!);
+    if (picked === "__done__") break;
+    include.push(picked === "." ? "*.md" : `${picked}/**`);
+  }
+
+  const exclude: string[] = [];
+  const raw = await ask("Anything to exclude inside those, comma-separated (e.g. **/Clients/**)", (current?.exclude ?? []).join(","));
+  for (const glob of raw.split(",").map((g) => g.trim()).filter(Boolean)) exclude.push(glob);
+
+  const view: View = { include, ...(exclude.length ? { exclude } : {}) };
+  const { visible: shown, hidden } = partitionByView(notes, view);
+  console.log(`\n${bold(`${shown.length} of ${notes.length} notes`)} ${grey("are visible through this view")}`);
+  if (hidden.length) {
+    const hiddenFolders = [...new Set(hidden.map((p) => (p.includes("/") ? p.slice(0, p.indexOf("/")) : "(root)")))].sort();
+    console.log(`${grey("  hidden:")} ${hiddenFolders.slice(0, 8).join(", ")}${hiddenFolders.length > 8 ? ", …" : ""}`);
+  }
+  if (shown.length === 0) console.log(warn("  This view sees nothing. That is what \"none\" is for, unless you meant it."));
+
+  if (!(await yes("Save this view?", true))) {
+    console.log(grey("Discarded."));
+    return;
+  }
+  await patchConfig(configPath, (raw) => {
+    raw.views = { ...(raw.views ?? {}), [name]: view };
+  });
+  console.log(ok(`Saved view "${name}".`));
+}
+
+/**
+ * Read, mutate, write atomically, preserving everything else in the file.
+ *
+ * Settings owns two keys in a config the wizard also writes, so it must not
+ * rewrite the whole document from a parsed model: an unrelated field this
+ * version does not know about would be dropped on save.
+ */
+async function patchConfig(configPath: string, mutate: (raw: any) => void): Promise<void> {
+  const raw = JSON.parse(await readFile(configPath, "utf8"));
+  mutate(raw);
+  const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, configPath);
+}
+
+/** Vault-relative note paths, for a view preview that reflects reality. */
+async function vaultNotes(vaultPath: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const next = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(join(dir, e.name), next);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".md")) out.push(next);
+    }
+  };
+  await walk(vaultPath, "");
+  return out.sort();
+}
+
+/** One row per audience, and a token minted per audience when it is saved. */
+async function audiencesSection(configPath: string, dbPath: string, config: Config): Promise<void> {
+  const audiences = config.audiences ?? {};
+  const names = Object.keys(audiences);
+  const viewNames = [...Object.keys(BUILTIN_VIEWS), ...Object.keys(config.views ?? {})];
+
+  console.log(`\n${bold("Audiences")}`);
+  if (names.length === 0) {
+    console.log(grey("  None yet. Your own devices need none: a token with no audience sees everything."));
+  }
+  for (const name of names) {
+    const a = audiences[name]!;
+    const behaviour = [
+      a.cite ? "cites paths" : "no paths",
+      a.length,
+      a.onNoMatch === "just-talk" ? "answers anything" : "admits gaps",
+      a.mention === "when-mentioned" ? "when mentioned" : "every message",
+    ].join(", ");
+    console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${a.voice}  ${grey(behaviour)}`);
+  }
+
+  const pick = await choose("Which one?", [
+    ...names.map((n) => ({ value: `edit:${n}`, label: `edit ${n}` })),
+    { value: "add", label: "add an audience" },
+    ...(names.length ? [{ value: "test", label: "test one — see what it would reply, without sending" }] : []),
+    ...names.map((n) => ({ value: `remove:${n}`, label: `remove ${n}` })),
+    { value: "back", label: "back" },
+  ], names.length ? `edit:${names[0]}` : "add");
+
+  if (pick === "back") return;
+
+  if (pick === "test") {
+    await testAudience(config, names);
+    return;
+  }
+
+  if (pick.startsWith("remove:")) {
+    const name = pick.slice("remove:".length);
+    if (!(await yes(`Remove "${name}"? Its tokens stop working immediately.`, false))) return;
+    await patchConfig(configPath, (raw) => { delete raw.audiences?.[name]; });
+    // Not revoked here: the token rows stay visible under Devices so it is
+    // obvious what was cut off, and /ask already refuses a token whose
+    // audience is gone rather than falling back to the owner's view.
+    console.log(ok(`Removed "${name}". Any token naming it is now refused.`));
+    return;
+  }
+
+  const name = pick === "add"
+    ? (await ask("Name it, for your own reference (e.g. work-group, the-boys)", "")).trim()
+    : pick.slice("edit:".length);
+  if (!name) return;
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(name)) {
+    console.log(warn("Use letters, digits and hyphens: this name goes in the config and on a token."));
+    return;
+  }
+
+  await editAudience(configPath, name, audiences[name], viewNames);
+
+  if (await yes(`Mint a device token for "${name}" now?`, audiences[name] === undefined)) {
+    const db = openDb(dbPath);
+    try {
+      const minted = mintToken(db, `audience:${name}`, name);
+      console.log(ok("Token minted. It is shown once."));
+      console.log(`  ${bold(minted.token)}`);
+      console.log(grey("  Give this to the client that talks to that audience. It cannot exceed the"));
+      console.log(grey("  audience's view, whatever the client asks for, because the server decides."));
+    } finally {
+      db.close();
+    }
+  }
+  console.log(`${bold("tama restart")} ${grey("to apply it")}`);
+}
+
+/**
+ * The feature that makes the rest trustworthy.
+ *
+ * Per-audience scoping fails invisibly: a wrong view is not an error, it is an
+ * answer someone should not have received. This runs a real question through an
+ * audience's exact configuration and prints what it would have said.
+ */
+async function testAudience(config: Config, names: string[]): Promise<void> {
+  const name = await choose("Test which audience?", names.map((n) => ({ value: n, label: n })), names[0]!);
+  const audience = config.audiences?.[name];
+  if (!audience) return;
+  const question = await ask("Ask it something you would not want leaked", "what is Kiks Studios");
+  if (!question.trim()) return;
+
+  const { GrepRetriever } = await import("./retrieval.ts");
+  const { resolveView } = await import("./views.ts");
+  const { askOnce, systemPrompt } = await import("./ask.ts");
+
+  const view = resolveView(config.views, audience.view);
+  const retriever = new GrepRetriever(config.vault.path);
+  const chunks = await retriever.search(question, config.ask?.maxChunks ?? 8, view);
+
+  console.log(`\n${bold("What it can read for that question")}`);
+  if (chunks.length === 0) console.log(grey("  nothing. Its reply comes from the voice alone."));
+  for (const c of chunks) console.log(`  ${c.path}`);
+
+  if (!config.ask) {
+    console.log(warn("\nAsk is not configured, so the reply cannot be generated. The reading list above is still the answer to \"what can it see\"."));
+    return;
+  }
+  if (!(await yes("\nGenerate the actual reply? (costs a model call)", true))) return;
+
+  const { makeLlm } = await import("./llm.ts");
+  const llm = config.ask.provider === "anthropic"
+    ? makeLlm({ provider: "anthropic", apiKey: config.ask.apiKey, model: config.ask.model, maxTokens: config.ask.maxTokens })
+    : makeLlm({ provider: "openai-compatible", baseUrl: config.ask.baseUrl!, apiKey: config.ask.apiKey, model: config.ask.model, maxTokens: config.ask.maxTokens });
+
+  const result = await askOnce({
+    question,
+    retriever,
+    llm,
+    maxChunks: config.ask.maxChunks,
+    view,
+    prompt: {
+      name: config.world?.name,
+      voice: audience.voice,
+      style: audience.length,
+      cite: audience.cite,
+      onNoMatch: audience.onNoMatch,
+      note: audience.note,
+    },
+  });
+  console.log(`\n${bold(`what "${name}" would receive`)}`);
+  console.log(result.answer);
+  console.log(grey("\nNothing was sent. If that reply says more than it should, narrow its view."));
+  void systemPrompt;
+}
+
+async function viewsSection(configPath: string, config: Config): Promise<void> {
+  const views = config.views ?? {};
+  const names = Object.keys(views);
+  console.log(`\n${bold("Views")}`);
+  console.log(`  ${bold("everything".padEnd(14))} ${grey("the whole vault (built in)")}`);
+  console.log(`  ${bold("none".padEnd(14))} ${grey("no notes at all (built in)")}`);
+  for (const name of names) {
+    const v = views[name]!;
+    console.log(`  ${bold(name.padEnd(14))} ${grey(`${(v.include ?? ["**"]).join(" ")}${v.exclude?.length ? ` minus ${v.exclude.join(" ")}` : ""}`)}`);
+  }
+
+  const pick = await choose("Which one?", [
+    ...names.map((n) => ({ value: `edit:${n}`, label: `edit ${n}` })),
+    { value: "add", label: "add a view" },
+    { value: "back", label: "back" },
+  ], names.length ? `edit:${names[0]}` : "add");
+  if (pick === "back") return;
+
+  const name = pick === "add" ? (await ask("Name it (e.g. work, public)", "")).trim() : pick.slice("edit:".length);
+  if (!name) return;
+  if (name in BUILTIN_VIEWS) {
+    console.log(warn(`"${name}" is built in and cannot be changed. That is deliberate: it is the one view that must never be wrong.`));
+    return;
+  }
+  await editView(configPath, config.vault.path, name, views[name]);
+}
+
 export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
   requireTty("settings");
   const configPath = configPathFromArgs(argv);
@@ -137,11 +448,13 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
   console.log(`\n${tama("Tama settings")} ${grey(configPath)}`);
   for (;;) {
     const section = await choose("What would you like to change?", [
+      { value: "audiences" as const, label: "Audiences — who can talk to it, what they see, how it replies" },
+      { value: "views" as const, label: "Views — named slices of the vault that audiences can use" },
       { value: "bridge" as const, label: "WhatsApp bridge — allowed numbers, self-chat behaviour, token" },
       { value: "devices" as const, label: "Devices — list what is paired, revoke one" },
       { value: "wizard" as const, label: "Everything else — vault, transcription, Ask (full setup)" },
       { value: "done" as const, label: "Done" },
-    ], "bridge");
+    ], "audiences");
 
     if (section === "done") return;
     if (section === "wizard") {
@@ -152,6 +465,8 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
       await runSetup(argv);
       return;
     }
+    if (section === "audiences") await audiencesSection(configPath, dbPath, config);
+    if (section === "views") await viewsSection(configPath, config);
     if (section === "bridge") await bridgeSection(bridgePath, dbPath);
     if (section === "devices") await devicesSection(dbPath);
   }

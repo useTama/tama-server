@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { systemPrompt, buildMessages, renderChunks } from "../src/ask.ts";
 
-test("Ask identifies itself as Tama, the user's private second brain", () => {
+test("Ask identifies itself as Tama, and as a relationship rather than a service", () => {
   expect(systemPrompt()).toContain("You are Tama");
-  expect(systemPrompt()).toContain("private second brain");
+  expect(systemPrompt()).toContain("the part of them");
   expect(systemPrompt()).toContain("Never invent a memory");
 });
 
@@ -44,6 +44,47 @@ test("the core comes first and unchanged, whatever the audience", () => {
   }
 });
 
+test("it is told it is not an assistant, before it is told what it can do", () => {
+  // The previous opening described a retrieval product and got retrieval-product
+  // answers: "hello sup" came back as "Hey. What do you want to dig into?".
+  const prompt = systemPrompt({ name: "2nd brain" });
+  expect(prompt.indexOf("not an assistant")).toBeLessThan(prompt.indexOf("Never invent a memory"));
+  expect(prompt).toContain("You are 2nd brain.");
+});
+
+test("the service-desk reflexes are banned by name in every voice", () => {
+  // Naming them individually, because a general instruction to avoid corporate
+  // phrasing did not stop "What do you want to dig into?".
+  for (const voice of ["neutral", "friend", "roast"] as const) {
+    const prompt = systemPrompt({ voice });
+    expect(prompt).toContain("how can I help");
+    expect(prompt).toContain("what would you like to dig into");
+    expect(prompt).toContain("Compliment the question");
+  }
+});
+
+test("every voice mirrors language and casing, including code-mixed Hinglish", () => {
+  for (const voice of ["neutral", "friend", "roast"] as const) {
+    const prompt = systemPrompt({ voice });
+    expect(prompt).toContain("code-mixed Hinglish");
+    expect(prompt).toContain("Same casing");
+  }
+});
+
+test("the voices carry worked examples, not only adjectives", () => {
+  // Rules like "warm, never sycophantic" are negative space; a model fills it
+  // with something inoffensive. Exchanges are what make a register concrete.
+  for (const voice of ["neutral", "friend", "roast"] as const) {
+    expect(systemPrompt({ voice }).match(/\nthem: /g)?.length ?? 0).toBeGreaterThan(1);
+  }
+});
+
+test("the roast voice may not use the notes as ammunition", () => {
+  const roast = systemPrompt({ voice: "roast" });
+  expect(roast).toContain("Never be cruel about anything you learned from the");
+  expect(roast).toContain("drop the joke");
+});
+
 test("the world's name replaces the default, and a blank one does not", () => {
   expect(systemPrompt({ name: "2nd brain" })).toContain("You are 2nd brain");
   expect(systemPrompt({ name: "  " })).toContain("You are Tama");
@@ -69,5 +110,5 @@ test("the prompt bans the em dash it kept producing, and says what to use instea
 });
 
 test("the prompt pins second person, because notes describe the user in the third", () => {
-  expect(systemPrompt()).toContain('Always address the user as "you"');
+  expect(systemPrompt()).toContain('They are "you"');
 });

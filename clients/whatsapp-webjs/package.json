@@ -1,0 +1,13 @@
+{
+  "name": "tama-whatsapp-webjs",
+  "private": true,
+  "type": "module",
+  "description": "Unofficial WhatsApp client for tama-server, built on whatsapp-web.js.",
+  "scripts": {
+    "start": "node bridge.mjs"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.26.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

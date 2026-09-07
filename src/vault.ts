@@ -97,7 +97,17 @@ export class Vault {
 
     const add = await run(["add", "-A"]);
     if (add.code !== 0) return { committed: false, detail: add.out.trim() };
-    const commit = await run(["commit", "-q", "-m", subject.slice(0, 200)]);
+
+    // git refuses to commit without an identity, and the server runs in a
+    // container where nobody ever ran `git config --global user.email`. So the
+    // auto-commit would fail on every fresh install, and fail quietly, since
+    // the caller only logs the detail. Asked first rather than always set, so
+    // that a vault whose owner did configure a name keeps it.
+    const identity = (await run(["var", "GIT_COMMITTER_IDENT"])).code === 0
+      ? []
+      : ["-c", "user.name=tama", "-c", "user.email=tama@localhost"];
+
+    const commit = await run([...identity, "commit", "-q", "-m", subject.slice(0, 200)]);
     if (commit.code !== 0) return { committed: false, detail: commit.out.trim() };
     return { committed: true, detail: subject };
   }

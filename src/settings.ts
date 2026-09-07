@@ -363,9 +363,12 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
         : warn(`  ${" ".repeat(12)} no token yet, so nothing reaches it`));
   }
 
-  if (bridge && (bridge.chats?.length ?? 0) === 0) {
-    console.log(grey("\n  The WhatsApp bridge has not published a group list. Start it once and come"));
-    console.log(grey("  back, and groups will be offered here by name."));
+  // Only worth saying while something still needs connecting. Told to someone
+  // whose audiences are all wired, it reads as a problem rather than a note.
+  const unconnected = names.some((n) => !bridge?.audiences?.find((w) => w.name === n)?.match.length);
+  if (unconnected && (bridge?.chats?.length ?? 0) === 0) {
+    console.log(grey("\n  No group list yet: the bridge records a group once it has seen a message in"));
+    console.log(grey("  it. Send one there, or claim it from the group with /tama."));
   }
 
   const pick = await choose("Which one?", [

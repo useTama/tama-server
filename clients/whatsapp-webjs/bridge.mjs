@@ -506,6 +506,10 @@ async function onMessage(message) {
   const isOwner = Boolean((selfNumber && ids.has(selfNumber)) || [...ids].some((id) => ALLOWED.has(id)) || (message.fromMe && isGroup));
 
   if (isGroup) {
+    // Recorded whether or not it is claimed. Only unclaimed groups used to be
+    // remembered, so the one group actually in use was the one whose name
+    // settings could not show.
+    rememberChat(chatId, groupName);
     if (!audience && !isOwner) {
       // Still worth knowing about: one message in a group is now enough for
       // `tama settings` to offer it by name, so nobody has to find an id.
@@ -519,9 +523,8 @@ async function onMessage(message) {
       return;
     }
     if (!audience && !/^\/tama\b/i.test((message.body ?? "").trim())) {
-      // The owner talking in a group that is not set up yet. Record it so the
-      // menu can offer it, and stay quiet: they were talking to their friends.
-      rememberChat(chatId, groupName);
+      // The owner talking in a group that is not set up yet. Stay quiet: they
+      // were talking to their friends, not to it.
       seen("ignored, this group has no audience. send /tama to set one up");
       return;
     }
@@ -683,8 +686,13 @@ client.on("message_create", (message) => {
 const published = new Set();
 
 function rememberChat(id, name) {
-  if (!id || published.has(id)) return;
+  if (!id) return;
+  // Re-record when a name turns up for a chat previously seen without one,
+  // otherwise the first sighting decides forever.
+  const key = `${id}\u0000${name ?? ""}`;
+  if (published.has(key)) return;
   published.add(id);
+  published.add(key);
   try {
     const file = patchSettings((f) => {
       const chats = Array.isArray(f.chats) ? f.chats : [];

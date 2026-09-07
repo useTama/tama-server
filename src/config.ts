@@ -101,6 +101,15 @@ export type Audience = {
   /** Never captures into the vault. Groups default to false. */
   capture: boolean;
   note?: string;
+  /**
+   * Who is in the room, one line each. Facts, so a reply can be specific: a
+   * roast that could be aimed at anyone is not a roast.
+   *
+   * Kept out of the vault deliberately. These are notes about other people,
+   * they belong to the room rather than to the owner's second brain, and they
+   * should not turn up in an answer to an unrelated question.
+   */
+  people?: Record<string, string>;
 };
 
 const VOICE_NAMES: Voice[] = ["neutral", "friend", "roast", "custom"];
@@ -131,6 +140,14 @@ function parseAudience(name: string, raw: any, views: Record<string, View>): Aud
     capture: Boolean(raw?.capture ?? false),
   };
   if (raw?.note !== undefined) audience.note = String(raw.note);
+  if (raw?.people && typeof raw.people === "object") {
+    const people: Record<string, string> = {};
+    for (const [who, about] of Object.entries(raw.people as Record<string, unknown>)) {
+      const line = String(about ?? "").trim();
+      if (line) people[who] = line;
+    }
+    if (Object.keys(people).length > 0) audience.people = people;
+  }
   if (audience.voice === "custom") {
     const described = String(raw?.voicePrompt ?? "").trim();
     if (!described) {

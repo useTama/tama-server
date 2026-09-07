@@ -211,6 +211,7 @@ function audienceProfile(name: string | undefined): { view?: View; prompt: Promp
       name: worldName,
       voice: audience.voice,
       voicePrompt: audience.voicePrompt,
+      people: audience.people,
       style: audience.length,
       cite: audience.cite,
       onNoMatch: audience.onNoMatch,
@@ -389,7 +390,13 @@ const server = Bun.serve({
     // Ask sits behind the same device token as capture. No new auth surface:
     // anything that can write to the vault can already read it back.
     if (url.pathname === "/ask" && req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { question?: string; stream?: boolean; style?: string };
+      const b = (await req.json().catch(() => ({}))) as {
+        question?: string;
+        stream?: boolean;
+        style?: string;
+        speaker?: string;
+        speakerIsOwner?: boolean;
+      };
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
 
@@ -404,6 +411,13 @@ const server = Bun.serve({
       // audience's own length is not overridable, because a scoped chat asking
       // for prose is asking for note paths it was not given.
       if (!device.audience && b.style === "chat") profile.prompt.style = "chat";
+
+      // Asserted by the client, because only the client knows which of a
+      // group's participants sent this. That is the same trust the bridge
+      // already has for choosing an audience at all, and it cannot widen what
+      // the audience reads: the view comes from the token.
+      const speaker = typeof b.speaker === "string" ? b.speaker.slice(0, 64) : undefined;
+      const speakerIsOwner = b.speakerIsOwner === true;
 
       // Retrieval works with no model configured, so say which half is missing
       // rather than pretending the whole endpoint does not exist.
@@ -427,7 +441,7 @@ const server = Bun.serve({
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
               }
             } catch (e) {
@@ -450,7 +464,7 @@ const server = Bun.serve({
       const started = performance.now();
       let answer = "";
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") answer = ev.answer;
         else if (ev.type === "error") {

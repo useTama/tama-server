@@ -276,16 +276,21 @@ async function capture(message) {
   await reply(message, `I couldn't save that voice note: ${body.error ?? `HTTP ${res.status}`}`);
 }
 
-async function askQuestion(message, question, audience) {
+async function askQuestion(message, question, audience, who) {
   const res = await post("/ask", {
     token: audience?.token,
     headers: { "content-type": "application/json" },
-    // Ask for the chat shape: no markdown, since WhatsApp shows the asterisks,
-    // no note paths, since nobody here can open one, and a couple of sentences
-    // rather than an essay in a bubble.
-    // No style, no audience name: an audience's shape comes from its token.
-    // The owner's own token has no audience, so it asks for the chat shape.
-    body: JSON.stringify(audience ? { question } : { question, style: "chat" }),
+    // No style with an audience: its shape comes from its token. The owner's
+    // own token has no audience, so it asks for the chat shape itself.
+    //
+    // Who is speaking only matters in a room with more than one person, and it
+    // is asserted here because only this client can know it.
+    body: JSON.stringify({
+      question,
+      ...(audience ? {} : { style: "chat" }),
+      ...(who?.name ? { speaker: who.name } : {}),
+      ...(who ? { speakerIsOwner: who.isOwner } : {}),
+    }),
   });
   const body = await res.json().catch(() => ({}));
 
@@ -371,6 +376,24 @@ function patchSettings(mutate) {
  * accepted from the linked phone and the owner's other numbers and from nobody
  * else, which is the same boundary the rest of the bridge uses.
  */
+/**
+ * The name to attribute a group message to.
+ *
+ * WhatsApp's push name is what the sender chose to be called, which is also
+ * what everyone in the group sees, so it is the right handle for a reply that
+ * names them. Falls back to the number, since a reply that says "someone" is
+ * worse than one that says a number.
+ */
+async function speakerName(message, isOwner) {
+  if (isOwner) return "you";
+  try {
+    const contact = await message.getContact();
+    const name = contact?.pushname || contact?.name || contact?.number;
+    if (name) return String(name);
+  } catch { /* fall through */ }
+  return message._data?.notifyName ? String(message._data.notifyName) : undefined;
+}
+
 /**
  * Whether a group message is addressed to us.
  *
@@ -564,7 +587,7 @@ async function onMessage(message) {
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
-    return askQuestion(message, text, audience);
+    return askQuestion(message, text, audience, { name: await speakerName(message, isOwner), isOwner });
   }
 
 

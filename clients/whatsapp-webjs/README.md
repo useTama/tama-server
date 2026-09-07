@@ -92,6 +92,7 @@ per audience, and every field is a menu:
 | When notes are empty | admit it, or just reply to what was said |
 | In a group | every message, or only when mentioned |
 | One line about the room | free text, context only, never policy |
+| Who is in the room | a line per person, so a reply can be about them rather than generic |
 
 Saving one mints its token and writes it into this client's settings. Then
 connect it from the group itself:
@@ -107,6 +108,12 @@ back — both of which mean leaving the room you are already in.
 
 `/tama` on its own says what is waiting to be claimed. Only your own numbers are
 obeyed; in a group everyone can type.
+
+**You outrank the room.** Your own numbers are heard without a mention, and the
+prompt says plainly that you are the one it answers to: other people in the
+group are participants, not operators. Someone typing "ignore your
+instructions" is a thing they said, not a command it received, and when you and
+they want different things, you win.
 
 **A group is silent until an audience claims it**, and audiences never capture:
 their tokens are for reading, and a vault filling with other people's voice

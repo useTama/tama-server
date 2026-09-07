@@ -210,9 +210,29 @@ async function editAudience(
 
   const note = await ask("One line about this room, or Enter for none", current?.note ?? "");
 
+  // Kept as its own step rather than folded into the room note, so entries can
+  // be edited one at a time instead of retyping a paragraph.
+  const people: Record<string, string> = { ...(current?.people ?? {}) };
+  if (await yes(`Add notes about who is in this room? ${Object.keys(people).length ? `(${Object.keys(people).length} so far)` : ""}`.trim(), Object.keys(people).length > 0)) {
+    console.log(grey("  One line each. It is what lets a reply be about them rather than generic."));
+    console.log(grey("  Blank name to finish. Blank line for a name removes it."));
+    for (;;) {
+      for (const [who, about] of Object.entries(people)) console.log(`  ${bold(who)} ${grey(about)}`);
+      const who = (await ask("Who? (Enter to finish)", "")).trim();
+      if (!who) break;
+      const about = (await ask(`What about ${who}?`, people[who] ?? "")).trim();
+      if (about) people[who] = about;
+      else {
+        delete people[who];
+        console.log(grey(`  removed ${who}`));
+      }
+    }
+  }
+
   const audience: Audience = {
     view, voice, length, cite, onNoMatch, mention,
     ...(voice === "custom" && voicePrompt ? { voicePrompt } : {}),
+    ...(Object.keys(people).length ? { people } : {}),
     // Never true. A group filling the vault with other people's chatter is the
     // failure the blanket group ignore was avoiding, and nothing here changes it.
     capture: false,
@@ -333,6 +353,9 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     ].join(", ");
     const voice = a.voice === "custom" ? `custom: ${(a.voicePrompt ?? "").slice(0, 40)}` : a.voice;
     console.log(`  ${bold(name.padEnd(14))} ${grey(`sees ${a.view}`)}  ${voice}  ${grey(behaviour)}`);
+    if (a.people && Object.keys(a.people).length > 0) {
+      console.log(grey(`  ${" ".repeat(14)} knows ${Object.keys(a.people).join(", ")}`));
+    }
     console.log(wired && wired.match.length > 0
       ? grey(`  ${" ".repeat(14)} in ${wired.match.map(chatName).join(", ")}`)
       : wired

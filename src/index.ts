@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { watch } from "node:fs";
 import { loadConfig, configPathFromArgs } from "./config.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
@@ -29,7 +30,8 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SECONDS = 300;
 const MAX_INFLIGHT = 2;
 
-const config = loadConfig(configPathFromArgs(Bun.argv));
+const configPath = configPathFromArgs(Bun.argv);
+const config = loadConfig(configPath);
 const db = openDb(join(config.dataDir, "tama.db"));
 const vault = new Vault(config.vault.path, config.vault.inbox, config.safety.dryRun, config.safety.allowUnbackedVault);
 const stt = new Stt(config.stt);
@@ -257,6 +259,48 @@ async function runCapture(req: Request, device: CaptureDevice, key: string | nul
     inflight--;
   }
 }
+
+/**
+ * Re-read the parts of the config that are only data.
+ *
+ * Audiences, views and the world's name are looked up per request, so a change
+ * to them needs nothing rebuilt - and asking someone to restart the server to
+ * add a phone number to a group is the deployment showing through the product.
+ *
+ * Deliberately partial. The stt client, the llm and the retriever are
+ * constructed at boot from their config, and swapping those under live requests
+ * is a different problem with a different failure mode. A provider change still
+ * needs a restart, and the wizard says so.
+ */
+function watchConfig(): void {
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  try {
+    watch(configPath, () => {
+      clearTimeout(pending);
+      pending = setTimeout(() => {
+        try {
+          const next = loadConfig(configPath);
+          const before = JSON.stringify({ a: config.audiences, v: config.views, w: config.world });
+          config.audiences = next.audiences;
+          config.views = next.views;
+          config.world = next.world;
+          if (JSON.stringify({ a: next.audiences, v: next.views, w: next.world }) === before) return;
+          console.log(
+            `${grey("config reloaded")} ${Object.keys(next.audiences ?? {}).length} audience(s), ` +
+              `${Object.keys(next.views ?? {}).length} view(s)`,
+          );
+        } catch (e) {
+          // A half-written file parses as garbage for a moment. Keeping the
+          // last good copy is strictly better than failing requests.
+          console.error("config reload failed, keeping the previous one:", e instanceof Error ? e.message : e);
+        }
+      }, 250);
+    });
+  } catch (e) {
+    console.error("could not watch the config, so changes to audiences need a restart:", e instanceof Error ? e.message : e);
+  }
+}
+watchConfig();
 
 const whatsapp = config.whatsapp
   ? new WhatsAppIntegration({

@@ -23,6 +23,7 @@ type AskConfig =
  */
 export type BridgeSettings = {
   token: string;
+  /** The owner's other numbers. Treated as the owner, not as guests. */
   allowedFrom: string[];
   /**
    * One entry per audience the bridge answers as, each holding the token minted
@@ -37,14 +38,6 @@ export type BridgeSettings = {
    * own and cannot ask anyone to type a group id.
    */
   chats?: Array<{ id: string; name?: string }>;
-  /** Marks a question when self-chat text is otherwise ignored. */
-  askPrefix: string;
-  /**
-   * What plain text in your own chat with yourself means. "ignore" keeps that
-   * chat usable as a scratchpad; "ask" is the default because a bot that says
-   * nothing when you talk to it reads as broken, whatever the reasoning.
-   */
-  selfChatText: "ask" | "ignore";
 };
 
 /** Written 0600 and replaced atomically, because it holds a device token. */
@@ -57,8 +50,6 @@ export async function writeSettings(path: string, settings: BridgeSettings): Pro
 export function bridgeSettings(
   token: string,
   allowedFrom: string[],
-  askPrefix: string,
-  selfChatText: "ask" | "ignore" = "ask",
   rest: Partial<Pick<BridgeSettings, "audiences" | "chats">> = {},
 ): BridgeSettings {
   // An empty allowlist is meaningful rather than missing: it means nobody but
@@ -69,8 +60,6 @@ export function bridgeSettings(
   return {
     token,
     allowedFrom,
-    askPrefix: askPrefix.trim() || "?",
-    selfChatText,
     ...(rest.audiences ? { audiences: rest.audiences } : {}),
     ...(rest.chats ? { chats: rest.chats } : {}),
   };
@@ -476,16 +465,9 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
           allowedFrom = raw.trim() ? whatsappSenders(raw) : [];
           if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
         } while (!allowedFrom);
-        const selfChatText = await choose("Plain text in your own chat with yourself", [
-          { value: "ask" as const, label: "Answer it — the chat is your assistant" },
-          { value: "ignore" as const, label: "Ignore it — the chat stays a scratchpad, a prefix asks" },
-        ], currentBridge?.selfChatText ?? "ask");
-        const askPrefix = selfChatText === "ignore"
-          ? await ask("Prefix that marks a question there", currentBridge?.askPrefix ?? "?")
-          : currentBridge?.askPrefix ?? "?";
         // The token is minted after the config is saved, because minting needs
         // the data directory that the config settles.
-        bridge = bridgeSettings("", allowedFrom, askPrefix, selfChatText);
+        bridge = bridgeSettings("", allowedFrom);
       }
     }
     let whatsappConfig: WhatsAppAnswer | undefined;
@@ -614,7 +596,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       const { openDb } = await import("./db.ts");
       const db = openDb(join(saved.dataDir, "tama.db"));
       try {
-        bridge = bridgeSettings(mintToken(db, "whatsapp-bridge").token, bridge.allowedFrom, bridge.askPrefix, bridge.selfChatText);
+        bridge = bridgeSettings(mintToken(db, "whatsapp-bridge").token, bridge.allowedFrom);
       } finally {
         db.close();
       }

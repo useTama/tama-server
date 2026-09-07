@@ -19,7 +19,7 @@
  */
 
 import { createRequire } from "node:module";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 
@@ -84,10 +84,6 @@ function loadSettings() {
     // The owner's other numbers, digits only with the country code. Treated as
     // the owner rather than as guests: another phone is the same person.
     allowed: new Set(numbers.map((n) => String(n).replace(/[^\d]/g, "")).filter(Boolean)),
-    askPrefix: process.env.WA_ASK_PREFIX || file.askPrefix || "?",
-    // Answering is the default: a bot that stays silent when you talk to it
-    // reads as broken, whatever the reasoning behind the silence.
-    selfChatText: process.env.WA_SELF_CHAT_TEXT || file.selfChatText || "ask",
   };
 }
 
@@ -132,14 +128,42 @@ function inConversation(chatId) {
 const stamp = () => new Date().toISOString().slice(11, 19);
 const log = (...parts) => console.log(stamp(), ...parts);
 
-const settings = loadSettings();
-const TAMA_TOKEN = settings.token;
-const AUDIENCES = settings.audiences;
-const ALLOWED = settings.allowed;
-const ASK_PREFIX = settings.askPrefix;
-const SELF_CHAT_TEXT = settings.selfChatText;
+let settings = loadSettings();
 
-if (!TAMA_TOKEN) {
+/**
+ * Reload when the settings file changes, instead of asking for a restart.
+ *
+ * Everything read from that file is data - a token, some numbers, which chats
+ * belong to which audience - so there is nothing to rebuild. Requiring a
+ * restart to add a phone number was the deployment showing through again, and
+ * it also means a browser session torn down and re-established for a one-line
+ * config change.
+ *
+ * Watched rather than polled, debounced because an atomic write is a create
+ * plus a rename and arrives as several events.
+ */
+function watchSettings() {
+  let pending;
+  try {
+    watch(SETTINGS_PATH, () => {
+      clearTimeout(pending);
+      pending = setTimeout(() => {
+        const before = JSON.stringify(settings);
+        const next = loadSettings();
+        if (JSON.stringify(next) === before) return;
+        settings = next;
+        log("settings reloaded", `${settings.audiences.length} audience(s), ${settings.allowed.size} of your numbers`);
+        for (const a of settings.audiences) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
+      }, 250);
+    });
+  } catch (error) {
+    // A watch can fail on some filesystems. Losing it costs a restart, which
+    // is where this started, so it is not fatal.
+    console.error("could not watch the settings file, so changes need a restart:", error?.message ?? error);
+  }
+}
+
+if (!settings.token) {
   console.error(
     `No device token. Expected one in ${SETTINGS_PATH} or in TAMA_TOKEN.\n` +
       "Run `tama-server setup` and choose \"Link your own WhatsApp number\" under WhatsApp,\n" +
@@ -159,14 +183,16 @@ if (!TAMA_TOKEN) {
  * those. It also used to end in a thrown error and no WhatsApp reply at all,
  * so a permanent failure looked exactly like the bridge being broken.
  */
-async function post(path, { headers = {}, body, token = TAMA_TOKEN }) {
+async function post(path, { headers = {}, body, token }) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 5000 * 2 ** (attempt - 1)));
     try {
       const res = await fetch(`${TAMA_URL}${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, ...headers },
+        // Read per attempt, so a token re-issued in settings takes effect on
+        // the next message rather than the next restart.
+        headers: { authorization: `Bearer ${token ?? settings.token}`, ...headers },
         body,
         signal: AbortSignal.timeout(300_000),
       });
@@ -256,8 +282,6 @@ const utterance = (chatId, text) => `${chatId}\u0000${text.trim()}`;
 
 let selfId = "";
 let selfNumber = "";
-/** So the prefix hint is a note, not a nag. */
-let toldAboutPrefix = false;
 
 async function reply(message, text) {
   const chatId = message.fromMe ? message.to : message.from;
@@ -576,13 +600,13 @@ async function onMessage(message) {
   // Resolved before the group check, not after. The other way round meant a
   // group was rejected for being a group before anything could claim it, which
   // made every audience matching a group dead code.
-  const audience = AUDIENCES.find((a) =>
+  const audience = settings.audiences.find((a) =>
     a.match.some((m) => m === chatId || ids.has(String(m).replace(/[^\d]/g, ""))),
   );
 
   // "Is this the owner", independent of which chat it arrived in. In a group
   // this is how a command is told apart from the other sixteen people talking.
-  const isOwner = Boolean((selfNumber && ids.has(selfNumber)) || [...ids].some((id) => ALLOWED.has(id)) || (message.fromMe && isGroup));
+  const isOwner = Boolean((selfNumber && ids.has(selfNumber)) || [...ids].some((id) => settings.allowed.has(id)) || (message.fromMe && isGroup));
 
   if (isGroup) {
     // Recorded whether or not it is claimed. Only unclaimed groups used to be
@@ -615,7 +639,7 @@ async function onMessage(message) {
   // the owner needs an audience, which is what decides what they may see.
   const isSelfChat = (selfNumber && ids.has(selfNumber))
     || chatId === selfId
-    || [...ids].some((id) => ALLOWED.has(id));
+    || [...ids].some((id) => settings.allowed.has(id));
 
   // Your own outgoing half of someone else's one-to-one chat is not input. In a
   // group you are a participant, so your own messages count.
@@ -686,40 +710,16 @@ async function onMessage(message) {
 
 
 
-  if (isSelfChat && SELF_CHAT_TEXT === "ignore") {
-    if (!text.startsWith(ASK_PREFIX)) {
-      seen(`ignored, self-chat text without the "${ASK_PREFIX}" prefix`);
-      // Said once per run, in the chat, because silence in your own chat with
-      // your own assistant reads as broken however deliberate it is. The log
-      // line above was the only signal, and nobody reads a log to find out why
-      // their own bot ignored them.
-      if (!toldAboutPrefix) {
-        toldAboutPrefix = true;
-        await reply(message, `put "${ASK_PREFIX}" in front to ask me something, or turn that off in tama settings under the whatsapp bridge`);
-      }
-      return;
-    }
-    const question = text.slice(ASK_PREFIX.length).trim();
-    if (!question) {
-      seen("ignored, prefix with no question after it");
-      return;
-    }
-    seen("ask");
-    return askQuestion(message, question, undefined, undefined, chatId);
-  }
-  // Answering mode still honours the prefix, so a habit formed under the other
-  // setting keeps working instead of asking about the literal "?" characters.
-  if (isSelfChat && text.startsWith(ASK_PREFIX)) {
-    const question = text.slice(ASK_PREFIX.length).trim();
-    if (!question) {
-      seen("ignored, prefix with no question after it");
-      return;
-    }
-    seen("ask");
-    return askQuestion(message, question, undefined, undefined, chatId);
+  // A leading "?" is stripped rather than required. It was a setting once, and
+  // the habit outlives it; asking about the literal question mark would be a
+  // worse answer than ignoring it.
+  const question = text.startsWith("?") ? text.slice(1).trim() : text;
+  if (!question) {
+    seen("ignored, nothing but a question mark");
+    return;
   }
   seen("ask");
-  return askQuestion(message, text, undefined, undefined, chatId);
+  return askQuestion(message, question, undefined, undefined, chatId);
 }
 
 client.on("qr", (qr) => {
@@ -734,9 +734,8 @@ client.on("ready", () => {
   selfNumber = (client.info?.wid?.user ?? "").replace(/[^\d]/g, "");
   log("ready as", selfId);
   log("tama", TAMA_URL);
-  log("your numbers", ALLOWED.size ? [...ALLOWED, selfNumber].join(", ") : `${selfNumber} (this phone only)`);
-  log("self-chat text", SELF_CHAT_TEXT === "ask" ? "answered as a question" : `ignored unless prefixed with "${ASK_PREFIX}"`);
-  for (const a of AUDIENCES) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
+  log("your numbers", settings.allowed.size ? [...settings.allowed, selfNumber].join(", ") : `${selfNumber} (this phone only)`);
+  for (const a of settings.audiences) log("audience", a.name, `matches ${a.match.join(", ") || "nothing"}`, a.mention);
   log("group limits", `a conversation stays open ${CONVERSATION_MS / 60_000} min, at most ${REPLY_BUDGET} replies per ${BUDGET_MS / 60_000} min`);
   // Settings runs in a container with no WhatsApp session, so it cannot ask
   // someone to type a group id. Publish what this session can see instead.
@@ -765,7 +764,7 @@ client.on("message_create", (message) => {
     // put internals into a room the owner does not control, and by this point
     // the decision made inside onMessage is out of reach.
     const chatId = message.fromMe ? message.to : message.from;
-    const inAudience = AUDIENCES.some((a) => a.match.some((m) => m === chatId));
+    const inAudience = settings.audiences.some((a) => a.match.some((m) => m === chatId));
     // Whatever went wrong, the person who sent the message is still waiting.
     // Failing quietly is what made a plain out-of-credit error look like a
     // dead bridge for an hour.
@@ -840,6 +839,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+watchSettings();
 log("starting; first run prints a QR code");
 clearStaleChromiumLocks(SESSION_DIR);
 client.initialize();

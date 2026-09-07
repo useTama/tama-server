@@ -134,18 +134,14 @@ test("a container deployment's volume paths override the home-directory defaults
   }
 });
 
-test("bridge settings keep an empty allowlist and default to answering self-chat text", () => {
-  const settings = bridgeSettings("tok", [], "");
-  expect(settings).toEqual({ token: "tok", allowedFrom: [], askPrefix: "?", selfChatText: "ask" });
+test("bridge settings keep an empty allowlist, which means only the linked phone", () => {
+  expect(bridgeSettings("tok", [])).toEqual({ token: "tok", allowedFrom: [] });
 });
 
-test("bridge settings record the numbers and prefix chosen for a scratchpad self-chat", () => {
-  const settings = bridgeSettings("tok", whatsappSenders("+919876543210, 918887776665")!, "//", "ignore");
-  expect(settings).toEqual({
+test("bridge settings normalise the owner's other numbers", () => {
+  expect(bridgeSettings("tok", whatsappSenders("+919876543210, 918887776665")!)).toEqual({
     token: "tok",
     allowedFrom: ["919876543210", "918887776665"],
-    askPrefix: "//",
-    selfChatText: "ignore",
   });
 });
 
@@ -153,7 +149,7 @@ test("editing the owner's bridge settings keeps audiences and the chat list", ()
   // bridgeSettings is what the bridge section writes, and it replaces the file.
   // Dropping these would silently disconnect every group and empty the menu
   // that reconnects them.
-  const kept = bridgeSettings("tok", ["919999900000"], "?", "ask", {
+  const kept = bridgeSettings("tok", ["919999900000"], {
     audiences: [{ name: "the-boys", token: "t2", match: ["120363@g.us"], mention: "when-mentioned" }],
     chats: [{ id: "120363@g.us", name: "the boys" }],
   });
@@ -163,5 +159,5 @@ test("editing the owner's bridge settings keeps audiences and the chat list", ()
   expect(kept.chats).toEqual([{ id: "120363@g.us", name: "the boys" }]);
 
   // Absent rather than present-and-empty, so a config file stays readable.
-  expect("audiences" in bridgeSettings("tok", [], "?")).toBe(false);
+  expect("audiences" in bridgeSettings("tok", [])).toBe(false);
 });

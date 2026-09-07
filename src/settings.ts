@@ -45,7 +45,6 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
   console.log(`\n${bold("WhatsApp bridge")}`);
   if (current) {
     console.log(`${grey("  your numbers:  ")} ${current.allowedFrom.length ? current.allowedFrom.join(", ") : grey("none besides the linked phone")}`);
-    console.log(`${grey("  self-chat text: ")} ${current.selfChatText === "ask" ? "answered as a question" : `ignored unless prefixed with "${current.askPrefix}"`}`);
     console.log(`${grey("  device token:   ")} ${grey(`set, ${current.token.length} characters`)}`);
   } else {
     console.log(grey("  Not configured here yet. Answering these questions writes it,"));
@@ -68,13 +67,6 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
     if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
   } while (!allowedFrom);
 
-  const selfChatText = await choose("Plain text in your own chat with yourself", [
-    { value: "ask" as const, label: "Answer it — the chat is your assistant" },
-    { value: "ignore" as const, label: "Ignore it — the chat stays a scratchpad, a prefix asks" },
-  ], current?.selfChatText ?? "ask");
-  const askPrefix = selfChatText === "ignore"
-    ? await ask("Prefix that marks a question there", current?.askPrefix || "?")
-    : current?.askPrefix || "?";
 
   // With no token on file there is nothing to keep, so mint without asking.
   // When one exists, re-minting is the fix for a leak and is offered rather
@@ -93,14 +85,15 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
     }
   }
 
-  const next = bridgeSettings(token, allowedFrom, askPrefix, selfChatText, current ?? {});
+  const next = bridgeSettings(token, allowedFrom, current ?? {});
   await writeSettings(bridgePath, next);
   console.log(ok(`Saved to ${bridgePath}.`));
+  console.log(grey("  The bridge watches this file, so it is live without a restart."));
   // Environment variables win over this file, so a pre-wizard install that
   // still sets them would quietly ignore everything just answered.
   console.log(warn("If TAMA_TOKEN or WA_ALLOWED are still in .env, remove them — they override this file:"));
   console.log(`  ${bold("sed -i '/^WA_ALLOWED=/d;/^TAMA_TOKEN=/d' .env")}`);
-  console.log(`${bold("tama restart")} ${grey("or docker compose --profile whatsapp-webjs up -d, to apply it")}`);
+
 }
 
 /** The other half of a leaked token: seeing what exists and taking one away. */
@@ -298,6 +291,7 @@ async function editView(configPath: string, vaultPath: string, name: string, cur
     raw.views = { ...(raw.views ?? {}), [name]: view };
   });
   console.log(ok(`Saved view "${name}".`));
+  console.log(grey("  Live immediately: views are read per request."));
   return true;
 }
 
@@ -423,7 +417,7 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
   // declined to connect the audience at all, and nothing said so.
   const write = async (token: string, match: string[]) => {
     await writeSettings(bridgePath, {
-      ...(existing ?? bridgeSettings("", [], "?")),
+      ...(existing ?? bridgeSettings("", [])),
       audiences: [
         ...(existing?.audiences ?? []).filter((a) => a.name !== name),
         { name, token, match, mention: audience.mention },
@@ -755,7 +749,9 @@ async function sttSection(configPath: string, config: Config): Promise<void> {
     };
   });
   console.log(ok("Saved."));
-  console.log(`${bold("tama restart")} ${grey("to apply it")}`);
+  // Unlike audiences and views, this one really does need a restart: the stt
+  // client is built at boot from its config.
+  console.log(`${bold("tama restart")} ${grey("to apply it, since the transcriber is built at startup")}`);
 }
 
 /** Whichever way the existing config referenced its key, keep referencing it. */
@@ -833,7 +829,7 @@ async function askSection(configPath: string, config: Config): Promise<void> {
     };
   });
   console.log(ok(`Saved. Questions go to ${model}.`));
-  console.log(`${bold("tama restart")} ${grey("then try: tama ask \"what did I write about\"")}`);
+  console.log(`${bold("tama restart")} ${grey("to apply it, since the model client is built at startup")}`);
 }
 
 export async function runSettings(argv: string[] = Bun.argv): Promise<void> {

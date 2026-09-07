@@ -338,37 +338,63 @@ docker compose exec tama sh -c 'git -C /vault add -A && git -C /vault commit -qm
 
 ---
 
-## 9. Public HTTPS (needed for phone pairing off-LAN, and for WhatsApp)
+## 9. Making it reachable
 
-First, find out whether anything already owns 80/443 — step 1 tells you, but not *what*:
+The server binds `127.0.0.1:8080`. That is correct for a laptop, where
+localhost is localhost, and it is the whole problem on a remote box: your
+editor, your phone and Meta's webhooks are all somewhere else.
+
+Four things want an address, and one command gives them all one:
 
 ```sh
-sudo ss -lntp | grep -E ':(80|443)\b'
+tama expose
 ```
 
-**If they are free**, use the bundled Caddy. Prerequisites: a domain, an A record pointing at
-the server's public IP, and ports 80 and 443 open in the EC2 security group.
+That puts this server on your **tailnet** - a private network of your own
+devices - with a real HTTPS address like `https://tama-server.tail1234.ts.net`.
+It installs Tailscale if needed, signs the machine in, serves port 8080, writes
+`publicBaseUrl`, and prints the exact `claude mcp add` line.
+
+| Then this works | Previously |
+|---|---|
+| MCP from your editor | an SSH tunnel in a terminal you must not close |
+| Pairing a phone off-LAN | impossible |
+| `publicBaseUrl` | unset |
+
+`tama expose status` says how it is currently reachable. `tama expose --off`
+stops serving; the daemon keeps listening on loopback either way.
+
+**Why not a public domain by default.** A second brain does not need port 443
+open to the internet so that an editor plugin can reach it. Tailscale needs no
+domain, no DNS wait and no certificate renewal, and nothing on it is
+addressable by anyone who is not you.
+
+### When you do want a public host
+
+Only one thing actually requires it: the **official WhatsApp Cloud API**, because
+Meta posts to you from their servers and they are not on your tailnet. If you
+want that, the bundled Caddy is the path.
+
+Prerequisites: a domain, an A record pointing at the server's public IP, and
+ports 80 and 443 open in the security group.
 
 ```sh
 cd ~/tama
-echo "TAMA_DOMAIN=tama.example.com" > .env
+echo "TAMA_DOMAIN=tama.example.com" >> .env
 docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 docker compose logs -f caddy      # watch the certificate get issued
 curl -s https://tama.example.com/health | jq
 ```
 
-Caddy gets a Let's Encrypt certificate automatically on first request. Certificate failures
-are almost always DNS not yet propagated or port 80 closed.
+Certificate failures are almost always DNS not yet propagated or port 80 closed.
+Use the same two-file `-f` invocation for every later compose command, or Caddy
+is stopped as an orphan.
 
-Use this same two-file `-f` invocation for every later `docker compose` command, or the Caddy
-container will be stopped as an orphan.
-
-**If a proxy already holds 80/443** (another container, or nginx/caddy on the host), do not
-start the bundled Caddy — two things cannot bind the same port. Add a vhost to the existing
-proxy pointing at `127.0.0.1:8080` instead, which is exactly where step 6 published Tama:
+**If a proxy already holds 80/443** - another container, or nginx on the host -
+do not start the bundled Caddy. Add a vhost to the existing one pointing at
+`127.0.0.1:8080`:
 
 ```nginx
-# nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
@@ -377,23 +403,12 @@ location / {
 }
 ```
 
-```caddyfile
-# host Caddy
-tama.example.com {
-    reverse_proxy 127.0.0.1:8080 {
-        transport http { read_timeout 300s }
-    }
-}
-```
+If that proxy is itself in a container, `127.0.0.1` is its own loopback: use
+`host.docker.internal:8080` with `extra_hosts: ["host.docker.internal:host-gateway"]`,
+or put both on the same Docker network and target `tama:8080`.
 
-If the existing proxy runs in a container, `127.0.0.1` is that container's own loopback — use
-`host.docker.internal:8080` with `extra_hosts: ["host.docker.internal:host-gateway"]`, or put
-both on the same Docker network and target `tama:8080`.
-
-Security group, minimal: 22 from your IP, 80 and 443 from anywhere. **Never** open 8080 —
-`docker-compose.yml` publishes it on `127.0.0.1` only, and it is plain HTTP.
-
----
+Security group, minimal: 22 from your IP, 80 and 443 from anywhere. **Never**
+open 8080 - it is published on loopback only and it is plain HTTP.
 
 ## 10. Pair a phone
 

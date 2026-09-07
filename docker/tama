@@ -45,6 +45,44 @@ vault_dir() {
   [ -n "$dir" ] && [ -d "$dir" ] && printf '%s' "$dir"
 }
 
+# This machine's tailnet name, as an https URL, or empty.
+tailscale_url() {
+  # Always exits 0. A function whose last command is a failing test takes the
+  # whole script down under set -e when its output is captured in an
+  # assignment, which is how `tama expose status` died on a machine that had
+  # tailscale installed but not signed in.
+  name=$(tailscale status --json 2>/dev/null | sed -n 's/.*"DNSName" *: *"\([^"]*\)".*/\1/p' | head -1)
+  name=${name%.}
+  [ -n "$name" ] && printf 'https://%s' "$name"
+  return 0
+}
+
+# Read one top-level-ish value out of the config. sudo, because the wizard
+# writes it 0600 and root-owned.
+config_value() {
+  sudo python3 -c "
+import json,sys
+try:
+    c=json.load(open('config/tama.config.json'))
+except Exception:
+    sys.exit(0)
+print((c.get('whatsapp') or {}).get('$1') or '')
+" 2>/dev/null || true
+}
+
+# Write publicBaseUrl without disturbing anything else in the file: it is the
+# wizard's file and it holds secrets this command has no business rewriting.
+set_config_value() {
+  sudo python3 -c "
+import json
+p='config/tama.config.json'
+c=json.load(open(p))
+c.setdefault('whatsapp',{})['$1']='$2'
+open(p,'w').write(json.dumps(c,indent=2)+'\n')
+print('config: $1 set to $2')
+" 2>/dev/null || echo "config: could not set $1 (is the config where it should be?)"
+}
+
 require_vault_dir() {
   dir=$(vault_dir)
   if [ -z "$dir" ]; then
@@ -97,6 +135,106 @@ case $command in
     ;;
   logs)     compose logs -f --tail 100 "${@:-tama}" ;;
   health)   curl -s localhost:8080/health ;;
+
+  # Make this daemon addressable, once, and print the URL.
+  #
+  # Four features wanted this and each had its own workaround: MCP needed an
+  # SSH tunnel in a terminal you must not close, off-LAN phone pairing was
+  # impossible, the WhatsApp Cloud API needs a callback, and publicBaseUrl sat
+  # unset. The fix is one thing, not four.
+  #
+  # Tailscale is the default rather than a public domain because a server
+  # holding one person's notes should not need port 443 on the internet to
+  # make an editor plugin work. --public is there for someone who genuinely
+  # wants strangers to reach it.
+  expose)
+    mode=${1:-tailscale}
+    case $mode in
+      status)
+        if command -v tailscale >/dev/null 2>&1; then
+          url=$(tailscale_url)
+          [ -n "$url" ] && echo "tailnet: $url" || echo "tailnet: tailscale installed but this machine is not serving"
+          tailscale serve status 2>/dev/null || true
+        else
+          echo "tailnet: tailscale not installed"
+        fi
+        base=$(config_value publicBaseUrl)
+        echo "config:  publicBaseUrl ${base:-unset}"
+        ;;
+
+      --off|off)
+        command -v tailscale >/dev/null 2>&1 && sudo tailscale serve reset || true
+        echo "No longer served on the tailnet. The daemon still listens on 127.0.0.1:8080."
+        ;;
+
+      --public|public)
+        echo "The public path is Caddy with a domain, which is a bigger commitment:"
+        echo "  a domain, an A record, ports 80 and 443 open, and a certificate to renew."
+        echo "  docs/deploy-docker.md section 9 walks it."
+        echo ""
+        echo "Worth knowing: you only need this for the official WhatsApp Cloud API."
+        echo "For MCP, phone pairing and your own devices, tama expose is enough and"
+        echo "does not put anything on the public internet."
+        ;;
+
+      tailscale)
+        if ! command -v tailscale >/dev/null 2>&1; then
+          echo "Tailscale puts this server on a private network of your own devices, with"
+          echo "a stable HTTPS address. No domain, no certificates, nothing public."
+          printf 'Install it? [y/N]: '
+          read -r answer
+          case $answer in [yY]*) ;; *) echo "Nothing changed."; exit 0 ;; esac
+          curl -fsSL https://tailscale.com/install.sh | sh || { echo "install failed" >&2; exit 1; }
+        fi
+
+        # Logged in? `tailscale up` prints a URL to open in a browser, so it has
+        # to be run interactively rather than swallowed.
+        if ! tailscale status >/dev/null 2>&1; then
+          echo "Signing this machine into your tailnet. Open the URL it prints:"
+          sudo tailscale up || { echo "tailscale up failed" >&2; exit 1; }
+        fi
+
+        # The serve syntax has changed across releases, so try the forms in
+        # order and report which one worked rather than guessing one and
+        # failing opaquely.
+        served=""
+        for attempt in "--bg 8080" "--bg http://127.0.0.1:8080" "https / http://127.0.0.1:8080"; do
+          # shellcheck disable=SC2086
+          if sudo tailscale serve $attempt >/dev/null 2>&1; then served="tailscale serve $attempt"; break; fi
+        done
+        if [ -z "$served" ]; then
+          echo "Could not configure tailscale serve. Try it by hand and paste the error:" >&2
+          echo "  sudo tailscale serve --bg 8080" >&2
+          exit 1
+        fi
+
+        url=$(tailscale_url)
+        if [ -z "$url" ]; then
+          echo "Served ($served) but could not read this machine's tailnet name." >&2
+          echo "  tailscale status --json | grep DNSName" >&2
+          exit 1
+        fi
+
+        set_config_value publicBaseUrl "$url" || true
+
+        echo ""
+        echo "Reachable at $url"
+        echo "  served with: $served"
+        echo ""
+        echo "MCP, from any of your machines, no tunnel:"
+        echo "  tama token mcp-laptop            # on this server, prints once"
+        echo "  claude mcp add --transport http tama $url/mcp \\"
+        echo "    --header \"Authorization: Bearer PASTE_IT\""
+        echo ""
+        echo "Pair a phone, from anywhere on the tailnet:"
+        echo "  $url/pair?token=\$(admin token from config/tama.config.json)"
+        echo ""
+        echo "This survives a reboot. Nothing needs to stay running in a terminal."
+        ;;
+
+      *) echo "usage: tama expose [tailscale|status|--off|--public]" >&2; exit 2 ;;
+    esac
+    ;;
   # The vault is a git repo; committing is how a note becomes recoverable.
   commit)   compose exec -T tama sh -c 'git -C /vault add -A && (git -C /vault diff --cached --quiet || git -C /vault commit -qm "tama commit") && git -C /vault log --oneline | head -1' ;;
 
@@ -240,6 +378,8 @@ tama stop                   stop the containers, volumes survive
 tama status                 what is running
 tama logs [service]         follow logs; defaults to tama
 tama health                 the /health JSON
+tama expose                 put this server on your tailnet, no tunnel, no domain
+tama expose status          how it is currently reachable
 tama ask "question"         ask your notes from the terminal
 tama token NAME             mint a device token for a client (iOS, MCP, a script)
 tama session PROJECT        record what a session did; summary on stdin

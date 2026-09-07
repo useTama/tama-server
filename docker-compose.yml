@@ -4,6 +4,11 @@
 #   docker compose run --rm setup        # the wizard; paste your API key here
 #   docker compose up -d --build
 #
+# Later changes - a WhatsApp number, a revoked device - are one section, not
+# the whole wizard:
+#
+#   docker compose run --rm settings
+#
 # Do not pre-copy tama.config.docker.json into config/ before the wizard: that
 # template's placeholder adminToken is rejected on load by design. The template
 # is for configuring by hand instead of running the wizard.
@@ -49,6 +54,20 @@ services:
       - tama-vault:/vault
       - tama-data:/data
 
+  # Same image and volumes as setup, one section at a time instead of the whole
+  # first-run flow. This is where you add a phone number to the WhatsApp bridge
+  # or revoke a device, rather than editing .env by hand.
+  #
+  #   docker compose run --rm settings
+  settings:
+    profiles: ["settings"]
+    build: .
+    command: ["bun", "run", "src/tama.ts", "settings", "--config", "/etc/tama/tama.config.json"]
+    volumes:
+      - ./config:/etc/tama
+      - tama-vault:/vault
+      - tama-data:/data
+
   # Never built or started without --profile local-stt. There is deliberately
   # no depends_on: Tama starts either way and reports stt health at /health.
   whisper:
@@ -78,17 +97,16 @@ services:
     depends_on: [tama]
     environment:
       TAMA_URL: http://tama:8080
-      # A device token from pairing, NOT the admin token. See the client README.
-      # Deliberately not ${TAMA_TOKEN:?…}: interpolation happens when Compose
-      # parses the file, before profiles are applied, so a required variable
-      # here breaks `docker compose up` for everyone not running the bridge.
-      # bridge.mjs refuses to start without it and prints how to mint one.
+      # Everything else - the device token, the allowed numbers, what self-chat
+      # text means - comes from config/whatsapp-bridge.json, written by
+      # `tama-server setup` and editable with `tama-server settings`. These
+      # override it when set, for a one-off or a pre-wizard deployment.
       TAMA_TOKEN: "${TAMA_TOKEN:-}"
-      # Comma-separated, country code and digits only. Empty means your own
-      # self-chat is the only thing listened to.
-      WA_ALLOWED: ${WA_ALLOWED:-}
-      WA_ASK_PREFIX: "${WA_ASK_PREFIX:-?}"
+      WA_ALLOWED: "${WA_ALLOWED:-}"
     volumes:
+      # Read-only, and the same directory the server and wizard share. The
+      # bridge reads its settings file at startup, so changes need a restart.
+      - ./config:/etc/tama:ro
       - whatsapp-session:/session
 
 volumes:

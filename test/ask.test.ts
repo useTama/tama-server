@@ -173,3 +173,17 @@ test("room notes about people are usable but not quotable", () => {
   // Absent, not empty: an empty heading invites filling it in.
   expect(systemPrompt({ voice: "roast" })).not.toContain("Who is in this room");
 });
+
+test("an instruction from the owner is carried out, not negotiated", () => {
+  // Acknowledging that the owner is in charge and then hedging is the failure
+  // this covers: "I would rather not roast your friend" is a refusal wearing
+  // agreement as a hat.
+  const prompt = systemPrompt({ voice: "roast" });
+  expect(prompt).toContain("to be carried out, not evaluated");
+  expect(prompt).toContain("Do not ask whether they are");
+  expect(prompt).toContain("water a roast down into");
+  // The two limits that survive the instruction are stated in the same breath,
+  // so compliance does not read as unlimited.
+  expect(prompt).toContain("make up a fact");
+  expect(prompt).toContain("as ammunition against a person");
+});

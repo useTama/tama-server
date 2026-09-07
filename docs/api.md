@@ -198,8 +198,23 @@ authentication on both paths.
 | --- | --- | --- |
 | `whisper-cpp` | whisper.cpp's `whisper-server`, local or remote | `url` |
 | `openai-compatible` | `POST {url}/audio/transcriptions` — Groq, OpenAI | `url`, `model` |
+| `sarvam` | `POST {url}/speech-to-text` — Sarvam AI | key; `url`, `model`, `language` default |
 
-Formats outside those two, Sarvam's among them, are not supported.
+Sarvam is a separate adapter rather than a variant of the OpenAI shape, because all three
+things that matter differ: the route, the auth header (`api-subscription-key`, not `Bearer`)
+and the response field (`transcript`, not `text`). It earns the extra code on Indian languages
+and code-mixed Hindi-English speech, where whisper is noticeably worse.
+
+```json
+"stt": { "provider": "sarvam", "model": "saaras:v3", "language": "hi-IN", "apiKeyEnv": "SARVAM_API_KEY" }
+```
+
+`url` defaults to `https://api.sarvam.ai` and `model` to `saaras:v3`. `language` is a BCP-47
+hint — `hi-IN`, `en-IN`, `ta-IN` — or `unknown` to auto-detect, which is the default. Setup's
+reachability check cannot verify a Sarvam key, because Sarvam serves no listing route; a bad
+key first shows up on the first capture.
+
+Formats outside these three are not supported.
 
 | `ask.provider` | Covers | Needs |
 |---|---|---|

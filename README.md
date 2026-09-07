@@ -25,7 +25,8 @@ vault) and a private configuration file. Its **Existing notes** step can import 
 vault or any Markdown folder directly into the new Tama vault.
 
 For transcription, choose whisper.cpp on this machine, whisper.cpp on another machine, or a
-hosted API (Groq, OpenAI) whose speech models setup lists for you. If you pick this machine
+hosted API — Groq and OpenAI, whose speech models setup lists for you, or Sarvam for Indian
+languages and code-mixed speech. If you pick this machine
 and nothing is listening yet, setup offers to download a model and install a per-user service
 so Whisper starts with you — no root, and it tells you the command to undo it.
 

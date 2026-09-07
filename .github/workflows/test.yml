@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      # Includes the retrieval evals, which need no model and no key. The
+      # answer evals skip themselves here: they are gated on TAMA_EVAL_MODEL,
+      # and a rate limit failing a push is a worse signal than not running.
+      - run: bun test

@@ -122,7 +122,8 @@ export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
 }
 
 /** The OpenAI-compatible listing both the ask and the stt flows shop from. */
-async function listModels(baseUrl: string, apiKey?: string): Promise<string[]> {
+/** Exported so `tama-server settings` lists models the same way setup does. */
+export async function listModels(baseUrl: string, apiKey?: string): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
     headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(8000),

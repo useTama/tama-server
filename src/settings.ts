@@ -12,16 +12,17 @@
  * existing config as its defaults, rather than growing a second writer for it.
  */
 
-import { readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { configPathFromArgs, loadConfig } from "./config.ts";
-import { bridgeSettings, runSetup, writeSettings, whatsappSenders, type BridgeSettings } from "./setup.ts";
+import { bridgeSettings, listModels, runSetup, writeSettings, whatsappSenders, type BridgeSettings } from "./setup.ts";
+import { SPEECH_MODEL, SARVAM_URL, SARVAM_DEFAULT_MODEL } from "./stt.ts";
 import { BUILTIN_VIEWS, partitionByView, type View } from "./views.ts";
 import type { Audience, Config } from "./config.ts";
 import { listTokens, mintToken, revokeToken } from "./auth.ts";
 import { openDb } from "./db.ts";
-import { ask, choose, requireTty, yes } from "./prompt.ts";
+import { ask, choose, endpoint, requireTty, secret, yes } from "./prompt.ts";
 import { tama, grey, bold, ok, warn } from "./ui.ts";
 
 async function readBridge(path: string): Promise<BridgeSettings | undefined> {
@@ -646,6 +647,174 @@ async function viewsSection(configPath: string, config: Config): Promise<void> {
   await editView(configPath, config.vault.path, name, views[name]);
 }
 
+/**
+ * A provider credential, written to its own 0600 file beside the config.
+ *
+ * Same shape the wizard uses, for the same reason: the config sits next to a
+ * git-tracked vault, and a key in it is one `git add -A` from being published.
+ * The old file is removed rather than left behind, since a stale secret on disk
+ * is a secret on disk.
+ */
+async function writeSecret(configPath: string, section: string, value: string, previous?: string): Promise<string> {
+  const name = `${section}-${crypto.randomUUID()}.key`;
+  await writeFile(resolve(dirname(configPath), name), value, { mode: 0o600, flag: "wx" });
+  if (previous && previous !== name) {
+    await unlink(resolve(dirname(configPath), previous)).catch(() => {});
+  }
+  return name;
+}
+
+/** Ask for a key, or keep the saved one. Blank means keep. */
+async function maybeNewKey(configPath: string, section: string, saved: string | undefined): Promise<string | undefined> {
+  const entered = await secret(saved ? "API key (Enter to keep the saved one)" : "API key");
+  if (!entered) return undefined;
+  return writeSecret(configPath, section, entered, saved);
+}
+
+async function sttSection(configPath: string, config: Config): Promise<void> {
+  const current = config.stt;
+  console.log(`\n${bold("Speech-to-text")}`);
+  console.log(`${grey("  now:")} ${current.provider === "whisper-cpp" ? `whisper.cpp at ${current.url}` : `${current.model ?? "default model"} at ${current.url}`}`);
+
+  const providers = [
+    { value: "groq", label: "Groq — fast, cheap, generous free tier", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
+    { value: "sarvam", label: "Sarvam — Indian languages and code-mixed Hindi-English", url: SARVAM_URL, keys: "https://dashboard.sarvam.ai" },
+    { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
+  ] as const;
+
+  const chosen = await choose("Who should transcribe?", [
+    ...providers.map((p) => ({ value: p.value as string, label: p.label })),
+    { value: "whisper", label: "Whisper on another machine — nothing leaves your network" },
+  ], current.provider === "sarvam" ? "sarvam" : current.provider === "whisper-cpp" ? "whisper" : "groq");
+
+  if (chosen === "whisper") {
+    const url = await endpoint("Whisper server address", current.url ?? "http://whisper:8081");
+    await patchConfig(configPath, (raw) => {
+      raw.stt = { provider: "whisper-cpp", url };
+    });
+    console.log(ok("Saved. Nothing is uploaded on this path."));
+    console.log(`${bold("tama restart --profile local-stt")} ${grey("if whisper runs in this deployment")}`);
+    return;
+  }
+
+  const preset = providers.find((p) => p.value === chosen)!;
+  console.log(warn("  Your recordings will be uploaded to this provider."));
+  console.log(`${grey("  Get a key:")} ${preset.keys}`);
+  const keyFile = await maybeNewKey(configPath, "stt", (config.stt as { apiKeyFile?: string }).apiKeyFile);
+
+  let model: string | undefined;
+  let language: string | undefined;
+  if (chosen === "sarvam") {
+    model = await choose("Which Sarvam model?", [
+      { value: "saaras:v3", label: "saaras:v3 (default)" },
+      { value: "saaras:v4", label: "saaras:v4 (newer)" },
+    ], current.model ?? SARVAM_DEFAULT_MODEL);
+    language = await choose("Spoken language", [
+      { value: "unknown", label: "Detect automatically" },
+      { value: "en-IN", label: "English (India)" },
+      { value: "hi-IN", label: "Hindi" },
+    ], current.language ?? "unknown");
+  } else {
+    console.log(grey("  Loading available models…"));
+    const models = await listModels(preset.url).catch(() => [] as string[]);
+    const speech = models.filter((m) => SPEECH_MODEL.test(m)).slice(0, 12);
+    model = speech.length
+      ? await choose("Which model?", speech.map((m) => ({ value: m, label: m })), speech[0]!)
+      : (await ask("Model name", current.model ?? "whisper-large-v3-turbo")).trim();
+  }
+
+  await patchConfig(configPath, (raw) => {
+    raw.stt = {
+      provider: chosen === "sarvam" ? "sarvam" : "openai-compatible",
+      url: preset.url,
+      ...(model ? { model } : {}),
+      ...(language ? { language } : {}),
+      // Preserved when the key was kept, replaced when a new one was entered.
+      ...(keyFile ? { apiKeyFile: keyFile } : pickKeyRef(raw.stt)),
+    };
+  });
+  console.log(ok("Saved."));
+  console.log(`${bold("tama restart")} ${grey("to apply it")}`);
+}
+
+/** Whichever way the existing config referenced its key, keep referencing it. */
+function pickKeyRef(previous: any): Record<string, string> {
+  for (const field of ["apiKeyFile", "apiKeyEnv", "apiKey"]) {
+    if (previous?.[field]) return { [field]: String(previous[field]) };
+  }
+  return {};
+}
+
+async function askSection(configPath: string, config: Config): Promise<void> {
+  console.log(`\n${bold("Ask")}`);
+  console.log(`${grey("  now:")} ${config.ask ? `${config.ask.model} at ${config.ask.baseUrl ?? config.ask.provider}` : grey("not configured, so questions are not answered")}`);
+
+  const presets = [
+    { value: "groq", label: "Groq — free tier, no card", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys", filter: "llama" },
+    { value: "openrouter", label: "OpenRouter — every model, one key", url: "https://openrouter.ai/api/v1", keys: "https://openrouter.ai/settings/keys", filter: "claude" },
+    { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys", filter: "gpt" },
+    { value: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com", keys: "https://platform.deepseek.com/api_keys", filter: "" },
+  ] as const;
+
+  const chosen = await choose("Who should answer questions?", [
+    ...presets.map((p) => ({ value: p.value as string, label: p.label })),
+    { value: "local", label: "A model on your own server — ollama, llama.cpp, vLLM" },
+    { value: "off", label: "Nobody — turn Ask off" },
+  ], config.ask?.baseUrl?.includes("groq") ? "groq" : "openrouter");
+
+  if (chosen === "off") {
+    if (!(await yes("Turn Ask off? Captures keep working; questions stop being answered.", false))) return;
+    await patchConfig(configPath, (raw) => { delete raw.ask; });
+    console.log(ok("Ask is off."));
+    return;
+  }
+
+  const baseUrl = chosen === "local"
+    ? await endpoint("Model server address", config.ask?.baseUrl ?? "http://127.0.0.1:11434/v1")
+    : presets.find((p) => p.value === chosen)!.url;
+
+  let keyFile: string | undefined;
+  if (chosen !== "local") {
+    const preset = presets.find((p) => p.value === chosen)!;
+    console.log(warn("  Your questions and the note excerpts that answer them go to this provider."));
+    console.log(`${grey("  Get a key:")} ${preset.keys}`);
+    keyFile = await maybeNewKey(configPath, "ask", (config.ask as { apiKeyFile?: string } | undefined)?.apiKeyFile);
+  }
+
+  console.log(grey("  Loading available models…"));
+  const key = keyFile ? await readFile(resolve(dirname(configPath), keyFile), "utf8").then((k) => k.trim()) : config.ask?.apiKey;
+  const models = await listModels(baseUrl, key).catch(() => [] as string[]);
+  let model: string;
+  if (models.length > 0) {
+    console.log(`${bold(String(models.length))} models listed.`);
+    const suggested = chosen === "local" ? "" : presets.find((p) => p.value === chosen)!.filter;
+    const filter = models.length > 12 ? await ask("Filter model names", suggested) : "";
+    const matches = models.filter((m) => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 12);
+    model = await choose("Which model?", [
+      ...matches.map((m) => ({ value: m, label: m })),
+      { value: "__manual__", label: "type a model name" },
+    ], matches[0] ?? "__manual__");
+    if (model === "__manual__") model = (await ask("Model name", config.ask?.model ?? "")).trim();
+  } else {
+    console.log(warn("  Could not list models. The key may be wrong, or the server may be down."));
+    model = (await ask("Model name", config.ask?.model ?? "")).trim();
+  }
+  if (!model) return;
+
+  await patchConfig(configPath, (raw) => {
+    raw.ask = {
+      ...(raw.ask ?? {}),
+      provider: "openai-compatible",
+      baseUrl,
+      model,
+      maxChunks: raw.ask?.maxChunks ?? 8,
+      ...(keyFile ? { apiKeyFile: keyFile } : pickKeyRef(raw.ask)),
+    };
+  });
+  console.log(ok(`Saved. Questions go to ${model}.`));
+  console.log(`${bold("tama restart")} ${grey("then try: tama ask \"what did I write about\"")}`);
+}
+
 export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
   requireTty("settings");
   const configPath = configPathFromArgs(argv);
@@ -675,6 +844,8 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
     const section = await choose("What would you like to change?", [
       { value: "audiences" as const, label: "Audiences — everyone who is not you: groups, other people" },
       { value: "views" as const, label: "Views — named slices of the vault, for audiences to see through" },
+      { value: "ask" as const, label: "Ask — which model answers your questions" },
+      { value: "stt" as const, label: "Speech-to-text — who transcribes your voice notes" },
       { value: "bridge" as const, label: "WhatsApp bridge — your own numbers, self-chat behaviour, token" },
       { value: "devices" as const, label: "Devices — list what is paired, revoke one" },
       { value: "wizard" as const, label: "Everything else — vault, transcription, Ask (full setup)" },
@@ -692,6 +863,8 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
     }
     if (section === "audiences") await audiencesSection(configPath, dbPath, bridgePath, config);
     if (section === "views") await viewsSection(configPath, config);
+    if (section === "ask") await askSection(configPath, config);
+    if (section === "stt") await sttSection(configPath, config);
     if (section === "bridge") await bridgeSection(bridgePath, dbPath);
     if (section === "devices") await devicesSection(dbPath);
   }

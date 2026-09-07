@@ -111,3 +111,25 @@ test("setup reuses an existing git-backed vault but rejects another non-empty fo
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a container deployment's volume paths override the home-directory defaults", () => {
+  // The wizard runs inside the container for `docker compose run --rm setup`,
+  // where ~ does not outlive the container but the mounted volumes do.
+  const before = process.env.TAMA_DATA_DIR;
+  process.env.TAMA_DATA_DIR = "/data";
+  try {
+    const config = configFromAnswers({
+      vaultPath: "/vault",
+      inbox: "Inbox",
+      stt: { provider: "sarvam", url: "https://api.sarvam.ai", model: "saaras:v3", language: "unknown" },
+      port: 8080,
+      ask: undefined,
+    }) as { dataDir: string; vault: { path: string }; stt: { provider: string } };
+    expect(config.dataDir).toBe("/data");
+    expect(config.vault.path).toBe("/vault");
+    expect(config.stt.provider).toBe("sarvam");
+  } finally {
+    if (before === undefined) delete process.env.TAMA_DATA_DIR;
+    else process.env.TAMA_DATA_DIR = before;
+  }
+});

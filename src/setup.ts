@@ -53,7 +53,10 @@ export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
     safety: { allowUnbackedVault: false, dryRun: false },
     ...(a.ask ? { ask: a.ask } : {}),
     ...(a.whatsapp ? { whatsapp: a.whatsapp } : {}),
-    dataDir: "~/.local/share/tama",
+    // A container deployment mounts its own volumes, and the wizard running
+    // inside it must write those paths rather than a home directory that does
+    // not survive the container.
+    dataDir: process.env.TAMA_DATA_DIR ?? "~/.local/share/tama",
   };
 }
 
@@ -239,7 +242,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     const current = existing ? loadConfig(configPath) : undefined;
     if (existing) console.log(grey("Existing setup found. Unrelated settings and your admin token will be preserved."));
     const worldName = await ask("What would you like to name your world?", existing?.world?.name ?? "My World");
-    let suggestedPath = current?.vault.path ?? homePath(`/Tama/${worldFolder(worldName)}`);
+    let suggestedPath = current?.vault.path ?? process.env.TAMA_VAULT ?? homePath(`/Tama/${worldFolder(worldName)}`);
     console.log(`Your notes will be saved in ${bold(suggestedPath)}`);
     const customLocation = await yes("Choose a different location?");
     let vaultPath: string;

@@ -86,6 +86,20 @@ git clone https://github.com/useTama/tama-server.git .
 
 Cloning into a non-empty directory fails; `.` on an empty `~/tama` is the intent.
 
+### Install the `tama` command
+
+The rest of this guide uses `docker compose` directly so you can see what each step
+does. For day-to-day use, link the wrapper once:
+
+```sh
+sudo ln -s "$PWD/docker/tama" /usr/local/bin/tama
+tama help
+```
+
+Then `tama setup`, `tama settings`, `tama restart`, `tama logs`, `tama ask "..."` work
+from any directory. It always passes `--profile whatsapp-webjs`, which is the single
+easiest thing to forget and the one that stops the WhatsApp bridge as an orphan.
+
 ---
 
 ## 4. Run the setup wizard
@@ -469,13 +483,13 @@ it holds a device token and posts to `/capture` and `/ask` like the iOS Shortcut
 so the server needs no `whatsapp` block for it at all. The wizard sets it up:
 
 ```sh
-docker compose run --rm setup          # WhatsApp -> Link your own WhatsApp number
-docker compose --profile whatsapp-webjs up -d --build
-docker compose --profile whatsapp-webjs logs -f whatsapp-webjs   # scan the QR
+tama settings                       # WhatsApp bridge -> answer three questions
+tama start
+tama logs whatsapp-webjs            # scan the QR
 ```
 
-Change the allowed numbers later with `tama-server settings`, or in Docker
-`docker compose run --rm settings`.
+`tama settings` sets the bridge up if it is not configured yet, mints its device
+token, and is also where you change the allowed numbers later.
 
 ### Option A — WhatsApp Cloud API
 

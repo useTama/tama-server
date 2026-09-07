@@ -41,15 +41,16 @@ says nothing when you talk to it reads as broken.
 
 ## Setup
 
-The wizard does all of it. On a container deployment:
+One command, three questions:
 
 ```sh
-cd ~/tama
-docker compose run --rm setup
+tama settings
 ```
 
-Arrow through to **WhatsApp** — Enter keeps every saved answer — and choose
-**Link your own WhatsApp number**. It asks three things:
+Pick **WhatsApp bridge**. (No `tama` command yet? `sudo ln -s "$PWD/docker/tama"
+/usr/local/bin/tama` from the repo, or use `docker compose run --rm settings`.)
+The first-run wizard, `tama setup`, offers the same thing under **WhatsApp** →
+**Link your own WhatsApp number**. Either way it asks:
 
 | Question | What it means |
 |---|---|
@@ -63,8 +64,8 @@ It mints the device token itself and writes `config/whatsapp-bridge.json`
 Then start it and scan the QR:
 
 ```sh
-docker compose --profile whatsapp-webjs up -d --build
-docker compose --profile whatsapp-webjs logs -f whatsapp-webjs
+tama start
+tama logs whatsapp-webjs
 ```
 
 On your phone: **WhatsApp → Settings → Linked devices → Link a device**. The
@@ -79,14 +80,20 @@ Compose treats this container as an orphan and stops it.
 
 ### Changing it later
 
-```sh
-docker compose run --rm settings
-```
+`tama settings` again (or `tama-server settings` on a source checkout). The
+**WhatsApp bridge** section edits the allowed numbers, the self-chat behaviour
+and the token without walking the whole wizard; **Devices** lists what is paired
+and revokes one. Then `tama restart` — the bridge reads the file at startup.
 
-Or on a source checkout, `tama-server settings`. The **WhatsApp bridge**
-section edits the allowed numbers, the self-chat behaviour and the token
-without walking the whole wizard; **Devices** lists what is paired and revokes
-one. Restart the bridge afterwards — it reads the file at startup.
+**Upgrading from a `.env` install.** Earlier versions took `TAMA_TOKEN` and
+`WA_ALLOWED` from `.env`. Run `tama settings`, answer the three questions, and
+then delete those two lines, because environment variables override the settings
+file and would keep the old values in force:
+
+```sh
+sed -i '/^WA_ALLOWED=/d;/^TAMA_TOKEN=/d' .env
+tama restart
+```
 
 ## Environment
 

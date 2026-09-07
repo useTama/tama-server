@@ -9,10 +9,18 @@ if (command === "setup") {
     console.error(`Setup: ${error instanceof Error ? error.message : "could not complete setup"}`);
     process.exitCode = 1;
   }
+} else if (command === "import") {
+  const { runImport } = await import("./import.ts");
+  try { await runImport(Bun.argv); }
+  catch (error) {
+    console.error(`Import: ${error instanceof Error ? error.message : "could not import notes"}`);
+    process.exitCode = 1;
+  }
 } else if (command === "help" || command === "--help" || command === "-h") {
   const { tama, grey } = await import("./ui.ts");
   console.log(`${tama("tama-server")} [--config PATH]       ${grey("run the server")}`);
-  console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure a vault, transcription, and Ask")}`);
+  console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure the vault, transcription, Ask, and WhatsApp")}`);
+  console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("copy existing Markdown into the configured vault")}`);
   console.log(grey("\nColour follows NO_COLOR and is dropped when output is not a terminal."));
 } else {
   await import("./index.ts");

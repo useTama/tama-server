@@ -5,6 +5,7 @@ import { mkdir, writeFile, readdir, readFile, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Vault } from "./vault.ts";
+import { assertSeparateImportRoots, collectMarkdown, importMarkdownFolder } from "./import.ts";
 import { configPathFromArgs, loadConfig } from "./config.ts";
 import { Stt, SPEECH_MODEL, type SttConfig } from "./stt.ts";
 import * as whisper from "./whisper.ts";
@@ -17,12 +18,20 @@ type AskConfig =
 /** What setup can produce. `apiKey` is never one of them: it goes to its own file. */
 export type SttAnswer = Omit<SttConfig, "apiKey">;
 
+export type WhatsAppAnswer = {
+  phoneNumberId: string;
+  allowedFrom: string[];
+  graphApiVersion: string;
+  publicBaseUrl?: string;
+};
+
 export type SetupAnswers = {
   vaultPath: string;
   inbox: string;
   stt: SttAnswer;
   port: number;
   ask: AskConfig;
+  whatsapp?: WhatsAppAnswer;
 };
 
 type VaultPlan = "create" | "use-existing";
@@ -43,6 +52,7 @@ export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
     notify: { provider: "console", ntfy: { url: "https://ntfy.sh", topic: "" }, digestAt: "08:00" },
     safety: { allowUnbackedVault: false, dryRun: false },
     ...(a.ask ? { ask: a.ask } : {}),
+    ...(a.whatsapp ? { whatsapp: a.whatsapp } : {}),
     dataDir: "~/.local/share/tama",
   };
 }
@@ -65,6 +75,11 @@ function homePath(suffix: string): string {
 export function worldFolder(name: string): string {
   const folder = name.normalize("NFKC").replace(/[\x00-\x1f\x7f/\\:*?"<>|]/g, "-").replace(/^\.+|\.+$/g, "").trim();
   return folder.slice(0, 80) || "My World";
+}
+
+export function whatsappSenders(value: string): string[] | null {
+  const senders = [...new Set(value.split(/[\s,]+/).map((item) => item.replace(/^\+/, "")).filter(Boolean))];
+  return senders.length > 0 && senders.every((item) => /^\d{6,20}$/.test(item)) ? senders : null;
 }
 
 export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
@@ -102,6 +117,17 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
         if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
         return value.replace(/\/+$/, "");
       } catch { console.log(warn("Enter an http:// or https:// server address without credentials or query parameters.")); }
+    }
+  };
+  const optionalPublicOrigin = async (fallback?: string): Promise<string | undefined> => {
+    for (;;) {
+      const value = await ask("Public HTTPS base URL (Enter to configure later)", fallback ?? "");
+      if (!value) return undefined;
+      try {
+        const url = new URL(value);
+        if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
+        return url.origin;
+      } catch { console.log(warn("Enter an https:// origin such as https://tama.example.com, with no path or credentials.")); }
     }
   };
   const choose = async <T extends string>(label: string, options: Array<{ value: T; label: string }>, fallback: T): Promise<T> => {
@@ -223,6 +249,36 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       vaultPath = resolve((askLocation ? await ask("Folder for your world", suggestedPath) : suggestedPath).replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
       try { selectedVaultPlan = await vaultPlan(vaultPath); break; }
       catch { console.log(warn("Choose an empty folder or an existing git-backed vault. Your existing notes will not be changed.")); askLocation = true; }
+    }
+
+    const importChoice = await choose("Existing notes", [
+      { value: "none", label: selectedVaultPlan === "create" ? "Start without importing notes" : "Keep this Tama vault as-is" },
+      { value: "obsidian", label: "Import an Obsidian / Markdown second brain" },
+    ], "none");
+    let importSource: string | undefined;
+    let importNoteCount = 0;
+    if (importChoice === "obsidian") {
+      console.log(grey("Choose a folder on this machine. Tama reads UTF-8 Markdown only, preserves note folders, and never modifies the source."));
+      console.log(grey("Use a separate local Tama vault; attachments and hidden Obsidian settings are not copied."));
+      for (;;) {
+        const entered = await ask("Obsidian vault or Markdown folder", "");
+        if (!entered) {
+          console.log(warn("Enter the folder containing your Markdown notes."));
+          continue;
+        }
+        const candidate = resolve(entered.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
+        try {
+          await assertSeparateImportRoots(candidate, vaultPath);
+          const notes = await collectMarkdown(candidate);
+          if (notes.length === 0) throw new Error("no Markdown notes found");
+          importSource = candidate;
+          importNoteCount = notes.length;
+          console.log(ok(`Found ${notes.length} Markdown note${notes.length === 1 ? "" : "s"} to import.`));
+          break;
+        } catch (error) {
+          console.log(warn(`Cannot use that folder: ${error instanceof Error ? error.message : "unknown error"}.`));
+        }
+      }
     }
     // This is application state, not a choice most people need to make. Keep
     // it in the standard per-user location; deployments can still set
@@ -382,13 +438,82 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       }
     }
 
-    const config = configFromAnswers({ vaultPath, inbox: "Inbox", stt, port, ask: askConfig });
-    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  config:")} ${configPath}`);
+    const whatsappChoice = await choose("WhatsApp", [
+      { value: "none", label: "Skip / disable WhatsApp" },
+      { value: "cloud", label: "Connect a WhatsApp Cloud API number" },
+    ], current?.whatsapp ? "cloud" : "none");
+    let whatsappConfig: WhatsAppAnswer | undefined;
+    let whatsappAccessToken: string | undefined;
+    let whatsappAppSecret: string | undefined;
+    let whatsappVerifyToken: string | undefined;
+    if (whatsappChoice === "cloud") {
+      console.log(grey("Use a dedicated number from Meta App Dashboard → WhatsApp → API Setup."));
+      let phoneNumberId = "";
+      do {
+        phoneNumberId = await ask("Meta phone number ID (not the visible phone number)", current?.whatsapp?.phoneNumberId ?? "");
+        if (!/^\d+$/.test(phoneNumberId)) console.log(warn("The Meta phone number ID contains digits only."));
+      } while (!/^\d+$/.test(phoneNumberId));
+
+      let allowedFrom: string[] | null = null;
+      do {
+        const rawSenders = await ask(
+          "Allowed sender numbers, comma-separated (country code + number)",
+          current?.whatsapp?.allowedFrom.join(",") ?? "",
+        );
+        allowedFrom = whatsappSenders(rawSenders);
+        if (!allowedFrom) console.log(warn("Enter at least one international number using digits only (a leading + is accepted)."));
+      } while (!allowedFrom);
+
+      const publicBaseUrl = await optionalPublicOrigin(current?.whatsapp?.publicBaseUrl);
+      whatsappAccessToken = await secret(
+        current?.whatsapp?.accessToken
+          ? "Meta access token (Enter to keep saved token)"
+          : "Meta system-user access token",
+      ) || current?.whatsapp?.accessToken;
+      while (!whatsappAccessToken) {
+        console.log(warn("WhatsApp needs an access token with whatsapp_business_messaging permission."));
+        whatsappAccessToken = await secret("Meta system-user access token");
+      }
+
+      whatsappAppSecret = await secret(
+        current?.whatsapp?.appSecret
+          ? "Meta app secret (Enter to keep saved secret)"
+          : "Meta app secret (App Settings → Basic)",
+      ) || current?.whatsapp?.appSecret;
+      while (!whatsappAppSecret) {
+        console.log(warn("The Meta app secret is required to authenticate webhook POSTs."));
+        whatsappAppSecret = await secret("Meta app secret");
+      }
+
+      // Tama owns this shared secret, and prints it after saving so the admin
+      // can paste the same value into Meta's webhook configuration.
+      whatsappVerifyToken = current?.whatsapp?.verifyToken ?? randomBytes(32).toString("hex");
+      const graphApiVersion = current?.whatsapp?.graphApiVersion ?? "v23.0";
+      whatsappConfig = { phoneNumberId, allowedFrom, graphApiVersion, publicBaseUrl };
+
+      try {
+        const response = await fetch(`https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}?fields=display_phone_number,verified_name`, {
+          headers: { authorization: `Bearer ${whatsappAccessToken}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        console.log(response.ok
+          ? ok("WhatsApp phone number and access token verified.")
+          : warn(`Could not verify the WhatsApp token/number (HTTP ${response.status}). Setup can still be saved.`));
+      } catch {
+        console.log(warn("Could not reach Meta to verify the WhatsApp token/number. Setup can still be saved."));
+      }
+      if (!askConfig) console.log(warn("Ask is disabled, so WhatsApp voice capture will work but text questions will not be answered yet."));
+    }
+
+    const config = configFromAnswers({ vaultPath, inbox: "Inbox", stt, port, ask: askConfig, whatsapp: whatsappConfig });
+    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  import:")} ${importSource ? `${importNoteCount} Markdown notes from a read-only source` : "none"}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  whatsapp:")} ${whatsappConfig ? `${whatsappConfig.phoneNumberId} (${whatsappConfig.allowedFrom.length} allowed)` : "disabled"}\n${grey("  config:")} ${configPath}`);
     if (existsSync(configPath) && !(await yes("Replace the existing config?"))) {
       console.log(grey("Setup cancelled; no changes were made."));
       return;
     }
-    if (!(await yes("Create this vault and save this configuration?"))) {
+    if (!(await yes(importSource
+      ? `Create this vault, save the configuration, and import ${importNoteCount} notes?`
+      : "Create this vault and save this configuration?"))) {
       console.log(grey("Setup cancelled; no changes were made."));
       return;
     }
@@ -396,6 +521,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     await mkdir(dirname(configPath), { recursive: true });
     const saved: any = { ...existing, ...config, server: { ...existing?.server, port, adminToken: current?.server.adminToken ?? (config.server as any).adminToken }, notify: existing?.notify ?? config.notify, safety: existing?.safety ?? config.safety, dataDir: existing?.dataDir ?? config.dataDir, vault: { path: vaultPath, inbox: current?.vault.inbox ?? "Inbox" } };
     if (!askConfig) delete saved.ask;
+    if (!whatsappConfig) delete saved.whatsapp;
     saved.world = { ...existing?.world, name: worldName };
     for (const [section, key] of [["stt", sttKey], ["ask", askKey]] as const) {
       if (!key) continue;
@@ -403,16 +529,51 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
       await writeFile(resolve(dirname(configPath), keyPath), key, { mode: 0o600, flag: "wx" });
       saved[section].apiKeyFile = keyPath;
     }
+    for (const [field, value] of [
+      ["accessToken", whatsappAccessToken],
+      ["appSecret", whatsappAppSecret],
+      ["verifyToken", whatsappVerifyToken],
+    ] as const) {
+      if (!value || !saved.whatsapp) continue;
+      const keyPath = `whatsapp-${field}-${crypto.randomUUID()}.key`;
+      await writeFile(resolve(dirname(configPath), keyPath), value, { mode: 0o600, flag: "wx" });
+      saved.whatsapp[`${field}File`] = keyPath;
+    }
     const temporary = `${configPath}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     await rename(temporary, configPath);
     console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
+    if (importSource) {
+      console.log(grey("Importing Markdown into the Tama vault…"));
+      try {
+        const importVault = new Vault(
+          vaultPath,
+          saved.vault.inbox,
+          saved.safety.dryRun,
+          saved.safety.allowUnbackedVault,
+        );
+        const summary = await importMarkdownFolder(importSource, vaultPath, importVault);
+        console.log(saved.safety.dryRun
+          ? warn(`Dry run: ${summary.found} Markdown notes (${summary.bytes} bytes) considered; nothing was written.`)
+          : ok(`${summary.imported} Markdown note${summary.imported === 1 ? "" : "s"} imported, ${summary.unchanged} unchanged.`));
+        console.log(grey("The source folder was read only. Its path was not saved in the configuration."));
+      } catch (error) {
+        console.log(warn(`Configuration was saved, but the note import stopped: ${error instanceof Error ? error.message : "unknown error"}`));
+        console.log(grey(`Retry it with: tama-server import ${JSON.stringify(importSource)} --config ${JSON.stringify(configPath)}`));
+      }
+    }
     if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
     const admin = (saved.server as { adminToken: string }).adminToken;
     console.log(`\n${bold("Pair your first device")}${grey(` — start the server, then open this on this machine:`)}`);
     console.log(`  ${bold(`http://localhost:${port}/pair?token=${admin}`)}`);
     console.log(grey("  A QR code a phone can scan. Keep that link to yourself; it mints pairing codes."));
     console.log(grey(`  Scripting it instead: curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));
+    if (whatsappConfig && whatsappVerifyToken) {
+      console.log(`\n${bold("Finish WhatsApp in Meta")}`);
+      console.log(`${grey("  callback URL: ")} ${whatsappConfig.publicBaseUrl ? `${whatsappConfig.publicBaseUrl}/webhooks/whatsapp` : "https://YOUR-PUBLIC-HOST/webhooks/whatsapp"}`);
+      console.log(`${grey("  verify token: ")} ${whatsappVerifyToken}`);
+      console.log(grey("  Start Tama, then subscribe the WhatsApp Business Account to the messages webhook field."));
+    }
   } finally {
     input.setRawMode(false);
   }

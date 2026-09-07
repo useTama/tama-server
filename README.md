@@ -21,7 +21,8 @@ binary in `~/.local/bin`. Set `PREFIX` to put it somewhere else. Audio capture a
 ## First-time setup
 
 `tama-server setup` creates a new empty git-tracked vault (or uses an existing git-backed
-vault) and a private configuration file.
+vault) and a private configuration file. Its **Existing notes** step can import an Obsidian
+vault or any Markdown folder directly into the new Tama vault.
 
 For transcription, choose whisper.cpp on this machine, whisper.cpp on another machine, or a
 hosted API (Groq, OpenAI) whose speech models setup lists for you. If you pick this machine
@@ -32,11 +33,24 @@ For `/ask`: keep it disabled, use any local OpenAI-compatible model server, or s
 API. Setup accepts hidden API keys and saves them in separate owner-readable files (not
 encrypted) beside the config. Environment-variable references remain supported for manual
 deployments. The wizard checks connectivity, lists chat models when supported, and offers a
-short model test. It finishes by printing the two commands that pair your first device.
+short model test.
 
-Re-run `tama-server setup` to change configuration; it never modifies vault contents.
+The same wizard can optionally connect a WhatsApp Cloud API number. It collects the phone-number
+ID and sender allowlist, hides the Meta credentials, saves each secret in its own owner-readable
+file, verifies the number/token when Meta is reachable, and prints the callback URL and generated
+webhook verify token to paste into Meta. It finishes by printing the commands that pair your first
+device.
+
+Re-run `tama-server setup` to change configuration. It changes vault contents only when you
+explicitly select the import option.
 The generated config lives at `~/.config/tama/tama.config.json`; server deployments can
 override that with `$TAMA_CONFIG` or `--config PATH`, which both the server and setup accept.
+
+Already have a Markdown second brain? Choose the import option in setup, or run
+`tama-server import /path/to/notes` later.
+It preserves note paths, never overwrites a different file, and does not push or upload anything.
+For a remote machine, the **[private deployment import guide](docs/import.md)** shows an SSH-only
+workflow with no GitHub remote.
 
 <a href="https://raw.githubusercontent.com/useTama/tama-server/main/assets/architecture-light.svg">
   <picture>
@@ -116,6 +130,17 @@ note is one press away. No app, no terminal, no token typed into a phone.
 First pairing still needs the admin to show that QR, which is the point — if a phone could
 pair itself, so could anyone else who can reach the port.
 
+## WhatsApp
+
+Tama can optionally sit behind a dedicated WhatsApp Business Platform number. Send that number a
+voice note to capture it; send text to ask the second brain and receive the answer in the chat.
+Only explicitly allowlisted sender numbers can do either.
+
+This uses Meta's official WhatsApp Cloud API and needs a public HTTPS webhook plus Meta credentials;
+it is not enabled by default and does not change local capture. See the
+**[WhatsApp setup and security guide](docs/api.md#whatsapp-cloud-api)** for the config and webhook
+steps.
+
 ## Asking questions
 
 Optional, and the only place a model enters. With no `ask` block configured `/ask` answers
@@ -136,12 +161,13 @@ Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 
 - **[Architecture](ARCHITECTURE.md)** — the two paths, the vault adapter, and the seven vault invariants
 - **[API reference](docs/api.md)** — every route, header and status code
+- **[Import existing notes](docs/import.md)** — local and private-SSH migration, with no upload
 - **[Issues](https://github.com/useTama/tama-server/issues)** — what is planned and what is broken
 
 ## Test
 
 ```sh
-bun test          # 87 tests
+bun test          # 106 tests
 bun run typecheck
 ```
 

@@ -1,7 +1,8 @@
 # API reference
 
-All routes are on `localhost:8080` by default. `GET /health` is open and `POST /pair`
-authenticates with the pairing code itself; everything else needs a bearer token.
+All routes are on `localhost:8080` by default. `GET /health` is open, `POST /pair`
+authenticates with the pairing code itself, and the optional WhatsApp webhook uses Meta's
+verification-token/HMAC protocol. Everything else needs a bearer token.
 
 | Route | Auth | Does |
 |---|---|---|
@@ -10,6 +11,7 @@ authenticates with the pairing code itself; everything else needs a bearer token
 | `POST /pair` | the code itself | redeem a pairing code for a device token |
 | `POST /capture` | device token | audio or text in, note path out |
 | `POST /ask` | device token | ask a question, get an answer from your notes |
+| `GET, POST /webhooks/whatsapp` | Meta webhook | optional WhatsApp verification and inbound messages |
 | `POST /pair/code` | admin | mint a pairing code |
 | `GET /tokens` | admin | list devices |
 | `POST /tokens` | admin | mint a token directly |
@@ -75,6 +77,73 @@ For a board you are about to flash, mint a token directly instead:
 curl -X POST localhost:8080/tokens -H "Authorization: Bearer $ADMIN" \
   -H 'content-type: application/json' -d '{"deviceName":"cheeko-01"}'
 ```
+
+## WhatsApp Cloud API
+
+This optional adapter lets an allowed user message a dedicated WhatsApp Business Platform number:
+
+- a voice note is downloaded from Meta, transcribed through the configured STT provider, and
+  appended as a capture;
+- a text message is treated as a question for `/ask` and the answer is sent back into the chat;
+- if Ask is not configured, text gets an unavailable explanation while voice capture keeps working.
+
+It uses [Meta's official Cloud API](https://www.postman.com/meta/whatsapp-business-platform/documentation/wlk6lh4/whatsapp-cloud-api),
+not browser automation or an unofficial WhatsApp Web library. Create a Meta business app, add the
+WhatsApp product, connect a WhatsApp Business Account and register the dedicated number. The
+temporary user token from the API Setup screen is enough for a test; for a running server, create
+a system-user token with `whatsapp_business_messaging` (and `whatsapp_business_management` when
+your Meta asset setup requires it). A number kept for Tama is the simplest setup; do not migrate a
+number carrying personal chat history merely to test the integration.
+
+The callback must therefore be reachable from Meta at a public HTTPS address. Put a reverse proxy
+or tunnel in front of Tama and expose only:
+
+```
+https://your-host.example/webhooks/whatsapp
+```
+
+In the Meta app's WhatsApp/Webhooks configuration, use that callback URL, subscribe the WhatsApp
+Business Account to `messages`, and enter the same random verify token that Tama loads. Meta's GET
+challenge is compared with that token. Every POST must also carry Meta's `X-Hub-Signature-256`;
+Tama verifies the HMAC over the exact request body with the Meta app secret before parsing it.
+
+The interactive path is `tama-server setup` (or `bun run setup` from source), then choose
+**Connect a WhatsApp Cloud API number**. It hides all three credentials, writes them to separate
+owner-readable files, checks the number/token against Meta, and prints the exact callback URL and
+verify token for the Meta dashboard.
+
+For a scripted deployment, add this block to `tama.config.json` (the environment variable names
+are examples):
+
+```json
+{
+  "whatsapp": {
+    "phoneNumberId": "123456789012345",
+    "allowedFrom": ["919876543210"],
+    "publicBaseUrl": "https://tama.example.com",
+    "accessTokenEnv": "WHATSAPP_ACCESS_TOKEN",
+    "appSecretEnv": "WHATSAPP_APP_SECRET",
+    "verifyTokenEnv": "WHATSAPP_VERIFY_TOKEN",
+    "graphApiVersion": "v23.0"
+  }
+}
+```
+
+`phoneNumberId` is Meta's ID for the Tama number, not its visible phone number. `allowedFrom` is
+the vault access control list: each entry is an international sender number with country code,
+digits only and no `+`. Messages for a different Cloud API number, messages from anyone outside
+that list, delivery receipts, and unsupported message types are acknowledged but ignored.
+
+Generate the webhook verify token yourself (`openssl rand -hex 32` is suitable). The access token,
+Meta app secret and verify token also support `...File` keys with paths relative to the config file
+(for example, `accessTokenFile`). Do not put any of them in source control. Restart Tama after
+setting them in the service environment. `GET /health` then reports `whatsapp.available: true`.
+
+Signed events are durably queued before the webhook responds, because local transcription can take
+longer than Meta should be kept waiting. The Meta message ID deduplicates webhook retries and voice
+captures. Failed media downloads, inference calls and outgoing sends retry with backoff. Once a
+reply succeeds, Tama removes the phone number, message content and generated answer from the queue
+row, retaining only the message ID needed for deduplication.
 
 ## POST /capture
 

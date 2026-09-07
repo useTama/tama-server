@@ -1,0 +1,8 @@
+{
+  "vault":  { "path": "/vault", "inbox": "Inbox" },
+  "dataDir": "/data",
+  "stt":    { "provider": "whisper-cpp", "url": "http://whisper:8081" },
+  "server": { "port": 8080, "adminToken": "REPLACE: openssl rand -hex 24" },
+  "notify": { "provider": "console", "ntfy": { "url": "https://ntfy.sh", "topic": "" }, "digestAt": "08:00" },
+  "safety": { "allowUnbackedVault": false, "dryRun": false }
+}

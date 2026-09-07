@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink, readdir } from "node:fs/promises";
+import { mkdir, writeFile, rename, open, appendFile, stat, lstat, realpath, unlink, readdir, readFile, link } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, sep, basename } from "node:path";
 import { amber } from "./ui.ts";
@@ -12,6 +12,7 @@ export type CaptureInput = {
 };
 
 export type WriteResult = { path: string; relPath: string; bytes: number; dryRun: boolean };
+export type ImportResult = WriteResult & { imported: boolean };
 
 /**
  * Local folder adapter. A plain directory on local disk, git-tracked.
@@ -196,7 +197,7 @@ export class Vault {
     await rename(tmp, abs);
 
     try {
-      await this.journal({ at: input.at, relPath, bytes, source: input.source });
+      await this.journal({ op: "capture", at: input.at, relPath, bytes, source: input.source });
     } catch (e) {
       // The note is already durably written. Losing the audit line is a
       // lesser failure than rejecting here: the caller's idempotency key
@@ -206,12 +207,88 @@ export class Vault {
     return { path: abs, relPath, bytes, dryRun: false };
   }
 
+  /**
+   * Import one existing Markdown note verbatim at its vault-relative path.
+   *
+   * Imports are distinct from captures: preserving folders and filenames is
+   * what keeps wiki-links useful. They are still append-only. Identical files
+   * are idempotently skipped and a different existing file is never replaced.
+   */
+  async importMarkdown(relPath: string, text: string): Promise<ImportResult> {
+    const parts = relPath.split("/");
+    if (
+      parts.length === 0 ||
+      parts.some((part) => !part || part === "." || part === ".." || part.startsWith(".") || /[\\\u0000-\u001f\u007f]/.test(part))
+    ) {
+      throw new Error(`unsafe import path: ${relPath}`);
+    }
+    const name = parts.at(-1)!;
+    if (!name.toLowerCase().endsWith(".md") || this.safeName(name) !== name) {
+      throw new Error(`unsafe Markdown filename: ${relPath}`);
+    }
+
+    const realRoot = await realpath(this.root);
+    const relDir = parts.slice(0, -1).join(sep);
+    const lexicalDir = resolve(realRoot, relDir);
+    if (lexicalDir !== realRoot && !lexicalDir.startsWith(realRoot + sep)) {
+      throw new Error(`path escapes vault root: ${relPath}`);
+    }
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (this.dryRun) {
+      const abs = join(lexicalDir, name);
+      console.log(`${amber("[dry-run]")} would import ${bytes}B to ${relPath}`);
+      return { path: abs, relPath, bytes, dryRun: true, imported: false };
+    }
+
+    const dir = await this.confineDir(relDir);
+    const abs = join(dir, name);
+    try {
+      const existingStat = await lstat(abs);
+      if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
+        throw new Error(`import destination is not a regular file: ${relPath}`);
+      }
+      const existing = await readFile(abs, "utf8");
+      if (existing === text) return { path: abs, relPath, bytes, dryRun: false, imported: false };
+      throw new Error(`import would overwrite a different note: ${relPath}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    // A fully-written, fsynced temp file is hard-linked into place. link(2)
+    // fails on EEXIST, so even a concurrent writer cannot be overwritten.
+    const tmp = join(dir, `.tama-import-${process.pid}-${crypto.randomUUID()}`);
+    const fh = await open(tmp, "wx");
+    try {
+      await fh.writeFile(text, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    try {
+      await link(tmp, abs);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`import destination appeared concurrently: ${relPath}`);
+      }
+      throw error;
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+
+    try {
+      await this.journal({ op: "import", at: new Date(), relPath, bytes, source: "tama-import" });
+    } catch (error) {
+      console.error(`journal write failed for imported ${relPath}:`, error);
+    }
+    return { path: abs, relPath, bytes, dryRun: false, imported: true };
+  }
+
   /** Invariant 4: every write is auditable without reading source code. */
-  private async journal(e: { at: Date; relPath: string; bytes: number; source: string }) {
+  private async journal(e: { op: "capture" | "import"; at: Date; relPath: string; bytes: number; source: string }) {
     const dir = await this.confineDir(".tama");
     const line = JSON.stringify({
       ts: e.at.toISOString(),
-      op: "capture",
+      op: e.op,
       path: e.relPath,
       bytes: e.bytes,
       source: e.source,

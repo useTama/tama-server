@@ -1,0 +1,21 @@
+# Adds public HTTPS in front of tama. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+# Needs TAMA_DOMAIN in .env, an A record pointing at this host, and 80/443 open.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [tama]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TAMA_DOMAIN: ${TAMA_DOMAIN:?set TAMA_DOMAIN in .env}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

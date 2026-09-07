@@ -1,0 +1,38 @@
+services:
+  whisper:
+    build:
+      context: ./docker
+      dockerfile: whisper.Dockerfile
+      args:
+        # ggml-base.bin on a small box, ggml-small.bin from ~2 GB RAM up.
+        MODEL: ggml-small.bin
+    restart: unless-stopped
+    # Not published: only tama-server talks to it, over the compose network.
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "curl", "-sS", "-o", "/dev/null", "http://127.0.0.1:8081/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  tama:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      whisper:
+        condition: service_healthy
+    ports:
+      # Loopback only. Put a TLS reverse proxy in front before exposing it.
+      - "127.0.0.1:8080:8080"
+    environment:
+      TAMA_CONFIG: /etc/tama/tama.config.json
+    volumes:
+      - ./tama.config.json:/etc/tama/tama.config.json:ro
+      - tama-vault:/vault
+      - tama-data:/data
+
+volumes:
+  tama-vault:
+  tama-data:

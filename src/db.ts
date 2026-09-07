@@ -73,6 +73,23 @@ export function openDb(path: string): Database {
       source     TEXT
     );
 
+    -- WhatsApp acknowledges webhooks before slow local transcription starts.
+    -- Persisting the small inbound envelope makes that acknowledgement honest:
+    -- a restart cannot silently forget an accepted voice note or question.
+    CREATE TABLE IF NOT EXISTS whatsapp_messages (
+      id              TEXT PRIMARY KEY,
+      sender          TEXT NOT NULL,
+      kind            TEXT NOT NULL,          -- 'audio' | 'text'
+      payload         TEXT NOT NULL,
+      reply           TEXT,
+      status          TEXT NOT NULL,          -- 'pending' | 'processing' | 'done'
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT NOT NULL,
+      last_error      TEXT,
+      created_at      TEXT NOT NULL,
+      updated_at      TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS meta (
       k TEXT PRIMARY KEY,
       v TEXT NOT NULL
@@ -80,6 +97,8 @@ export function openDb(path: string): Database {
 
     CREATE INDEX IF NOT EXISTS captures_at  ON captures(captured_at);
     CREATE INDEX IF NOT EXISTS failures_at  ON failures(at);
+    CREATE INDEX IF NOT EXISTS whatsapp_pending
+      ON whatsapp_messages(status, next_attempt_at);
   `);
 
   // v0 databases used a global idempotency key and pairing codes without an
@@ -109,6 +128,10 @@ export function openDb(path: string): Database {
   }
   if (!pairColumns.some((c) => c.name === "locked_at")) {
     db.exec("ALTER TABLE pairing_codes ADD COLUMN locked_at TEXT");
+  }
+  const whatsappColumns = db.query("PRAGMA table_info(whatsapp_messages)").all() as { name: string }[];
+  if (whatsappColumns.length && !whatsappColumns.some((c) => c.name === "reply")) {
+    db.exec("ALTER TABLE whatsapp_messages ADD COLUMN reply TEXT");
   }
 
   return db;

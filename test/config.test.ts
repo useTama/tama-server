@@ -86,3 +86,66 @@ test("ask can resolve a credential from the environment without storing it in co
     delete process.env.TAMA_TEST_PROVIDER_KEY;
   }
 });
+
+test("WhatsApp stays absent by default and resolves all credentials outside config", async () => {
+  const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
+  expect(loadConfig(bare).whatsapp).toBeUndefined();
+
+  process.env.TAMA_TEST_WA_ACCESS = "access-secret";
+  process.env.TAMA_TEST_WA_APP = "app-secret";
+  process.env.TAMA_TEST_WA_VERIFY = "verify-secret";
+  try {
+    const path = await config({
+      vault: { path: "/vault" },
+      server: { adminToken: "secret" },
+      whatsapp: {
+        phoneNumberId: "123456789",
+        allowedFrom: ["+919876543210", "919876543210"],
+        accessTokenEnv: "TAMA_TEST_WA_ACCESS",
+        appSecretEnv: "TAMA_TEST_WA_APP",
+        verifyTokenEnv: "TAMA_TEST_WA_VERIFY",
+        publicBaseUrl: "https://tama.example.com/",
+      },
+    });
+    expect(loadConfig(path).whatsapp).toEqual({
+      phoneNumberId: "123456789",
+      allowedFrom: ["919876543210"],
+      accessToken: "access-secret",
+      appSecret: "app-secret",
+      verifyToken: "verify-secret",
+      graphApiVersion: "v23.0",
+      publicBaseUrl: "https://tama.example.com",
+    });
+  } finally {
+    delete process.env.TAMA_TEST_WA_ACCESS;
+    delete process.env.TAMA_TEST_WA_APP;
+    delete process.env.TAMA_TEST_WA_VERIFY;
+  }
+});
+
+test("WhatsApp rejects a non-HTTPS public webhook origin", async () => {
+  const path = await config({
+    vault: { path: "/vault" }, server: { adminToken: "secret" },
+    whatsapp: {
+      phoneNumberId: "123",
+      allowedFrom: ["919876543210"],
+      accessToken: "a", appSecret: "b", verifyToken: "c",
+      publicBaseUrl: "http://localhost:8080/path",
+    },
+  });
+  expect(() => loadConfig(path)).toThrow(/publicBaseUrl/);
+});
+
+test("WhatsApp requires an explicit sender allowlist and webhook credentials", async () => {
+  const noSenders = await config({
+    vault: { path: "/vault" }, server: { adminToken: "secret" },
+    whatsapp: { phoneNumberId: "123", accessToken: "a", appSecret: "b", verifyToken: "c" },
+  });
+  expect(() => loadConfig(noSenders)).toThrow(/allowedFrom/);
+
+  const noSecret = await config({
+    vault: { path: "/vault" }, server: { adminToken: "secret" },
+    whatsapp: { phoneNumberId: "123", allowedFrom: ["919876543210"] },
+  });
+  expect(() => loadConfig(noSecret)).toThrow(/access token/);
+});

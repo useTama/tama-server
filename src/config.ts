@@ -26,6 +26,21 @@ export type Config = {
     baseUrl?: string;
     maxChunks: number;
   };
+  /**
+   * Optional WhatsApp Cloud API transport. It is an adapter over capture and
+   * ask, not a dependency of either path: deleting this block removes every
+   * WhatsApp route and leaves the core HTTP API unchanged.
+   */
+  whatsapp?: {
+    phoneNumberId: string;
+    allowedFrom: string[];
+    /** Public origin printed by setup; Meta calls the fixed webhook path on it. */
+    publicBaseUrl?: string;
+    accessToken: string;
+    appSecret: string;
+    verifyToken: string;
+    graphApiVersion: string;
+  };
   dataDir: string;
 };
 
@@ -49,10 +64,16 @@ export function loadConfig(path = defaultConfigPath()): Config {
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const home = process.env.HOME ?? "~";
   const expand = (p: string) => resolve(p.replace(/^~/, home));
-  const credential = (section: any, fallback?: string): string | undefined => {
-    if (section?.apiKeyFile) return readFileSync(resolve(dirname(path), section.apiKeyFile), "utf8").trim();
-    if (section?.apiKeyEnv) return process.env[section.apiKeyEnv];
-    return section?.apiKey ?? (fallback ? process.env[fallback] : undefined);
+  const credential = (section: any, name = "apiKey", fallback?: string): string | undefined => {
+    const file = section?.[`${name}File`];
+    const env = section?.[`${name}Env`];
+    const value = file
+      ? readFileSync(resolve(dirname(path), String(file)), "utf8")
+      : env
+        ? process.env[String(env)]
+        : section?.[name] ?? (fallback ? process.env[fallback] : undefined);
+    const clean = value === undefined || value === null ? "" : String(value).trim();
+    return clean || undefined;
   };
 
   if (!raw?.vault?.path) throw new Error("config: vault.path is required");
@@ -93,15 +114,63 @@ export function loadConfig(path = defaultConfigPath()): Config {
     ask = {
       provider,
       model: String(raw.ask.model),
-      apiKey: credential(raw.ask, provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
+      apiKey: credential(raw.ask, "apiKey", provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
       baseUrl: raw.ask.baseUrl,
       maxChunks: Number(raw.ask.maxChunks ?? 8),
+    };
+  }
+
+  let whatsapp: Config["whatsapp"];
+  if (raw.whatsapp) {
+    const phoneNumberId = String(raw.whatsapp.phoneNumberId ?? "").trim();
+    if (!/^\d+$/.test(phoneNumberId)) throw new Error("config: whatsapp.phoneNumberId is required and must contain digits only");
+
+    if (!Array.isArray(raw.whatsapp.allowedFrom) || raw.whatsapp.allowedFrom.length === 0) {
+      throw new Error("config: whatsapp.allowedFrom must list at least one sender in international format");
+    }
+    const allowedFrom: string[] = [...new Set<string>(
+      (raw.whatsapp.allowedFrom as unknown[]).map((value) => String(value).trim().replace(/^\+/, "")),
+    )];
+    if (allowedFrom.some((value) => !/^\d{6,20}$/.test(value))) {
+      throw new Error("config: whatsapp.allowedFrom entries must be international numbers containing digits only");
+    }
+
+    const accessToken = credential(raw.whatsapp, "accessToken");
+    const appSecret = credential(raw.whatsapp, "appSecret");
+    const verifyToken = credential(raw.whatsapp, "verifyToken");
+    if (!accessToken) throw new Error("config: whatsapp access token is required (accessTokenEnv or accessTokenFile)");
+    if (!appSecret) throw new Error("config: whatsapp app secret is required (appSecretEnv or appSecretFile)");
+    if (!verifyToken) throw new Error("config: whatsapp verify token is required (verifyTokenEnv or verifyTokenFile)");
+
+    const graphApiVersion = String(raw.whatsapp.graphApiVersion ?? "v23.0").trim();
+    if (!/^v\d+\.\d+$/.test(graphApiVersion)) {
+      throw new Error("config: whatsapp.graphApiVersion must look like v23.0");
+    }
+    let publicBaseUrl: string | undefined;
+    if (raw.whatsapp.publicBaseUrl) {
+      try {
+        const url = new URL(String(raw.whatsapp.publicBaseUrl));
+        if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
+        publicBaseUrl = url.origin;
+      } catch {
+        throw new Error("config: whatsapp.publicBaseUrl must be a public https:// origin without credentials, query, or fragment");
+      }
+    }
+    whatsapp = {
+      phoneNumberId,
+      allowedFrom,
+      ...(publicBaseUrl ? { publicBaseUrl } : {}),
+      accessToken,
+      appSecret,
+      verifyToken,
+      graphApiVersion,
     };
   }
 
   return {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
+    whatsapp,
     stt: {
       provider: sttProvider,
       // `baseUrl` is what the ask block calls the same thing, so accept either.

@@ -348,6 +348,24 @@ function renderChunks(chunks: Chunk[]): string {
   return parts.join("\n\n");
 }
 
+/**
+ * Remove em dashes from a model's output.
+ *
+ * The prompt calls this absolute, and an absolute rule should not depend on the
+ * model choosing to follow it. Sonnet 5 obeys the instruction; Solar Pro 4
+ * ignores it, and a rule that holds only on some models is not a rule - it is a
+ * preference that happens to work.
+ *
+ * A spaced dash stands in for a comma or a colon, so it becomes a comma. A
+ * tight one is joining words, so it becomes a hyphen. En dashes go too: used
+ * between words rather than numbers they are the same tell.
+ */
+export function stripEmDashes(text: string): string {
+  return text
+    .replace(/\s+[\u2014\u2013]\s+/g, ", ")
+    .replace(/([^\s\d])[\u2014\u2013]([^\s\d])/g, "$1-$2");
+}
+
 function buildMessages(question: string, chunks: Chunk[], speaker?: string, owner = false): LlmMessage[] {
   return [
     {
@@ -409,8 +427,12 @@ export async function* ask(opts: {
   try {
     for await (const delta of opts.llm.stream({ system: systemPrompt(opts.prompt ?? {}), messages })) {
       if (!delta) continue;
-      answer += delta;
-      yield { type: "delta", text: delta };
+      // Per delta rather than at the end, so a streaming client sees the same
+      // text as a buffered one. An em dash is a single code point, so it cannot
+      // be split across two deltas.
+      const clean = stripEmDashes(delta);
+      answer += clean;
+      yield { type: "delta", text: clean };
     }
   } catch (e) {
     // Surface the provider's message rather than a generic failure: the common

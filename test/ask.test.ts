@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { systemPrompt, buildMessages, renderChunks } from "../src/ask.ts";
+import { systemPrompt, buildMessages, renderChunks, stripEmDashes } from "../src/ask.ts";
 
 test("Ask identifies itself as Tama, and as a relationship rather than a service", () => {
   expect(systemPrompt()).toContain("You are Tama");
@@ -186,4 +186,17 @@ test("an instruction from the owner is carried out, not negotiated", () => {
   // so compliance does not read as unlimited.
   expect(prompt).toContain("make up a fact");
   expect(prompt).toContain("as ammunition against a person");
+});
+
+test("em dashes are removed from output, not merely discouraged in the prompt", () => {
+  // Sonnet 5 follows the instruction; Solar Pro 4 does not. A rule that holds
+  // on some models is a preference, so this one is enforced after the fact.
+  expect(stripEmDashes("a design studio \u2014 personal brand feeds it")).toBe(
+    "a design studio, personal brand feeds it",
+  );
+  // Tight between words, it is joining them, so a hyphen preserves the sense.
+  expect(stripEmDashes("build\u2014measure loop")).toBe("build-measure loop");
+  // Number ranges are the one legitimate use, and reads as a range either way.
+  expect(stripEmDashes("2024\u20132026")).toBe("2024\u20132026");
+  expect(stripEmDashes("nothing to change here")).toBe("nothing to change here");
 });

@@ -16,6 +16,7 @@ import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
 import { ask, askOnce, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
+import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
@@ -396,6 +397,8 @@ const server = Bun.serve({
         style?: string;
         speaker?: string;
         speakerIsOwner?: boolean;
+        /** An opaque conversation id. One chat, one thread. */
+        thread?: string;
       };
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
@@ -418,6 +421,15 @@ const server = Bun.serve({
       // the audience reads: the view comes from the token.
       const speaker = typeof b.speaker === "string" ? b.speaker.slice(0, 64) : undefined;
       const speakerIsOwner = b.speakerIsOwner === true;
+
+      // Scoped to the token, so two audiences in the same chat cannot read each
+      // other's history, and a revoked token's thread is unreachable.
+      const thread = typeof b.thread === "string" && b.thread.trim()
+        ? `${device.audience ?? "owner"}:${b.thread.trim().slice(0, 128)}`
+        : "";
+      const memory = thread ? recall(db, thread) : { turns: [] as Turn[] };
+      const history = asMessages(memory.turns);
+      const search = thread ? searchQuery(question, memory.turns) : question;
 
       // Retrieval works with no model configured, so say which half is missing
       // rather than pretending the whole endpoint does not exist.
@@ -443,7 +455,7 @@ const server = Bun.serve({
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
               }
             } catch (e) {
@@ -468,7 +480,7 @@ const server = Bun.serve({
       const started = performance.now();
       let answer = "";
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") answer = ev.answer;
         else if (ev.type === "error") {
@@ -485,7 +497,15 @@ const server = Bun.serve({
         }
       }
       const ms = Math.round(performance.now() - started);
-      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms <${device.deviceName}>`)}`);
+      if (thread && answer) {
+        remember(db, thread, "user", question, speaker);
+        remember(db, thread, "assistant", answer);
+        // After the reply, never before: summarising is a model call, and
+        // making someone wait for one to get an answer to "haan" is the wrong
+        // trade. A failure leaves the turns in place to try again next time.
+        void summarise(db, thread, llm).catch((e) => console.error("summarise failed:", e));
+      }
+      console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""} <${device.deviceName}>`)}`);
       // Withheld, not just uncited: a path in the JSON is the same disclosure
       // as a path in the answer, and a chat client logs what it receives.
       return json({ ok: true, question, answer, sources: profile.prompt.cite === false ? [] : sources, ms });

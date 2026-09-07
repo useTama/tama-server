@@ -81,6 +81,30 @@ export function openDb(path: string): Database {
       source     TEXT
     );
 
+    -- What was said in a conversation, so a follow-up means something.
+    --
+    -- Kept here rather than in the vault deliberately. In a group these are
+    -- other people's messages: they are working state for answering the next
+    -- one, not notes the owner wrote, and they must never end up in a search
+    -- result. Folded into a summary and deleted as they age.
+    CREATE TABLE IF NOT EXISTS conversation_turns (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread  TEXT NOT NULL,
+      role    TEXT NOT NULL,          -- 'user' | 'assistant'
+      speaker TEXT,                   -- who said it, in a room with several people
+      text    TEXT NOT NULL,
+      at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS conversation_turns_thread ON conversation_turns(thread, id);
+
+    -- Everything older than the kept turns, in a paragraph.
+    CREATE TABLE IF NOT EXISTS conversation_summaries (
+      thread     TEXT PRIMARY KEY,
+      summary    TEXT NOT NULL,
+      through_id INTEGER NOT NULL,    -- the last turn folded in
+      updated_at TEXT NOT NULL
+    );
+
     -- WhatsApp acknowledges webhooks before slow local transcription starts.
     -- Persisting the small inbound envelope makes that acknowledgement honest:
     -- a restart cannot silently forget an accepted voice note or question.

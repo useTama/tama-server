@@ -1,0 +1,145 @@
+import { test, expect } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDb } from "../src/db.ts";
+import { asMessages, forget, recall, remember, searchQuery, summarise, KEEP_TURNS, SUMMARISE_AFTER } from "../src/memory.ts";
+import type { Llm } from "../src/llm.ts";
+
+async function db() {
+  const dir = await mkdtemp(join(tmpdir(), "tama-memory-"));
+  return { db: openDb(join(dir, "t.db")), cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+const fakeLlm = (reply: string): Llm => ({
+  name: "fake",
+  async *stream() {
+    yield reply;
+  },
+});
+
+test("a thread remembers what was said, oldest first", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    remember(d, "chat", "user", "kya chaiye", "Shivansh");
+    remember(d, "chat", "assistant", "cheese popcorn");
+    remember(d, "chat", "user", "kitne");
+    const { turns, summary } = recall(d, "chat");
+    expect(turns.map((t) => t.text)).toEqual(["kya chaiye", "cheese popcorn", "kitne"]);
+    expect(turns[0]!.speaker).toBe("Shivansh");
+    expect(summary).toBeUndefined();
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("threads do not leak into each other", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    remember(d, "a", "user", "secret");
+    remember(d, "b", "user", "other");
+    expect(recall(d, "a").turns.map((t) => t.text)).toEqual(["secret"]);
+    expect(recall(d, "b").turns.map((t) => t.text)).toEqual(["other"]);
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("only the tail is recalled, however long the thread", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    for (let i = 0; i < 40; i++) remember(d, "chat", i % 2 ? "assistant" : "user", `turn ${i}`);
+    const { turns } = recall(d, "chat");
+    expect(turns).toHaveLength(KEEP_TURNS);
+    // The tail, not the head: what was said most recently is what "it" means.
+    expect(turns[turns.length - 1]!.text).toBe("turn 39");
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("a follow-up searches on what came before it", async () => {
+  // "and the other one?" contains no word from any note, so retrieving on the
+  // question alone finds nothing. This is #23's cheap half.
+  const turns = [
+    { id: 1, role: "user" as const, text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant" as const, text: "you landed on 60" },
+  ];
+  const query = searchQuery("and the other one?", turns);
+  expect(query).toContain("mic gain");
+  expect(query).toContain("and the other one?");
+  // Not the assistant's words: they came from the notes, and feeding them back
+  // would score those same notes higher for no reason to do with the question.
+  expect(query).not.toContain("you landed on 60");
+});
+
+test("summarising folds the old turns and deletes them, atomically", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    for (let i = 0; i < SUMMARISE_AFTER + 5; i++) {
+      remember(d, "chat", i % 2 ? "assistant" : "user", `turn ${i}`);
+    }
+    expect(await summarise(d, "chat", fakeLlm("they argued about popcorn and settled on cheese"))).toBe(true);
+
+    const { summary, turns } = recall(d, "chat");
+    expect(summary).toBe("they argued about popcorn and settled on cheese");
+    expect(turns).toHaveLength(KEEP_TURNS);
+    // The recent turns survive verbatim; only the folded ones are gone.
+    expect(turns[turns.length - 1]!.text).toBe(`turn ${SUMMARISE_AFTER + 4}`);
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("a short thread is left alone", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    remember(d, "chat", "user", "hi");
+    expect(await summarise(d, "chat", fakeLlm("should not be called"))).toBe(false);
+    expect(recall(d, "chat").summary).toBeUndefined();
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("a failing summariser costs depth, not the conversation", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    for (let i = 0; i < SUMMARISE_AFTER + 5; i++) remember(d, "chat", "user", `turn ${i}`);
+    const broken: Llm = { name: "broken", async *stream() { throw new Error("402"); } };
+    expect(await summarise(d, "chat", broken)).toBe(false);
+    // Nothing deleted, so it can be retried on the next reply.
+    expect(recall(d, "chat", 999).turns.length).toBe(SUMMARISE_AFTER + 5);
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});
+
+test("a speaker is named in the message a model sees, in a room with several", async () => {
+  expect(asMessages([{ id: 1, role: "user", speaker: "Suryansh", text: "abe soja" }])).toEqual([
+    { role: "user", content: "Suryansh: abe soja" },
+  ]);
+  // One-to-one has nobody to distinguish, so no prefix.
+  expect(asMessages([{ id: 1, role: "user", text: "what did i decide" }])).toEqual([
+    { role: "user", content: "what did i decide" },
+  ]);
+});
+
+test("forget clears both halves", async () => {
+  const { db: d, cleanup } = await db();
+  try {
+    for (let i = 0; i < SUMMARISE_AFTER + 5; i++) remember(d, "chat", "user", `turn ${i}`);
+    await summarise(d, "chat", fakeLlm("a summary"));
+    forget(d, "chat");
+    expect(recall(d, "chat")).toEqual({ turns: [] });
+  } finally {
+    d.close();
+    await cleanup();
+  }
+});

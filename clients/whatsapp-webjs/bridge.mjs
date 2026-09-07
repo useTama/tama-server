@@ -315,7 +315,7 @@ async function capture(message) {
   await reply(message, `I couldn't save that voice note: ${body.error ?? `HTTP ${res.status}`}`);
 }
 
-async function askQuestion(message, question, audience, who) {
+async function askQuestion(message, question, audience, who, thread) {
   const res = await post("/ask", {
     token: audience?.token,
     headers: { "content-type": "application/json" },
@@ -329,6 +329,9 @@ async function askQuestion(message, question, audience, who) {
       ...(audience ? {} : { style: "chat" }),
       ...(who?.name ? { speaker: who.name } : {}),
       ...(who ? { speakerIsOwner: who.isOwner } : {}),
+      // One chat, one thread. The server scopes it by token as well, so two
+      // audiences reachable in the same chat cannot read each other's history.
+      ...(thread ? { thread } : {}),
     }),
   });
   const body = await res.json().catch(() => ({}));
@@ -646,7 +649,7 @@ async function onMessage(message) {
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
-    return askQuestion(message, text, audience, { name: await speakerName(message, isOwner), isOwner });
+    return askQuestion(message, text, audience, { name: await speakerName(message, isOwner), isOwner }, chatId);
   }
 
 
@@ -662,7 +665,7 @@ async function onMessage(message) {
       return;
     }
     seen("ask");
-    return askQuestion(message, question);
+    return askQuestion(message, question, undefined, undefined, chatId);
   }
   // Answering mode still honours the prefix, so a habit formed under the other
   // setting keeps working instead of asking about the literal "?" characters.
@@ -673,10 +676,10 @@ async function onMessage(message) {
       return;
     }
     seen("ask");
-    return askQuestion(message, question);
+    return askQuestion(message, question, undefined, undefined, chatId);
   }
   seen("ask");
-  return askQuestion(message, text);
+  return askQuestion(message, text, undefined, undefined, chatId);
 }
 
 client.on("qr", (qr) => {

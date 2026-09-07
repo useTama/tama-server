@@ -1,0 +1,199 @@
+/**
+ * Conversation memory, per thread.
+ *
+ * Ask had none: every question arrived with no idea what the last one was, so
+ * "and the other one?" was unanswerable and "roast him too" had no him. In a
+ * one-to-one terminal that is tolerable. In a group where people talk to it
+ * for ten minutes at a stretch it is the difference between a participant and
+ * a vending machine.
+ *
+ * Three decisions worth stating.
+ *
+ * **It lives in the server, not the client.** The bridge could keep a buffer,
+ * but then the iOS Shortcut and the web UI each need their own, and none of
+ * them would agree. A thread is an opaque id the client supplies; the server
+ * owns what it means to remember.
+ *
+ * **It is not the vault.** In a group these are other people's messages. They
+ * are working state for answering the next one, not notes the owner wrote, and
+ * a search must never return them. Hence a table rather than a file.
+ *
+ * **It is bounded by summarising, not by truncating.** Dropping the oldest
+ * turns loses the thing that makes a long exchange coherent - what was agreed
+ * twenty messages ago. Folding them into a paragraph keeps that at a fixed
+ * cost.
+ */
+
+import type { Database } from "bun:sqlite";
+import type { Llm } from "./llm.ts";
+
+/** Turns kept verbatim. Six exchanges is about as far back as "it" reaches. */
+export const KEEP_TURNS = 12;
+
+/** When to fold. Chosen so summarising is rare next to answering. */
+export const SUMMARISE_AFTER = 30;
+
+/** Per turn. A pasted logfile should not become permanent context. */
+const MAX_TURN_CHARS = 2000;
+
+/** Total per thread, so a runaway loop cannot grow the database unboundedly. */
+const MAX_ROWS_PER_THREAD = 400;
+
+export type Turn = { id: number; role: "user" | "assistant"; speaker?: string; text: string };
+export type Recalled = { summary?: string; turns: Turn[] };
+
+export function remember(
+  db: Database,
+  thread: string,
+  role: "user" | "assistant",
+  text: string,
+  speaker?: string,
+): void {
+  const trimmed = text.trim();
+  if (!thread || !trimmed) return;
+  db.query("INSERT INTO conversation_turns (thread, role, speaker, text, at) VALUES (?, ?, ?, ?, ?)").run(
+    thread,
+    role,
+    speaker ?? null,
+    trimmed.slice(0, MAX_TURN_CHARS),
+    new Date().toISOString(),
+  );
+
+  // A hard ceiling under the summariser, for the case where summarising is
+  // failing: a broken model must not turn a chatty group into disk growth.
+  const count = (db.query("SELECT count(*) AS n FROM conversation_turns WHERE thread = ?").get(thread) as { n: number }).n;
+  if (count > MAX_ROWS_PER_THREAD) {
+    db.query(
+      `DELETE FROM conversation_turns WHERE thread = ? AND id IN (
+         SELECT id FROM conversation_turns WHERE thread = ? ORDER BY id LIMIT ?
+       )`,
+    ).run(thread, thread, count - MAX_ROWS_PER_THREAD);
+  }
+}
+
+export function recall(db: Database, thread: string, keep = KEEP_TURNS): Recalled {
+  if (!thread) return { turns: [] };
+  const summary = db
+    .query("SELECT summary FROM conversation_summaries WHERE thread = ?")
+    .get(thread) as { summary: string } | null;
+  // Newest first from SQLite, then reversed: an index-ordered LIMIT is the
+  // cheap way to take the tail.
+  const rows = db
+    .query("SELECT id, role, speaker, text FROM conversation_turns WHERE thread = ? ORDER BY id DESC LIMIT ?")
+    .all(thread, keep) as Array<{ id: number; role: string; speaker: string | null; text: string }>;
+  return {
+    ...(summary?.summary ? { summary: summary.summary } : {}),
+    turns: rows
+      .reverse()
+      .map((r) => ({
+        id: r.id,
+        role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
+        ...(r.speaker ? { speaker: r.speaker } : {}),
+        text: r.text,
+      })),
+  };
+}
+
+/**
+ * What to search the vault for, given a question that may not stand alone.
+ *
+ * `GrepRetriever` scores on word overlap, so "and the other one?" retrieves
+ * nothing: it contains no word from any note. Carrying the recent user turns
+ * into the query is the cheap fix - no extra model call - and it recovers most
+ * of what a proper rewrite (#23) would, because the words that matter were
+ * usually said a message or two ago.
+ *
+ * Only user turns. The assistant's own words are drawn from the notes, so
+ * feeding them back would score those same notes higher for reasons that have
+ * nothing to do with the question.
+ */
+export function searchQuery(question: string, turns: Turn[], lookBack = 2): string {
+  const recent = turns
+    .filter((t) => t.role === "user")
+    .slice(-lookBack)
+    .map((t) => t.text);
+  return [...recent, question].join(" ").slice(0, 1000);
+}
+
+/** The prior exchange, as messages, with speakers named where a room has several. */
+export function asMessages(turns: Turn[]): Array<{ role: "user" | "assistant"; content: string }> {
+  return turns.map((t) => ({
+    role: t.role,
+    content: t.role === "user" && t.speaker ? `${t.speaker}: ${t.text}` : t.text,
+  }));
+}
+
+const SUMMARY_PROMPT = `You are compressing a chat log so a later reply can stay coherent.
+
+Write one paragraph, at most 120 words, in plain text. Keep: what was decided, what was asked and
+answered, names and who said what, anything someone is waiting on, and any running joke or
+nickname that would make a later reply make sense. Drop: greetings, filler, and anything nobody
+would refer back to.
+
+Write it as notes to yourself, not as a report to a reader. No preamble, no bullet points, no
+"the conversation covered". If an earlier summary is given, rewrite it together with the new
+messages into one paragraph rather than appending.`;
+
+/**
+ * Fold everything but the kept tail into a paragraph.
+ *
+ * Called after answering, never before: summarising is a model call, and making
+ * someone wait for it to reply to "haan" would be the wrong trade. If it fails,
+ * the turns stay and it is tried again next time, so a broken model costs
+ * memory depth rather than the conversation.
+ */
+export async function summarise(db: Database, thread: string, llm: Llm, keep = KEEP_TURNS): Promise<boolean> {
+  const total = (db.query("SELECT count(*) AS n FROM conversation_turns WHERE thread = ?").get(thread) as { n: number }).n;
+  if (total <= SUMMARISE_AFTER) return false;
+
+  const stale = db
+    .query("SELECT id, role, speaker, text FROM conversation_turns WHERE thread = ? ORDER BY id LIMIT ?")
+    .all(thread, total - keep) as Array<{ id: number; role: string; speaker: string | null; text: string }>;
+  if (stale.length === 0) return false;
+
+  const existing = db.query("SELECT summary FROM conversation_summaries WHERE thread = ?").get(thread) as
+    | { summary: string }
+    | null;
+
+  const transcript = stale
+    .map((t) => `${t.role === "assistant" ? "you" : t.speaker ?? "them"}: ${t.text}`)
+    .join("\n");
+
+  let summary = "";
+  try {
+    for await (const delta of llm.stream({
+      system: SUMMARY_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: existing?.summary
+            ? `Earlier summary:\n${existing.summary}\n\nNew messages:\n${transcript}`
+            : transcript,
+        },
+      ],
+    })) {
+      summary += delta;
+    }
+  } catch {
+    return false;
+  }
+  if (!summary.trim()) return false;
+
+  const through = stale[stale.length - 1]!.id;
+  // One transaction: a summary written without its turns deleted would double
+  // the history, and turns deleted without a summary would lose it.
+  db.transaction(() => {
+    db.query(
+      `INSERT INTO conversation_summaries (thread, summary, through_id, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread) DO UPDATE SET summary = excluded.summary, through_id = excluded.through_id, updated_at = excluded.updated_at`,
+    ).run(thread, summary.trim(), through, new Date().toISOString());
+    db.query("DELETE FROM conversation_turns WHERE thread = ? AND id <= ?").run(thread, through);
+  })();
+  return true;
+}
+
+/** For a caller that wants to start over, and for tests. */
+export function forget(db: Database, thread: string): void {
+  db.query("DELETE FROM conversation_turns WHERE thread = ?").run(thread);
+  db.query("DELETE FROM conversation_summaries WHERE thread = ?").run(thread);
+}

@@ -248,6 +248,7 @@ const whatsapp = config.whatsapp
           retriever,
           llm,
           maxChunks: config.ask?.maxChunks,
+          style: "chat",
         });
         const ms = Math.round(performance.now() - started);
         console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms <${whatsappSource(input.sender, config.whatsapp!.appSecret)}>`)} `);
@@ -350,7 +351,11 @@ const server = Bun.serve({
     // Ask sits behind the same device token as capture. No new auth surface:
     // anything that can write to the vault can already read it back.
     if (url.pathname === "/ask" && req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { question?: string; stream?: boolean };
+      const b = (await req.json().catch(() => ({}))) as { question?: string; stream?: boolean; style?: string };
+      // A client that renders the answer in a chat bubble says so, and gets
+      // plain text, no note paths, and a couple of sentences. Anything else
+      // keeps the prose answer a terminal or a web UI wants.
+      const style = b.style === "chat" ? "chat" as const : "prose" as const;
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
 
@@ -376,7 +381,7 @@ const server = Bun.serve({
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, style })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
               }
             } catch (e) {
@@ -399,7 +404,7 @@ const server = Bun.serve({
       const started = performance.now();
       let answer = "";
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, style })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") answer = ev.answer;
         else if (ev.type === "error") {

@@ -245,7 +245,10 @@ async function capture(message) {
 async function askQuestion(message, question) {
   const res = await post("/ask", {
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ question }),
+    // Ask for the chat shape: no markdown, since WhatsApp shows the asterisks,
+    // no note paths, since nobody here can open one, and a couple of sentences
+    // rather than an essay in a bubble.
+    body: JSON.stringify({ question, style: "chat" }),
   });
   const body = await res.json().catch(() => ({}));
 

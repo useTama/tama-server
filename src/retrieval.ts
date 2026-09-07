@@ -1,4 +1,5 @@
 import { readdir, open } from "node:fs/promises";
+import { visible, type View } from "./views.ts";
 import { join } from "node:path";
 
 /**
@@ -30,7 +31,13 @@ export type Chunk = {
 };
 
 export interface Retriever {
-  search(query: string, limit?: number): Promise<Chunk[]>;
+  /**
+   * `view` bounds what may be seen. Applied during the walk, not to the
+   * results: filtering afterwards spends a caller's chunk budget on notes it
+   * cannot be shown, so a narrowed view would quietly return worse answers
+   * rather than fewer, correct ones.
+   */
+  search(query: string, limit?: number, view?: View): Promise<Chunk[]>;
 }
 
 /**
@@ -369,7 +376,7 @@ export class GrepRetriever implements Retriever {
     this.maxFiles = positive(opts.maxFiles, DEFAULT_MAX_FILES, "maxFiles");
   }
 
-  async search(query: string, limit = DEFAULT_LIMIT): Promise<Chunk[]> {
+  async search(query: string, limit = DEFAULT_LIMIT, view?: View): Promise<Chunk[]> {
     const terms = tokenise(query);
     if (terms.length === 0) return [];
 
@@ -377,7 +384,7 @@ export class GrepRetriever implements Retriever {
     const now = Date.now();
 
     const files: { abs: string; rel: string }[] = [];
-    await this.collect(this.vaultRoot, "", files);
+    await this.collect(this.vaultRoot, "", files, view);
 
     const chunks: Chunk[] = [];
     for (const file of files) {
@@ -415,6 +422,7 @@ export class GrepRetriever implements Retriever {
     absDir: string,
     relDir: string,
     out: { abs: string; rel: string }[],
+    view?: View,
   ): Promise<void> {
     if (out.length >= this.maxFiles) return;
 
@@ -447,9 +455,12 @@ export class GrepRetriever implements Retriever {
       // Chunk is the same string a note links to, on every platform.
       const rel = relDir ? `${relDir}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        await this.collect(join(absDir, e.name), rel, out);
+        await this.collect(join(absDir, e.name), rel, out, view);
       } else if (e.isFile() && e.name.toLowerCase().endsWith(".md")) {
-        out.push({ abs: join(absDir, e.name), rel });
+        // Per file rather than per directory: a view can exclude a subtree of a
+        // folder it otherwise includes, so pruning the recursion on the
+        // directory would drop notes the view admits.
+        if (visible(rel, view)) out.push({ abs: join(absDir, e.name), rel });
       }
     }
   }

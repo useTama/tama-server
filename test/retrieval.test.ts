@@ -222,3 +222,29 @@ test("GrepRetriever satisfies the Retriever contract its callers hold", async ()
   const r: Retriever = new GrepRetriever(root, { maxFileBytes: 256 * 1024, maxFiles: 500 });
   expect(await r.search("nothing at all")).toEqual([]);
 });
+
+test("a view bounds what retrieval can return at all", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tama-view-"));
+  try {
+    await mkdir(join(root, "Work"), { recursive: true });
+    await mkdir(join(root, "KiksStudios/Clients"), { recursive: true });
+    await writeFile(join(root, "Work/cpa.md"), "the mic gain problem in the studio");
+    await writeFile(join(root, "KiksStudios/Clients/a.md"), "the mic gain problem for a client");
+
+    const retriever = new GrepRetriever(root);
+    const all = await retriever.search("mic gain problem");
+    expect(all.map((c) => c.path).sort()).toEqual(["KiksStudios/Clients/a.md", "Work/cpa.md"]);
+
+    const scoped = await retriever.search("mic gain problem", 8, { include: ["Work/**"] });
+    expect(scoped.map((c) => c.path)).toEqual(["Work/cpa.md"]);
+
+    // The point of filtering in the walk: an excluded note must not consume a
+    // slot in the budget, or a narrowed audience gets worse answers silently.
+    const oneSlot = await retriever.search("mic gain problem", 1, { include: ["Work/**"] });
+    expect(oneSlot.map((c) => c.path)).toEqual(["Work/cpa.md"]);
+
+    expect(await retriever.search("mic gain problem", 8, { include: [] })).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

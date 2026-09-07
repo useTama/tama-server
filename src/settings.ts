@@ -383,19 +383,13 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
   const audience = await editAudience(configPath, config.vault.path, name, audiences[name], viewNames);
 
   const existing = await readBridge(bridgePath);
-  const alreadyWired = existing?.audiences?.some((a) => a.name === name);
-  if (await yes(alreadyWired ? `Re-issue "${name}" a token?` : `Connect "${name}" to a WhatsApp chat now?`, !alreadyWired)) {
-    const db = openDb(dbPath);
-    let token: string;
-    try {
-      token = mintToken(db, `audience:${name}`, name).token;
-    } finally {
-      db.close();
-    }
-    // Written straight into the bridge's settings rather than printed. A token
-    // shown once and pasted by hand is the step this whole section exists to
-    // remove, and it is also the step where a token ends up in a shell history.
-    const match = await pickChats(bridgePath, existing, name);
+  const wired = existing?.audiences?.find((a) => a.name === name);
+  const named = (id: string) => existing?.chats?.find((c) => c.id === id)?.name ?? id;
+
+  // Connecting and re-issuing a token are separate questions. Asking one
+  // question about both meant that declining to replace a working token also
+  // declined to connect the audience at all, and nothing said so.
+  const write = async (token: string, match: string[]) => {
     await writeSettings(bridgePath, {
       ...(existing ?? bridgeSettings("", [], "?")),
       audiences: [
@@ -403,19 +397,54 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
         { name, token, match, mention: audience.mention },
       ],
     });
+  };
+
+  if (wired && wired.match.length > 0) {
+    console.log(ok(`"${name}" is connected to ${wired.match.map(named).join(", ")}.`));
+    if (await yes("Change which chats it answers in?", false)) {
+      await write(wired.token, await pickChats(bridgePath, existing, name));
+    } else {
+      // Rewritten anyway: mention lives on this entry, and the answers above
+      // may have changed it.
+      await write(wired.token, wired.match);
+    }
+    if (await yes("Re-issue its token? Only needed if the old one leaked.", false)) {
+      const db = openDb(dbPath);
+      try {
+        await write(mintToken(db, `audience:${name}`, name).token, wired.match);
+        console.log(ok("New token issued. Revoke the old one under Devices."));
+      } finally {
+        db.close();
+      }
+    }
+  } else if (await yes(`Connect "${name}" to a chat now?`, true)) {
+    const db = openDb(dbPath);
+    let token: string;
+    try {
+      token = wired?.token ?? mintToken(db, `audience:${name}`, name).token;
+    } finally {
+      db.close();
+    }
+    // Written straight into the bridge's settings rather than printed. A token
+    // shown once and pasted by hand is the step this section exists to remove,
+    // and it is also the step where a token ends up in a shell history.
+    const match = await pickChats(bridgePath, existing, name);
+    await write(token, match);
     if (match.length === 0) {
       // Written with no chats on purpose. An audience waiting to be claimed is
       // what makes the in-chat command work, and claiming it from the group is
-      // the better path anyway: WhatsApp shows a group id nowhere, so the
-      // alternative is finding one in a log to type into a menu.
+      // the better path anyway: WhatsApp shows a group id nowhere.
       console.log(ok(`"${name}" is ready and waiting for a chat.`));
       console.log(`  In the group, send ${bold(`/tama ${name}`)}`);
       console.log(grey("  From your own number. That is the whole step: no ids, no coming back here."));
     } else {
-      console.log(ok(`Connected "${name}" to ${match.length} chat${match.length === 1 ? "" : "s"}.`));
+      console.log(ok(`Connected "${name}" to ${match.map(named).join(", ")}.`));
       console.log(grey("  Its token is in the bridge's settings file. It cannot exceed this audience's"));
       console.log(grey("  view whatever the bridge asks for, because the server decides from the token."));
     }
+  } else {
+    console.log(warn(`"${name}" is saved but has no token, so nothing can reach it.`));
+    console.log(grey("  Run this again and say yes to connect it."));
   }
   console.log(`${bold("tama restart")} ${grey("to apply it")}`);
 }

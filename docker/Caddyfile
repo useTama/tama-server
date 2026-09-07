@@ -1,0 +1,13 @@
+# One site, automatic TLS from Let's Encrypt. TAMA_DOMAIN comes from .env.
+{$TAMA_DOMAIN} {
+	encode zstd gzip
+
+	# The vault is behind this. Whisper transcription of a long note can take
+	# a while on CPU, so do not cut the upstream off at the default minute.
+	reverse_proxy tama:8080 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}

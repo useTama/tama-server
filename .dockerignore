@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+data
+test
+clients
+assets
+docs
+*.md
+tama.config.json

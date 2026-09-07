@@ -127,3 +127,13 @@ test("a custom voice is a tone description, positioned so it cannot reach the ru
 test("a custom voice with no description falls back rather than shipping an empty rule", () => {
   expect(systemPrompt({ voice: "custom" })).toContain("close friend with perfect recall");
 });
+
+test("just-talk mode refuses to mention notes at all, not just apologetically", () => {
+  // The first version said "do not announce that" and produced "no notes to dig
+  // through so just us here" - technically not an apology, still narrating
+  // machinery to someone who cannot see it.
+  const talk = systemPrompt({ voice: "roast", onNoMatch: "just-talk" });
+  expect(talk).toContain("do not mention that");
+  expect(talk).toContain("nothing to");
+  expect(talk).toContain("cannot see them and did not ask");
+});

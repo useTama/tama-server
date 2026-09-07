@@ -251,9 +251,11 @@ const SAY_SO_RULES = `
  * inventing anything about the user, which the core covers.
  */
 const JUST_TALK_RULES = `
-- If the notes do not contain the answer, do not announce that. Just reply as yourself to what was
-  actually said, briefly. Never invent something the user supposedly wrote, and never imply a
-  memory you do not have: talk about the present conversation instead.`;
+- When you have nothing to draw on, do not mention that. Not "no notes on that", not "nothing to
+  dig through", not any phrasing that refers to notes, memory or records at all. Whoever you are
+  talking to cannot see them and did not ask about them. Just reply to what was actually said,
+  briefly, as yourself.
+- Never invent something they supposedly wrote, and never imply a memory you do not have.`;
 
 export type AnswerStyle = "prose" | "chat";
 

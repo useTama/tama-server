@@ -466,13 +466,16 @@ Two ways in, and they are not equivalent.
 Option A is the supported path and the rest of this section covers it. Option B is a
 client in [`clients/whatsapp-webjs`](../clients/whatsapp-webjs) with its own README —
 it holds a device token and posts to `/capture` and `/ask` like the iOS Shortcut does,
-so the server needs no `whatsapp` block for it at all:
+so the server needs no `whatsapp` block for it at all. The wizard sets it up:
 
 ```sh
-echo 'TAMA_TOKEN=a_device_token_from_pairing' >> .env
+docker compose run --rm setup          # WhatsApp -> Link your own WhatsApp number
 docker compose --profile whatsapp-webjs up -d --build
 docker compose --profile whatsapp-webjs logs -f whatsapp-webjs   # scan the QR
 ```
+
+Change the allowed numbers later with `tama-server settings`, or in Docker
+`docker compose run --rm settings`.
 
 ### Option A — WhatsApp Cloud API
 

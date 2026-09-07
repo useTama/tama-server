@@ -1,9 +1,10 @@
 # Import existing notes
 
-Tama can import an existing Markdown knowledge base into its configured vault without uploading it
-to GitHub or any other service.
+Your twin does not start from nothing. Tama imports an existing Markdown knowledge base into its
+configured vault as that memory's starting point, without uploading it to GitHub or any other
+service.
 
-During `tama-server setup`, choose **Import an Obsidian / Markdown second brain** under
+During `tama-server setup`, choose **Give it an existing Obsidian / Markdown memory** under
 **Existing notes**, then enter a source folder available on that machine. The wizard scans it, shows
 the Markdown note count in the final summary, and imports only after confirmation. It does not save
 the source path in config.

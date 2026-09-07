@@ -80,7 +80,8 @@ curl -X POST localhost:8080/tokens -H "Authorization: Bearer $ADMIN" \
 
 ## WhatsApp Cloud API
 
-This optional adapter lets an allowed user message a dedicated WhatsApp Business Platform number:
+This optional adapter puts the twin in a chat the user already has open. An allowed sender
+messages a dedicated WhatsApp Business Platform number:
 
 - a voice note is downloaded from Meta, transcribed through the configured STT provider, and
   appended as a capture;

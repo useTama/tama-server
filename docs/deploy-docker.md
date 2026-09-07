@@ -295,7 +295,7 @@ The first audio capture is slow — whisper loads the model on first inference.
 
 ---
 
-## 8. Import an existing second brain (optional)
+## 8. Give it an existing memory (optional)
 
 Copy your Markdown to the server first (this uploads to *your* box, nowhere else):
 

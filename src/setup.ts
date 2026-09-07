@@ -231,7 +231,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     return running;
   };
   try {
-    console.log(`\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
+    console.log(`\n${tama()} setup ${grey("— your digital twin, with a memory you own.")}\n`);
     const configPath = configPathFromArgs(argv);
     // ffmpeg is not optional for audio, and finding that out at the first
     // recording instead of here costs a thought. git is what makes a vault a
@@ -241,7 +241,9 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     const existing = existsSync(configPath) ? JSON.parse(await readFile(configPath, "utf8")) : undefined;
     const current = existing ? loadConfig(configPath) : undefined;
     if (existing) console.log(grey("Existing setup found. Unrelated settings and your admin token will be preserved."));
-    const worldName = await ask("What would you like to name your world?", existing?.world?.name ?? "My World");
+    // Short: it becomes a folder name, and a paragraph typed here becomes a
+    // paragraph-shaped directory.
+    const worldName = await ask("Name your twin's world (short — it becomes a folder)", existing?.world?.name ?? "My World");
     let suggestedPath = current?.vault.path ?? process.env.TAMA_VAULT ?? homePath(`/Tama/${worldFolder(worldName)}`);
     console.log(`Your notes will be saved in ${bold(suggestedPath)}`);
     const customLocation = await yes("Choose a different location?");
@@ -256,7 +258,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
 
     const importChoice = await choose("Existing notes", [
       { value: "none", label: selectedVaultPlan === "create" ? "Start without importing notes" : "Keep this Tama vault as-is" },
-      { value: "obsidian", label: "Import an Obsidian / Markdown second brain" },
+      { value: "obsidian", label: "Give it an existing Obsidian / Markdown memory" },
     ], "none");
     let importSource: string | undefined;
     let importNoteCount = 0;
@@ -611,7 +613,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     }
     if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
     const admin = (saved.server as { adminToken: string }).adminToken;
-    console.log(`\n${bold("Pair your first device")}${grey(` — start the server, then open this on this machine:`)}`);
+    console.log(`\n${bold("Give your twin a voice")}${grey(` — start the server, then open this on this machine:`)}`);
     console.log(`  ${bold(`http://localhost:${port}/pair?token=${admin}`)}`);
     console.log(grey("  A QR code a phone can scan. Keep that link to yourself; it mints pairing codes."));
     console.log(grey(`  Scripting it instead: curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));

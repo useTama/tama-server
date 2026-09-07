@@ -2,10 +2,15 @@
 
 # tama-server
 
-Talk into a small device, and a markdown note appears in a folder you own.
+**Your digital twin, with a memory you own.**
 
-Self-hosted, open source, zero recurring cost. Speech-to-text runs locally, and there is no
-language model in the capture path, so capture needs no account, no key and no bill.
+Talk to it and it remembers — as plain markdown in a folder on your machine. Ask it anything
+and it answers from that memory. Message it on WhatsApp and it does both.
+
+Self-hosted, open source, zero recurring cost. The remembering never calls a language model,
+which is the point: the part that holds your life needs no account, no key and no bill. The
+assistant is the layer on top, and it reads your notes without anyone else's server keeping a
+copy of them.
 
 ## Install
 
@@ -20,8 +25,8 @@ binary in `~/.local/bin`. Set `PREFIX` to put it somewhere else. Audio capture a
 
 ## First-time setup
 
-`tama-server setup` creates a new empty git-tracked vault (or uses an existing git-backed
-vault) and a private configuration file. Its **Existing notes** step can import an Obsidian
+`tama-server setup` gives your twin its memory: a new empty git-tracked vault (or an existing
+git-backed one) and a private configuration file. Its **Existing notes** step can import an Obsidian
 vault or any Markdown folder directly into the new Tama vault.
 
 For transcription, choose whisper.cpp on this machine, whisper.cpp on another machine, or a
@@ -47,7 +52,7 @@ explicitly select the import option.
 The generated config lives at `~/.config/tama/tama.config.json`; server deployments can
 override that with `$TAMA_CONFIG` or `--config PATH`, which both the server and setup accept.
 
-Already have a Markdown second brain? Choose the import option in setup, or run
+Already have a Markdown second brain? That becomes its memory — choose the import option in setup, or run
 `tama-server import /path/to/notes` later.
 It preserves note paths, never overwrites a different file, and does not push or upload anything.
 For a remote machine, the **[private deployment import guide](docs/import.md)** shows an SSH-only
@@ -133,9 +138,10 @@ pair itself, so could anyone else who can reach the port.
 
 ## WhatsApp
 
-Tama can optionally sit behind a dedicated WhatsApp Business Platform number. Send that number a
-voice note to capture it; send text to ask the second brain and receive the answer in the chat.
-Only explicitly allowlisted sender numbers can do either.
+The most natural way to reach your twin is a chat you already have open. Tama can sit behind a
+dedicated WhatsApp Business Platform number: send it a voice note and it remembers; send it text
+and it answers from your memory, in the chat. Only explicitly allowlisted sender numbers can do
+either.
 
 This uses Meta's official WhatsApp Cloud API and needs a public HTTPS webhook plus Meta credentials;
 it is not enabled by default and does not change local capture. See the
@@ -144,8 +150,8 @@ steps.
 
 ## Asking questions
 
-Optional, and the only place a model enters. With no `ask` block configured `/ask` answers
-501 and everything else keeps working with no key.
+This is where the twin actually talks back, and the only place a model enters. With no `ask`
+block configured `/ask` answers 501 and the memory keeps working with no key.
 
 | Option | Cost | Privacy | Quality |
 |---|---|---|---|
@@ -153,8 +159,8 @@ Optional, and the only place a model enters. With no `ask` block configured `/as
 | Gemini free tier | free | ⚠️ Google trains on your prompts, and the retrieved notes *are* the prompt | good |
 | Anthropic, or any paid tier | per token | not trained on | best |
 
-Ollama is the default on purpose. A tool that promises your notes stay put should not ship
-pointing at a vendor that learns from them.
+Ollama is the default on purpose. A twin that promises your memory stays put should not ship
+pointing at a vendor that learns from it.
 
 Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 

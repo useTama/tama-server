@@ -1,7 +1,7 @@
 {
   "name": "tama-server",
   "version": "0.1.0",
-  "description": "Self-hosted voice capture into a markdown vault you own. No account, no key, no bill.",
+  "description": "Your digital twin, with a memory you own. Self-hosted voice capture and question answering over a markdown vault. No account, no key, no bill.",
   "license": "Apache-2.0",
   "private": false,
   "type": "module",

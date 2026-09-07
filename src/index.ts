@@ -142,7 +142,7 @@ async function doCapture(req: Request, device: string): Promise<Response> {
     recordFailure(db, { kind: "empty-transcript", detail, source: device });
     safeNotify(notifier, {
       level: "warn",
-      title: "Tama: nothing was heard",
+      title: "Tama: your twin heard nothing",
       message: `${device} sent ${seconds.toFixed(1)}s of audio and no words came out. Nothing was written.`,
     });
     return json({ error: "transcript was empty, nothing written", reason: "no-speech-detected" }, 422);
@@ -207,7 +207,7 @@ async function runCapture(req: Request, device: CaptureDevice, key: string | nul
     recordFailure(db, { kind: "capture-failed", detail, source: device.deviceName });
     safeNotify(notifier, {
       level: "error",
-      title: "Tama: a capture failed",
+      title: "Tama: your twin did not remember that",
       message: `${device.deviceName}: ${detail.slice(0, 160)}`,
     });
     console.error("capture failed:", e);
@@ -333,7 +333,7 @@ const server = Bun.serve({
       const caller = server.requestIP(req)?.address ?? "unknown";
       const r = redeemPairingCode(db, String(b.code), b.deviceName ?? "unnamed device", caller);
       if (!r.ok) return json({ error: `pairing code ${r.reason}` }, 403);
-      safeNotify(notifier, { level: "info", title: "Tama: new device paired", message: b.deviceName ?? "unnamed device" });
+      safeNotify(notifier, { level: "info", title: "Tama: your twin has a new voice", message: b.deviceName ?? "unnamed device" });
       return json({ ok: true, id: r.id, token: r.token, note: "store this now, it is not shown again" });
     }
 

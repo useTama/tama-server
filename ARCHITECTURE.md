@@ -11,15 +11,16 @@ What is actually built. Planned work lives in
   </picture>
 </a>
 
-Two paths through one process, one folder in the middle. Capture writes to the vault, ask
-reads from it. They share auth, the config and the vault adapter, and nothing else.
+A twin is two paths through one process, with its memory in the middle. Capture writes to the
+vault, ask reads from it. They share auth, the config and the vault adapter, and nothing else.
 
 ## Capture is a strict prefix of ask
 
 Capture never touches a language model. That is not a limitation to be lifted later, it is
-what lets the quickstart be "install, point at a folder, talk, see a file appear" with no
-account and no key. Ask is the opt-in upgrade, and by the time anyone is asked for a
-credential they have already watched the thing work.
+what makes the memory yours: the half that holds your life runs with no account and no key,
+so the quickstart is "install, point at a folder, talk, see a file appear". Ask is the opt-in
+upgrade that makes the twin answer, and by the time anyone is asked for a credential they
+have already watched their memory work without one.
 
 Nothing in `ask.ts` may be reachable from the capture path.
 

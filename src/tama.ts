@@ -19,8 +19,8 @@ if (command === "setup") {
 } else if (command === "help" || command === "--help" || command === "-h") {
   const { tama, grey } = await import("./ui.ts");
   console.log(`${tama("tama-server")} [--config PATH]       ${grey("run the server")}`);
-  console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure the vault, transcription, Ask, and WhatsApp")}`);
-  console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("copy existing Markdown into the configured vault")}`);
+  console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure the memory, transcription, Ask, and WhatsApp")}`);
+  console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("give the twin an existing Markdown memory")}`);
   console.log(grey("\nColour follows NO_COLOR and is dropped when output is not a terminal."));
 } else {
   await import("./index.ts");

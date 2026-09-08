@@ -23,6 +23,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } f
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 import { downloadRawMedia } from "./media-download.mjs";
+import { errorDetail } from "./http-error.mjs";
 import { repairSerializedMessageId } from "./message-id.mjs";
 
 // whatsapp-web.js is CommonJS and has no named ESM exports.
@@ -199,7 +200,12 @@ async function post(path, { headers = {}, body, token }) {
         signal: AbortSignal.timeout(300_000),
       });
       if (res.status === 503 || (res.status >= 500 && res.status !== 502)) {
-        lastError = new Error(`HTTP ${res.status}`);
+        // Keep what the server said. It answers a failed capture with
+        // {"error": "<what actually broke>"}, and discarding that is how
+        // "ffmpeg is not installed" reached a phone as a bare "HTTP 500" -
+        // a failure in the one path that is supposed to need nothing, naming
+        // nothing, to the person most likely able to fix it.
+        lastError = new Error(`HTTP ${res.status}${await errorDetail(res)}`);
         continue;
       }
       return res;

@@ -231,7 +231,7 @@ test("a dry run decides, prints and records nothing", async () => {
   expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM failures").get()!.n).toBe(0);
   expect(stuck(db, config.maxTries)).toEqual([]);
   // And the capture is still there, unfiled, for a real pass to pick up.
-  expect(await readdir(join(root, "Inbox"))).toEqual([cap.relPath.split("/")[1]]);
+  expect(await readdir(join(root, "Inbox"))).toEqual([cap.relPath.split("/")[1]!]);
 });
 
 test("a dry run leaves every note exactly as it was", async () => {

@@ -18,3 +18,8 @@ jobs:
       # answer evals skip themselves here: they are gated on TAMA_EVAL_MODEL,
       # and a rate limit failing a push is a worse signal than not running.
       - run: bun test
+      # The bridge has its own package.json, so the run above does not reach it
+      # and its five test files had never run here. They cover the things that
+      # broke in production: which identifiers a message presents, the media
+      # retry, and our own mention.
+      - run: bun test clients/whatsapp-webjs

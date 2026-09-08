@@ -24,6 +24,7 @@ import { join } from "node:path";
 import qrcode from "qrcode-terminal";
 import { downloadRawMedia } from "./media-download.mjs";
 import { errorDetail } from "./http-error.mjs";
+import { verdictFromCommand, verdictFromReaction } from "./feedback-input.mjs";
 import { repairSerializedMessageId } from "./message-id.mjs";
 
 // whatsapp-web.js is CommonJS and has no named ESM exports.
@@ -508,6 +509,42 @@ function patchSettings(mutate) {
  * else, which is the same boundary the rest of the bridge uses.
  */
 /**
+ * Report a verdict on the last answer in this chat.
+ *
+ * Always the owner's token, never an audience's: /feedback is owner-only,
+ * because in a group the question is often somebody else's message and the
+ * record is permanent. The bridge holds an audience token per room, and using
+ * one here would simply be refused.
+ *
+ * The chat id is the thread, which is the same value askQuestion sends, so the
+ * server can attach the verdict to what it actually retrieved. The bridge never
+ * sees those paths and does not need to: an audience with cite:false is not
+ * told them at all.
+ */
+async function sendFeedback(message, chatId, verdict) {
+  const res = await post("/feedback", {
+    headers: { "content-type": "application/json" },
+    token: settings.token,
+    body: JSON.stringify({ thread: chatId, ...verdict }),
+  });
+  if (res.status === 404) {
+    // The thread is fine, there is just nothing recent enough to be about.
+    await reply(message, "Nothing recent enough to rate in this chat");
+    return;
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    log("feedback failed", res.status, body.error ?? "");
+    await reply(message, `Could not record that: ${body.error ?? `HTTP ${res.status}`}`);
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  // Quoted back so the owner can see which question it landed on. A silent
+  // acknowledgement would make a verdict on the wrong answer invisible.
+  await reply(message, `Noted as ${verdict.verdict}: "${String(body.question ?? "").slice(0, 80)}"`);
+}
+
+/**
  * The name to attribute a group message to.
  *
  * WhatsApp's push name is what the sender chose to be called, which is also
@@ -690,6 +727,14 @@ async function onMessage(message) {
   const isVoice = message.hasMedia && (message.type === "ptt" || message.type === "audio");
   const text = (message.body ?? "").trim();
 
+  // Before the claim, because "/tama wrong" is a verdict and not the name of
+  // an audience to claim this chat as.
+  const verdict = verdictFromCommand(text);
+  if (verdict && isOwner) {
+    seen(`feedback ${verdict.verdict}`);
+    return sendFeedback(message, chatId, verdict);
+  }
+
   // Checked before the audience gate, so a group with no audience yet can still
   // be claimed - which is the only moment the command is useful.
   const claim = /^\/tama\b\s*(.*)$/i.exec(text);
@@ -753,6 +798,48 @@ async function onMessage(message) {
   seen("ask");
   return askQuestion(message, question, undefined, undefined, chatId);
 }
+
+/**
+ * A thumbs-down on one of our replies, which is the cheapest feedback there is.
+ *
+ * Guarded rather than assumed: whether a given WhatsApp Web build emits
+ * `message_reaction` is not something this project can promise, so `/tama
+ * wrong` exists beside it on the event the bridge already depends on. If this
+ * never fires, nothing is lost except one tap's worth of convenience.
+ *
+ * Only reactions to OUR messages count. A thumbs-down on somebody else's
+ * message in a group is an opinion about them, not about an answer.
+ */
+client.on("message_reaction", (reaction) => {
+  void (async () => {
+    try {
+      const verdict = verdictFromReaction(reaction?.reaction);
+      if (!verdict) return;
+      if (!reaction?.msgId?.fromMe) return;
+
+      const chatId = String(reaction.msgId.remote ?? "");
+      if (!chatId) return;
+
+      // Reacting to our own outbound message means the reactor is the owner on
+      // the linked phone. A group member cannot react "from" our account.
+      const res = await post("/feedback", {
+        headers: { "content-type": "application/json" },
+        token: settings.token,
+        body: JSON.stringify({ thread: chatId, verdict }),
+      });
+      if (!res.ok) {
+        log("reaction feedback failed", res.status);
+        return;
+      }
+      const body = await res.json().catch(() => ({}));
+      log("feedback", verdict, `"${String(body.question ?? "").slice(0, 60)}"`);
+    } catch (error) {
+      // A reaction is a bonus signal. Failing to record one must never take
+      // the bridge down or interrupt a conversation.
+      console.error("reaction handler failed:", error instanceof Error ? error.message : error);
+    }
+  })();
+});
 
 client.on("qr", (qr) => {
   console.log("\nScan this with WhatsApp -> Settings -> Linked devices -> Link a device\n");

@@ -327,7 +327,14 @@ export class AnthropicLlm implements Llm {
 
   private readonly maxTokens: number;
 
-  constructor(opts: { apiKey?: string; model: string; maxTokens?: number }) {
+  /**
+   * `fetch` is threaded through for the same reason `whatsappFetch` is threaded
+   * into RouteDeps: this adapter talks to a provider through an SDK, so its
+   * request body was the one wire shape in the project no test could see. The
+   * three STT providers each have their shape asserted; this had nothing.
+   * Left undefined in production, which means the SDK's own fetch.
+   */
+  constructor(opts: { apiKey?: string; model: string; maxTokens?: number; fetch?: typeof fetch }) {
     this.maxTokens = opts.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
     this.model = requireField(opts.model, "llm.model", 'e.g. "claude-sonnet-5"');
     const apiKey = opts.apiKey?.trim();
@@ -336,7 +343,8 @@ export class AnthropicLlm implements Llm {
     // one, and the better default: the config file sits next to a git-tracked
     // vault, where a secret does not belong. Passing a key only when one was
     // actually configured leaves that resolution intact.
-    this.client = apiKey ? new Anthropic({ apiKey }) : new Anthropic();
+    const transport = opts.fetch ? { fetch: opts.fetch } : {};
+    this.client = apiKey ? new Anthropic({ apiKey, ...transport }) : new Anthropic(transport);
     this.name = `anthropic:${this.model}`;
   }
 
@@ -354,7 +362,18 @@ export class AnthropicLlm implements Llm {
     const s = this.client.messages.stream({
       model: this.model,
       max_tokens: this.maxTokens,
-      system: opts.system,
+      // The block form exists only to carry cache_control. The system prompt
+      // is a cacheable prefix by construction (#24): ask.ts assembles the core
+      // first and unchanged, and puts today's date and the retrieved excerpts
+      // in the user message specifically so this stays byte-identical between
+      // requests. Nothing was reading the benefit - `cache_read_input_tokens`
+      // has been mapped into LlmUsage all along, so the instrument was built
+      // and could only ever report zero.
+      //
+      // Anthropic only. The openai-compatible adapter covers a dozen gateways
+      // that each spell caching differently or not at all, and guessing wrong
+      // there is a 400 on every request rather than a missed discount.
+      system: [{ type: "text" as const, text: opts.system, cache_control: { type: "ephemeral" as const } }],
       messages: opts.messages,
     });
 

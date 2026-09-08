@@ -72,6 +72,22 @@ test("anything a client asks for beyond those two is optional and off", async ()
   }
 });
 
+test("the two clients are versioned in lockstep", async () => {
+  // They are released together under one `v*` tag, and
+  // .github/workflows/release.yml refuses to publish if the tag and either
+  // manifest disagree. Pinned here so the disagreement is caught by a test
+  // run rather than by a failed release.
+  //
+  // The failure that earned this: the plugin gained a SessionEnd hook and a
+  // new userConfig field with no version bump, so `claude plugin update`
+  // answered "already at the latest version" and no install would ever have
+  // picked the feature up.
+  const plugin = await readJson("clients/claude-code/.claude-plugin/plugin.json");
+  const bundle = await readJson("clients/claude-desktop/manifest.json");
+  expect(plugin.version).toBe(bundle.version);
+  expect(plugin.version).toMatch(/^\d+\.\d+\.\d+$/);
+});
+
 test("the marketplace entry and the plugin agree on name and source", async () => {
   const marketplace = await readJson(".claude-plugin/marketplace.json");
   const plugin = await readJson("clients/claude-code/.claude-plugin/plugin.json");

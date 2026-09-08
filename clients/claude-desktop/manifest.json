@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "tama",
   "display_name": "Tama",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Your own Markdown notes, readable and writable from Claude.",
   "long_description": "Tama keeps voice notes and work summaries as Markdown in a git repo you own. This extension lets Claude search those notes, read one, append to them, and record what a session did - so a decision made today is still answerable in six weeks. It talks to a Tama server you already run; nothing is sent anywhere else.",
   "author": {
@@ -13,14 +13,22 @@
   "documentation": "https://github.com/useTama/tama-server/blob/main/docs/mcp.md",
   "support": "https://github.com/useTama/tama-server/issues",
   "icon": "icon.png",
-  "keywords": ["notes", "memory", "markdown", "voice", "second-brain"],
+  "keywords": [
+    "notes",
+    "memory",
+    "markdown",
+    "voice",
+    "second-brain"
+  ],
   "license": "MIT",
   "server": {
     "type": "node",
     "entry_point": "server/index.mjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.mjs"],
+      "args": [
+        "${__dirname}/server/index.mjs"
+      ],
       "env": {
         "TAMA_URL": "${user_config.server_url}",
         "TAMA_TOKEN": "${user_config.device_token}"
@@ -44,16 +52,37 @@
     }
   },
   "tools": [
-    { "name": "search_notes", "description": "Search the notes and return the passages that match." },
-    { "name": "read_note", "description": "Read one note by its path." },
-    { "name": "append_note", "description": "Write a new note into the vault." },
-    { "name": "record_session", "description": "Record what this session did in the project's log." },
-    { "name": "today", "description": "What the user has been working on lately." }
+    {
+      "name": "search_notes",
+      "description": "Search the notes and return the passages that match."
+    },
+    {
+      "name": "read_note",
+      "description": "Read one note by its path."
+    },
+    {
+      "name": "append_note",
+      "description": "Write a new note into the vault."
+    },
+    {
+      "name": "record_session",
+      "description": "Record what this session did in the project's log."
+    },
+    {
+      "name": "today",
+      "description": "What the user has been working on lately."
+    }
   ],
   "tools_generated": false,
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["darwin", "win32", "linux"],
-    "runtimes": { "node": ">=18.0.0" }
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
   }
 }

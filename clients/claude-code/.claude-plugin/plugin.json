@@ -1,7 +1,7 @@
 {
   "name": "tama",
   "displayName": "Tama",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Your own Markdown notes, searchable and writable from the terminal.",
   "author": {
     "name": "Tama",

@@ -211,27 +211,55 @@ async function editAudience(
 
   // Kept as its own step rather than folded into the room note, so entries can
   // be edited one at a time instead of retyping a paragraph.
-  const people: Record<string, string> = { ...(current?.people ?? {}) };
-  if (await yes(`Add notes about who is in this room? ${Object.keys(people).length ? `(${Object.keys(people).length} so far)` : ""}`.trim(), Object.keys(people).length > 0)) {
+  //
+  // Seeded from the RAW config, not from `current`. The parsed Audience keeps
+  // only the one-line `about`, so reading it here would drop everyone's numbers
+  // on every settings run - and this function replaces the whole audience when
+  // it saves, so the loss would be silent and permanent.
+  const people = await rawPeople(configPath, name);
+  const count = () => Object.keys(people).length;
+  if (await yes(`Add notes about who is in this room? ${count() ? `(${count()} so far)` : ""}`.trim(), count() > 0)) {
     console.log(grey("  One line each. It is what lets a reply be about them rather than generic."));
-    console.log(grey("  Blank name to finish. Blank line for a name removes it."));
+    console.log(grey("  Their number matters as much as the line: in a group Tama is told the"));
+    console.log(grey("  sender's number, and without it a reply cannot say who was talking."));
+    console.log(grey("  Blank name to finish. Blank line for both fields removes them."));
     for (;;) {
-      for (const [who, about] of Object.entries(people)) console.log(`  ${bold(who)} ${grey(about)}`);
+      for (const [who, p] of Object.entries(people)) {
+        const numbers = p.numbers?.length ? ` ${grey(`<${p.numbers.join(", ")}>`)}` : ` ${warn("<no number>")}`;
+        console.log(`  ${bold(who)} ${grey(p.about ?? "")}${numbers}`);
+      }
       const who = (await ask("Who? (Enter to finish)", "")).trim();
       if (!who) break;
-      const about = (await ask(`What about ${who}?`, people[who] ?? "")).trim();
-      if (about) people[who] = about;
-      else {
+      const existing = people[who];
+      const about = (await ask(`What about ${who}?`, existing?.about ?? "")).trim();
+      const numbers = whatsappSenders(
+        await ask(`${who}'s number(s), comma-separated`, (existing?.numbers ?? []).join(",")),
+      );
+      if (!about && !numbers?.length) {
         delete people[who];
         console.log(grey(`  removed ${who}`));
+        continue;
       }
+      if (numbers === null) console.log(warn("  Use international numbers, digits only (a leading + is accepted)."));
+      people[who] = {
+        ...(about ? { about } : {}),
+        ...(numbers?.length ? { numbers } : existing?.numbers?.length ? { numbers: existing.numbers } : {}),
+        ...(existing?.aka?.length ? { aka: existing.aka } : {}),
+      };
     }
+  }
+
+  // A person with only a line stays a plain string, so a config nobody needed
+  // this for reads exactly as it did before.
+  const peopleOut: Record<string, unknown> = {};
+  for (const [who, p] of Object.entries(people)) {
+    peopleOut[who] = !p.numbers?.length && !p.aka?.length ? (p.about ?? "") : p;
   }
 
   const audience: Audience = {
     view, voice, length, cite, onNoMatch, mention,
     ...(voice === "custom" && voicePrompt ? { voicePrompt } : {}),
-    ...(Object.keys(people).length ? { people } : {}),
+    ...(Object.keys(peopleOut).length ? { people: peopleOut as Record<string, string> } : {}),
     // Never true. A group filling the vault with other people's chatter is the
     // failure the blanket group ignore was avoiding, and nothing here changes it.
     capture: false,
@@ -302,6 +330,47 @@ async function editView(configPath: string, vaultPath: string, name: string, cur
  * rewrite the whole document from a parsed model: an unrelated field this
  * version does not know about would be dropped on save.
  */
+export type PersonDraft = { about?: string; numbers?: string[]; aka?: string[] };
+
+/**
+ * One audience's people, as written on disk rather than as parsed.
+ *
+ * The parsed `Audience` keeps only the one-line `about` and folds the numbers
+ * into a lookup table, so an editor seeded from it would silently drop every
+ * number the owner had entered. Reading the file is the only way to round-trip
+ * a shape this function does not own.
+ *
+ * Best-effort: an unreadable or half-written config yields no drafts rather
+ * than stopping someone from editing their settings.
+ */
+export async function rawPeople(configPath: string, audience: string): Promise<Record<string, PersonDraft>> {
+  let raw: any;
+  try {
+    raw = JSON.parse(await readFile(configPath, "utf8"));
+  } catch {
+    return {};
+  }
+  const entries = raw?.audiences?.[audience]?.people;
+  if (!entries || typeof entries !== "object") return {};
+
+  const out: Record<string, PersonDraft> = {};
+  for (const [who, value] of Object.entries(entries as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      out[who] = value.trim() ? { about: value.trim() } : {};
+      continue;
+    }
+    const v = (value ?? {}) as { about?: unknown; numbers?: unknown; aka?: unknown };
+    const numbers = (Array.isArray(v.numbers) ? v.numbers : []).map((n) => String(n)).filter(Boolean);
+    const aka = (Array.isArray(v.aka) ? v.aka : []).map((a) => String(a)).filter(Boolean);
+    out[who] = {
+      ...(String(v.about ?? "").trim() ? { about: String(v.about).trim() } : {}),
+      ...(numbers.length ? { numbers } : {}),
+      ...(aka.length ? { aka } : {}),
+    };
+  }
+  return out;
+}
+
 async function patchConfig(configPath: string, mutate: (raw: any) => void): Promise<void> {
   const raw = JSON.parse(await readFile(configPath, "utf8"));
   mutate(raw);

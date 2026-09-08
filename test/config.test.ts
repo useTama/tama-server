@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, resolveSpeaker } from "../src/config.ts";
 
 let dir: string;
 
@@ -208,4 +208,88 @@ test("an unknown view on an audience fails at boot, not at request time", async 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---- who is talking, in a group ----------------------------------------
+
+/**
+ * The bug: `people` is keyed by name, and a group message arrives labelled
+ * with whatever the client could work out about the sender - a WhatsApp push
+ * name, an address-book name, or, when neither exists, the bare phone number.
+ * So the model got "Who is in this room: Priya, Anand" beside "A message from
+ * 919876543210" and nothing joining them.
+ */
+const room = (people: unknown) => config({
+  vault: { path: "/vault" },
+  server: { adminToken: "secret" },
+  audiences: { crew: { view: "none", people } },
+});
+
+test("a person's number resolves to the name the prompt uses for them", async () => {
+  const c = loadConfig(await room({
+    Priya: { about: "my cofounder, runs infra", numbers: ["+91 98765 43210"] },
+  }));
+  const ids = c.audiences!.crew!.identities;
+  expect(resolveSpeaker("919876543210", ids)).toBe("Priya");
+  // The one line about her is unchanged, so the prompt still reads the same.
+  expect(c.audiences!.crew!.people).toEqual({ Priya: "my cofounder, runs infra" });
+});
+
+test("a push name resolves too, since it is what the client usually sends", async () => {
+  // Push names carry emoji, surnames and nicknames, and a person can change
+  // theirs whenever they like. Hoping one matches a config key is not a fix.
+  const c = loadConfig(await room({
+    Priya: { about: "cofounder", aka: ["Priya 🌸", "pri"] },
+  }));
+  const ids = c.audiences!.crew!.identities;
+  expect(resolveSpeaker("Priya 🌸", ids)).toBe("Priya");
+  expect(resolveSpeaker("PRI", ids)).toBe("Priya");
+  expect(resolveSpeaker("Priya", ids)).toBe("Priya");
+});
+
+test("a country code on one side only still resolves", async () => {
+  const c = loadConfig(await room({ Anand: { numbers: ["9876543210"] } }));
+  const ids = c.audiences!.crew!.identities;
+  expect(resolveSpeaker("919876543210", ids)).toBe("Anand");
+  const other = loadConfig(await room({ Anand: { numbers: ["+919876543210"] } }));
+  expect(resolveSpeaker("9876543210", other.audiences!.crew!.identities)).toBe("Anand");
+});
+
+test("someone with a number but nothing to say about them is still named", async () => {
+  // Naming the sender is useful on its own; facts about them are separate.
+  const c = loadConfig(await room({ Ravi: { numbers: ["919999911111"] } }));
+  expect(c.audiences!.crew!.people).toBeUndefined();
+  expect(resolveSpeaker("919999911111", c.audiences!.crew!.identities)).toBe("Ravi");
+});
+
+test("an unmapped sender passes through, because a number beats \"someone\"", async () => {
+  const c = loadConfig(await room({ Priya: { numbers: ["919876543210"] } }));
+  const ids = c.audiences!.crew!.identities;
+  expect(resolveSpeaker("917777788888", ids)).toBe("917777788888");
+  expect(resolveSpeaker("Unknown Person", ids)).toBe("Unknown Person");
+  expect(resolveSpeaker(undefined, ids)).toBeUndefined();
+});
+
+test("a name with a digit in it is not looked up as a number", async () => {
+  // Stripping non-digits from "Priya 2" would look her up as "2".
+  const c = loadConfig(await room({ Two: { numbers: ["2"] }, "Priya 2": { about: "the other one" } }));
+  expect(resolveSpeaker("Priya 2", c.audiences!.crew!.identities)).toBe("Priya 2");
+});
+
+test("plain-string people still work, so no existing config breaks", async () => {
+  const c = loadConfig(await room({ Priya: "my cofounder", Anand: "candidate" }));
+  expect(c.audiences!.crew!.people).toEqual({ Priya: "my cofounder", Anand: "candidate" });
+  // The name is an identity in itself, so a client that resolved the sender
+  // properly needs no mapping at all.
+  expect(resolveSpeaker("anand", c.audiences!.crew!.identities)).toBe("Anand");
+});
+
+test("one identity claimed by two people fails at startup, not silently", async () => {
+  // Otherwise one of them quietly receives the other's messages, and the owner
+  // has no way to notice.
+  const path = await room({
+    Priya: { numbers: ["919876543210"] },
+    Anand: { numbers: ["+91 98765 43210"] },
+  });
+  expect(() => loadConfig(path)).toThrow(/maps "919876543210" to both/);
 });

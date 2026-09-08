@@ -117,7 +117,60 @@ export type Audience = {
    * should not turn up in an answer to an unrelated question.
    */
   people?: Record<string, string>;
+  /**
+   * Whatever a message might arrive labelled as, mapped to the name used in
+   * `people`.
+   *
+   * The failure this fixes: `people` is keyed by name, and a group message
+   * arrives labelled with whatever the client could work out about the sender.
+   * The bridge tries the WhatsApp push name, then the address-book name, then
+   * gives up and uses the phone number. So the model was handed "Who is in
+   * this room: Priya, Anand" alongside "A message from 919876543210" and
+   * nothing whatsoever connecting the two. In a group it could not tell who
+   * was talking, which is most of what being in a group means.
+   *
+   * Joining them by hoping a push name matches a config key is not a fix: push
+   * names carry emoji, surnames and nicknames, and a person can change theirs
+   * whenever they like.
+   *
+   * Numbers are stored as digits only, aliases lowercased, so a lookup does
+   * not depend on how either side was typed.
+   */
+  identities?: Record<string, string>;
 };
+
+/**
+ * The name to attribute a message to, from whatever the client called the
+ * sender.
+ *
+ * Unmapped labels pass through unchanged. A number the owner has not named is
+ * still better than "someone", and inventing a name here would be worse than
+ * either.
+ */
+export function resolveSpeaker(
+  raw: string | undefined,
+  identities?: Record<string, string>,
+): string | undefined {
+  const label = raw?.trim();
+  if (!label) return undefined;
+  if (!identities) return label;
+
+  // A phone number only counts as one when the whole label is digits and the
+  // punctuation numbers are written with. Stripping non-digits from "Priya 2"
+  // would otherwise look her up as "2".
+  if (/^[+\d\s().-]+$/.test(label)) {
+    const digits = label.replace(/\D/g, "");
+    // Matched from the right, so a number stored with a country code still
+    // resolves one written without it, and the reverse.
+    for (const [key, who] of Object.entries(identities)) {
+      if (!/^\d+$/.test(key)) continue;
+      const short = key.length <= digits.length ? key : digits;
+      const long = key.length <= digits.length ? digits : key;
+      if (short.length >= 7 && long.endsWith(short)) return who;
+    }
+  }
+  return identities[label.toLowerCase()] ?? label;
+}
 
 const VOICE_NAMES: Voice[] = ["neutral", "friend", "roast", "custom"];
 
@@ -149,11 +202,48 @@ function parseAudience(name: string, raw: any, views: Record<string, View>): Aud
   if (raw?.note !== undefined) audience.note = String(raw.note);
   if (raw?.people && typeof raw.people === "object") {
     const people: Record<string, string> = {};
-    for (const [who, about] of Object.entries(raw.people as Record<string, unknown>)) {
-      const line = String(about ?? "").trim();
+    const identities: Record<string, string> = {};
+
+    // A key claimed by two people is a typo with a silent consequence: one of
+    // them gets the other's messages attributed to them, and the owner has no
+    // way to see it. Failing at startup is the only place that is cheap.
+    const claim = (key: string, who: string) => {
+      if (!key) return;
+      const held = identities[key];
+      if (held && held !== who) {
+        throw new Error(
+          `config: audiences.${name}.people maps ${JSON.stringify(key)} to both ${held} and ${who}`,
+        );
+      }
+      identities[key] = who;
+    };
+
+    for (const [who, value] of Object.entries(raw.people as Record<string, unknown>)) {
+      // A plain string stays what it always was: one line about a person. An
+      // object adds the identities a message can arrive under.
+      const entry =
+        typeof value === "string"
+          ? { about: value }
+          : ((value ?? {}) as { about?: unknown; numbers?: unknown; aka?: unknown });
+
+      const line = String(entry.about ?? "").trim();
       if (line) people[who] = line;
+
+      // The name itself, so a client that already resolved the sender properly
+      // needs no mapping at all.
+      claim(who.trim().toLowerCase(), who);
+      for (const n of Array.isArray(entry.numbers) ? entry.numbers : []) {
+        claim(String(n).replace(/\D/g, ""), who);
+      }
+      for (const a of Array.isArray(entry.aka) ? entry.aka : []) {
+        claim(String(a).trim().toLowerCase(), who);
+      }
     }
+
     if (Object.keys(people).length > 0) audience.people = people;
+    // Kept even when nobody has an `about` line. Naming the sender is useful
+    // on its own; facts about them are a separate thing to have.
+    if (Object.keys(identities).length > 0) audience.identities = identities;
   }
   if (audience.voice === "custom") {
     const described = String(raw?.voicePrompt ?? "").trim();

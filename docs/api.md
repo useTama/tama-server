@@ -246,6 +246,42 @@ to a topic, works on iOS and Android, and can itself be self-hosted.
 You get told when a capture fails, when **nothing was heard** (mic muted or too quiet), when
 whisper is down, and when a new device pairs. Plus a daily digest of counts and failures.
 
+## POST /feedback
+
+Say an answer was wrong. **Owner's device only** — a `403` for any audience.
+
+```sh
+curl -X POST localhost:8080/feedback -H "Authorization: Bearer $DEVICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"thread":"chat-1","verdict":"wrong","note":"answered about a github issue"}'
+
+# -> { "ok": true, "recorded": "wrong", "question": "what can be the issue",
+#      "retrieved": [{"path":"Projects/hermes/incident-2025-01-30.md","score":8.4}] }
+```
+
+| Field | |
+|---|---|
+| `thread` | required. The same opaque id `/ask` was given, so a verdict lands on the right conversation |
+| `verdict` | required. `"wrong"` or `"right"` |
+| `askId` | optional. Names one answer instead of the most recent in that thread |
+| `note` | optional, 500 chars. What was actually wrong |
+
+`404` when the thread has no recent answer to rate. Only the last 10 per thread are kept, so
+a verdict has to arrive within a few messages.
+
+Appends one JSON object per line to `<dataDir>/feedback.jsonl`, recording the question and
+**what retrieval returned** — which is where most bad answers turn out to come from. The
+answer text is not kept: the question and the paths are enough to reproduce and triage, and
+storing answers would grow a second copy of the vault's content somewhere with none of the
+vault's rules.
+
+Nothing is sent anywhere. There is no collection endpoint. The file is a notebook for a person
+to read when deciding what belongs in the golden set, and promotion stays a human judgement.
+
+Owner-only for a reason: in a group the question is often somebody else's message, and this
+record is permanent where conversation history is not, so an open route would let a stranger
+both fill the file with other people's words and decide what the eval set gets built from.
+
 ## POST /notes
 
 Append text to a note at a path you choose, or create one. This is the write

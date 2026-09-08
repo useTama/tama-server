@@ -122,6 +122,24 @@ export function openDb(path: string): Database {
       updated_at      TEXT NOT NULL
     );
 
+    -- What a question retrieved, kept just long enough for the owner to say
+    -- the answer was wrong.
+    --
+    -- The server holds this rather than the client echoing it back: an
+    -- audience with cite:false is never told the paths, which is the point of
+    -- that setting, so a client cannot report what it was not given.
+    --
+    -- Derived and disposable. Losing it costs the ability to file a complaint
+    -- about an answer already given.
+    CREATE TABLE IF NOT EXISTS asks (
+      id       TEXT PRIMARY KEY,
+      thread   TEXT NOT NULL,
+      question TEXT NOT NULL,
+      sources  TEXT NOT NULL,          -- JSON [{path, score}]
+      at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS asks_thread ON asks(thread, at);
+
     -- Dates a note's text talks about, as opposed to when it was captured.
     --
     -- Derived and rebuildable by re-reading the vault, so it is safe to delete,

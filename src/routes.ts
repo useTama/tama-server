@@ -26,6 +26,7 @@ import { toWav16k, wavSeconds } from "./audio.ts";
 import { resolveCaptureTime } from "./capture-time.ts";
 import { CaptureError } from "./capture-error.ts";
 import { mentionedDates, recordDates } from "./dates.ts";
+import { findAsk, recordAsk, recordFeedback } from "./feedback.ts";
 import * as idem from "./idempotency.ts";
 import {
   adminTokenOk, verifyToken, mintToken, listTokens, revokeToken,
@@ -484,6 +485,53 @@ const whatsapp = config.whatsapp
       });
     }
 
+    /**
+     * "That answer was wrong."
+     *
+     * The owner's device only. In a group the question is often someone
+     * else's message and this record is permanent, where conversation history
+     * is not, so an open route would let a stranger both fill the file with
+     * other people's words and decide what the eval set gets built from.
+     *
+     * Nothing is sent anywhere. It appends a line to a file in the data
+     * directory, for a person to read and decide what belongs in golden.ts.
+     */
+    if (url.pathname === "/feedback" && req.method === "POST") {
+      if (device.audience) return json({ error: "only the owner's device may rate an answer" }, 403);
+      const b = (await req.json().catch(() => ({}))) as {
+        thread?: string; askId?: string; verdict?: string; note?: string;
+      };
+
+      const verdict = b.verdict === "right" ? "right" : b.verdict === "wrong" ? "wrong" : null;
+      if (!verdict) return json({ error: 'verdict must be "wrong" or "right"' }, 400);
+
+      // Namespaced exactly as /ask does it, so a thread means the same thing
+      // to both routes and one audience cannot rate another's answers.
+      const raw = typeof b.thread === "string" ? b.thread.trim().slice(0, 128) : "";
+      if (!raw) return json({ error: "thread is required" }, 400);
+      const thread = `${device.audience ?? "owner"}:${raw}`;
+
+      const target = findAsk(db, thread, typeof b.askId === "string" ? b.askId : undefined);
+      if (!target) {
+        // Distinguished from a bad request: the thread is fine, there is just
+        // nothing recent enough to be talking about.
+        return json({ error: "no recent answer in that thread to rate" }, 404);
+      }
+
+      const note = typeof b.note === "string" ? b.note.trim().slice(0, 500) : "";
+      await recordFeedback(config.dataDir, {
+        at: new Date().toISOString(),
+        verdict,
+        question: target.question,
+        retrieved: target.sources,
+        ...(note ? { note } : {}),
+      });
+      console.log(
+        `${orange("feedback")} ${verdict} "${target.question.slice(0, 60)}" ${grey(`${target.sources.length} sources <${device.deviceName}>`)}`,
+      );
+      return json({ ok: true, recorded: verdict, question: target.question, retrieved: target.sources });
+    }
+
     // Writing at a chosen path is the owner's own device only. An audience
     // reads; it has no business adding to the vault, and a group's token
     // getting a write path would be the first way a room could put something
@@ -695,6 +743,11 @@ const whatsapp = config.whatsapp
       }
       const ms = Math.round(performance.now() - started);
       if (thread && answer) {
+        // Held so a later "that was wrong" can name the question and what it
+        // retrieved. Only the owner can file one, but recording happens for
+        // every thread: the owner is often reacting to an answer given to
+        // somebody else in the room.
+        recordAsk(db, { id: crypto.randomUUID(), thread, question, sources });
         remember(db, thread, "user", question, speaker);
         remember(db, thread, "assistant", answer);
         // After the reply, never before: summarising is a model call, and

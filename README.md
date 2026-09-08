@@ -114,6 +114,7 @@ bun run start -- --config /etc/tama/tama.config.json
 | `GET /health` | none | version, min client version, whisper status |
 | `GET /pair` | admin | a QR code to point a phone at |
 | `POST /pair` | the code | redeem a pairing code for a device token |
+| `POST /feedback` | owner | say an answer was wrong, so it can become a test |
 | `POST /pair/code`, `/tokens`, `GET /digest` | admin | mint codes, manage tokens, force a digest |
 
 **[Full reference →](docs/api.md)** covers the capture headers your client must send,

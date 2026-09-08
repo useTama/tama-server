@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { createHmac } from "node:crypto";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
@@ -541,6 +542,74 @@ test("an unnamed group sender is still attributed, not anonymised", async () => 
     // A number the owner has not mapped beats "someone", and inventing a name
     // would be worse than either.
     expect(turn).toContain("A message from 917777788888");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- #60: marking an answer wrong --------------------------------------
+
+test("an answer can be marked wrong, and the file names what retrieval returned", async () => {
+  const f = await serverFixture();
+  try {
+    await f.routes.handle(req("/ask", {
+      method: "POST", token: f.ownerToken,
+      body: JSON.stringify({ question: "mic gain", thread: "chat-1" }),
+    }));
+
+    const res = await f.routes.handle(req("/feedback", {
+      method: "POST", token: f.ownerToken,
+      body: JSON.stringify({ thread: "chat-1", verdict: "wrong", note: "wrong note entirely" }),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { question: string; retrieved: Array<{ path: string }> };
+    expect(body.question).toBe("mic gain");
+
+    const line = JSON.parse((await readFile(join(f.config.dataDir, "feedback.jsonl"), "utf8")).trim());
+    expect(line.verdict).toBe("wrong");
+    expect(line.question).toBe("mic gain");
+    expect(line.note).toBe("wrong note entirely");
+    // The paths are the point: a golden case is written from what retrieval
+    // returned, and most bad answers turn out to be retrieval.
+    expect(line.retrieved.map((r: { path: string }) => r.path).sort())
+      .toEqual(["Private/money.md", "Work/cpa.md"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a room may not rate answers, and cannot reach the owner's threads", async () => {
+  // The record is permanent where conversation history is not, and in a group
+  // the question is often somebody else's message. An open route would let a
+  // stranger fill the file and decide what the eval set is built from.
+  const f = await serverFixture();
+  try {
+    await f.routes.handle(req("/ask", {
+      method: "POST", token: f.ownerToken,
+      body: JSON.stringify({ question: "mic gain", thread: "chat-1" }),
+    }));
+    const res = await f.routes.handle(req("/feedback", {
+      method: "POST", token: f.guestToken,
+      body: JSON.stringify({ thread: "chat-1", verdict: "wrong" }),
+    }));
+    expect(res.status).toBe(403);
+    expect(existsSync(join(f.config.dataDir, "feedback.jsonl"))).toBe(false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("rating needs a verdict, a thread, and something to rate", async () => {
+  const f = await serverFixture();
+  try {
+    const bad = async (body: object) =>
+      (await f.routes.handle(req("/feedback", { method: "POST", token: f.ownerToken, body: JSON.stringify(body) }))).status;
+
+    expect(await bad({ thread: "chat-1" })).toBe(400);
+    expect(await bad({ thread: "chat-1", verdict: "maybe" })).toBe(400);
+    expect(await bad({ verdict: "wrong" })).toBe(400);
+    // The thread is valid, there is just nothing recent to be talking about.
+    expect(await bad({ thread: "never-asked", verdict: "wrong" })).toBe(404);
   } finally {
     await f.cleanup();
   }

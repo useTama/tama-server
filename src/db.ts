@@ -122,6 +122,23 @@ export function openDb(path: string): Database {
       updated_at      TEXT NOT NULL
     );
 
+    -- A per-sender ceiling, so one person cannot spend the owner's model
+    -- budget or fill their vault. The notified column is why a sender past the
+    -- limit is told once and then met with silence: replying to every message
+    -- past the ceiling is the amplification, not the mitigation. The dropped
+    -- column exists so "the bot ignored me" is distinguishable from a bug.
+    --
+    -- subject is a pseudonym, never a phone number. See whatsappSource.
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      scope     TEXT NOT NULL,           -- 'whatsapp:audio' | 'whatsapp:text'
+      subject   TEXT NOT NULL,
+      window_at TEXT NOT NULL,
+      used      INTEGER NOT NULL,
+      notified  INTEGER NOT NULL DEFAULT 0,
+      dropped   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (scope, subject)
+    );
+
     CREATE TABLE IF NOT EXISTS meta (
       k TEXT PRIMARY KEY,
       v TEXT NOT NULL

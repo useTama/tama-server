@@ -14,6 +14,7 @@ import {
   type WhatsAppAskInput,
   type WhatsAppCaptureInput,
 } from "../src/whatsapp.ts";
+import { ASK_PER_WINDOW, noticeFor } from "../src/rate-limit.ts";
 
 let dir: string;
 let db: Database;
@@ -204,4 +205,71 @@ test("WhatsApp note sources are stable and do not reveal the phone number", () =
   expect(source).not.toBe(whatsappSource("919876543210", "another-secret"));
   expect(source).not.toContain("919876543210");
   expect(source).toMatch(/^whatsapp-[a-f\d]{12}$/);
+});
+
+// ---- #56: a per-sender ceiling, checked at admission --------------------
+
+const flood = (n: number, kind: "text" | "audio" = "text") =>
+  Array.from({ length: n }, (_, i) =>
+    kind === "text"
+      ? { from: "919876543210", id: `wamid.f${i}`, timestamp: "1788700000", type: "text", text: { body: `q${i}` } }
+      : { from: "919876543210", id: `wamid.f${i}`, timestamp: "1788700000", type: "audio", audio: { id: `m${i}`, mime_type: "audio/ogg", voice: true } });
+
+test("a flood is refused before it ever reaches the durable inbox", async () => {
+  const wa = integration();
+  const res = await wa.handle(signedRequest(envelope(flood(ASK_PER_WINDOW + 4))));
+  // Meta is still acknowledged. Refusing the webhook would make it retry.
+  expect(res.status).toBe(200);
+
+  const rows = db.query("SELECT id, reply FROM whatsapp_messages ORDER BY id").all() as Array<{ id: string; reply: string | null }>;
+  // The answerable ones, plus exactly one canned notice. The rest never became
+  // rows at all, which is the whole point: this inbox is durable, so limiting
+  // in the worker would persist the flood and then grind through it with the
+  // owner's next question queued behind.
+  expect(rows.length).toBe(ASK_PER_WINDOW + 1);
+  expect(rows.filter((r) => r.reply !== null)).toHaveLength(1);
+});
+
+test("the notice is delivered without spending a model call", async () => {
+  const sent: string[] = [];
+  const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith("/messages")) sent.push(JSON.parse(String(init?.body)).text.body);
+    return Response.json({ messages: [{ id: "outbound" }] });
+  }) as typeof fetch;
+  let asks = 0;
+  const wa = integration({ fetch: fakeFetch, ask: async () => { asks++; return "answered"; } });
+
+  await wa.handle(signedRequest(envelope(flood(ASK_PER_WINDOW + 2))));
+  await wa.drain();
+
+  // The refusal costs nothing: drain() only calls ask when it finds a null
+  // reply, and the notice was enqueued with its text already set.
+  expect(asks).toBe(ASK_PER_WINDOW);
+  expect(sent).toHaveLength(ASK_PER_WINDOW + 1);
+  expect(sent.at(-1)).toBe(noticeFor("text"));
+});
+
+test("voice notes get their own budget, so a run of dictation is not throttled", async () => {
+  // Capture is the product working. Exhausting the ask budget must not stop a
+  // voice note being saved.
+  const wa = integration();
+  await wa.handle(signedRequest(envelope(flood(ASK_PER_WINDOW + 3))));
+  const before = (db.query("SELECT count(*) AS n FROM whatsapp_messages").get() as { n: number }).n;
+
+  await wa.handle(signedRequest(envelope([
+    { from: "919876543210", id: "wamid.voice", timestamp: "1788700000", type: "audio", audio: { id: "m", mime_type: "audio/ogg", voice: true } },
+  ])));
+  const after = (db.query("SELECT count(*) AS n FROM whatsapp_messages").get() as { n: number }).n;
+  expect(after).toBe(before + 1);
+  expect((db.query("SELECT reply FROM whatsapp_messages WHERE id = ?").get("wamid.voice") as any).reply).toBeNull();
+});
+
+test("the sender is a pseudonym in the limit table, never a phone number", async () => {
+  const wa = integration();
+  await wa.handle(signedRequest(envelope(flood(2))));
+  const rows = db.query("SELECT scope, subject FROM rate_limits").all() as Array<{ scope: string; subject: string }>;
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.scope).toBe("whatsapp:text");
+  expect(rows[0]!.subject).toBe(whatsappSource("919876543210", waConfig.appSecret));
+  expect(JSON.stringify(rows)).not.toContain("919876543210");
 });

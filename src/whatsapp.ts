@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { Config } from "./config.ts";
+import { admit, limitFor, noticeFor } from "./rate-limit.ts";
 
 const MAX_WEBHOOK_BYTES = 1024 * 1024;
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
@@ -161,19 +162,40 @@ export class WhatsAppIntegration {
     const allowed = new Set(this.deps.config.allowedFrom);
     for (const message of extractInboundMessages(body)) {
       if (message.phoneNumberId !== this.deps.config.phoneNumberId || !allowed.has(message.sender)) continue;
-      this.enqueue(message);
+
+      // Here, before the row is written, and not in the worker. This inbox is
+      // durable on purpose - Meta is acknowledged before transcription starts -
+      // which makes it the amplifier: limiting in drain() would persist 500
+      // spam messages and then chew through all 500, with the owner's next
+      // question queued behind them.
+      const admission = admit(
+        this.deps.db,
+        `whatsapp:${message.kind}`,
+        whatsappSource(message.sender, this.deps.config.appSecret),
+        limitFor(message.kind),
+      );
+      if (admission === "drop") continue;
+      // The notice rides the same durable path as any reply: enqueued with the
+      // text already set, so drain() sends it without calling capture or ask.
+      // A webhook retry cannot double-notify, because the row keys on the Meta
+      // message id and the insert ignores conflicts.
+      this.enqueue(message, admission === "notify" ? noticeFor(message.kind) : null);
     }
     if (this.started) void this.drain();
     return new Response("EVENT_RECEIVED\n", { status: 200, headers: { "content-type": "text/plain" } });
   }
 
-  private enqueue(message: WhatsAppInbound): void {
+  /**
+   * `reply` pre-set short-circuits the worker: drain() only calls capture or
+   * ask when it finds a null reply, so a canned message costs no model call.
+   */
+  private enqueue(message: WhatsAppInbound, reply: string | null = null): void {
     const now = new Date().toISOString();
     this.deps.db.query(`
       INSERT OR IGNORE INTO whatsapp_messages
-        (id, sender, kind, payload, status, attempts, next_attempt_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-    `).run(message.id, message.sender, message.kind, JSON.stringify(message), now, now, now);
+        (id, sender, kind, payload, reply, status, attempts, next_attempt_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+    `).run(message.id, message.sender, message.kind, JSON.stringify(message), reply, now, now, now);
   }
 
   /** Public for deterministic startup checks and tests; normal use calls start. */

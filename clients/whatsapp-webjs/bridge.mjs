@@ -761,6 +761,21 @@ async function onMessage(message) {
     return capture(message);
   }
   if (!text) {
+    // A captionless photo ended here in silence, which from the phone is
+    // indistinguishable from the bridge being down - the failure that started
+    // all of this. Say so instead.
+    //
+    // Only in the owner's own chat. A captionless image carries no text to
+    // mention us in, so in a group there is no way to tell one meant for Tama
+    // from the other sixteen people sharing pictures, and answering all of
+    // them is the noise the mention gate exists to prevent.
+    //
+    // Stickers are deliberately not in the list. A sticker is a reaction, not
+    // something somebody is waiting on an answer about.
+    if (!audience && message.hasMedia && ["image", "video", "document"].includes(message.type)) {
+      seen(`cannot see ${message.type}`);
+      return reply(message, "I can't see images or files. Write it or send a voice note instead.");
+    }
     seen("ignored, no text and no audio");
     return;
   }

@@ -688,3 +688,132 @@ test("an audience is told the surface too, but never a number it was not given",
     await f.cleanup();
   }
 });
+
+/** An Llm that answers every request with one canned reply. */
+function cannedLlm(reply: string): Llm {
+  return {
+    name: "canned",
+    async *stream() { yield reply; },
+  };
+}
+
+test("a transcript becomes a session entry", async () => {
+  const f = await serverFixture({}, {
+    llm: cannedLlm(JSON.stringify({
+      summary: "The bridge crash-looped on a module the image never copied.",
+      learned: ["A dead client is indistinguishable from a dead server on the phone"],
+    })),
+  });
+  try {
+    const res = await f.routes.handle(req("/sessions/from-transcript", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({
+        project: "tama-server",
+        turns: [{ role: "user", text: "why is the bridge down" }, { role: "assistant", text: "the COPY line" }],
+      }),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.filed).toBe(true);
+    expect(body.relPath).toBe("Projects/tama-server/sessions.md");
+    expect(f.writes()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a session that reached nothing answers 200 and writes no file", async () => {
+  // The load-bearing case. This route fires on every session end, so "there
+  // was nothing to say" has to be an ordinary success a caller can read
+  // without parsing an error message - and it must not touch the vault.
+  const f = await serverFixture({}, {
+    llm: cannedLlm('{"skip": true, "why": "one question, one answer"}'),
+  });
+  try {
+    const res = await f.routes.handle(req("/sessions/from-transcript", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({ project: "tama-server", turns: [{ role: "user", text: "what is in routes.ts" }] }),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.filed).toBe(false);
+    expect(body.reason).toBe("one question, one answer");
+    expect(f.writes()).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("the same session filed twice appends once", async () => {
+  // A hook retries, and two machines can sync the same session. Without this
+  // the log grows a duplicate entry that reads as two evenings of work.
+  const f = await serverFixture({}, { llm: cannedLlm('{"summary": "Fixed the tunnel."}') });
+  try {
+    const body = JSON.stringify({ project: "tama-server", turns: [{ role: "user", text: "x" }] });
+    const send = () => f.routes.handle(req("/sessions/from-transcript", {
+      method: "POST",
+      token: f.ownerToken,
+      headers: { "idempotency-key": "session-abc123" },
+      body,
+    }));
+    const first = await (await send()).json();
+    const second = await (await send()).json();
+    expect(first.filed).toBe(true);
+    expect(second).toEqual(first);
+    expect(f.writes()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a scoped token may not file a session from a transcript", async () => {
+  const f = await serverFixture({}, { llm: cannedLlm('{"summary": "x"}') });
+  try {
+    const res = await f.routes.handle(req("/sessions/from-transcript", {
+      method: "POST",
+      token: f.guestToken,
+      body: JSON.stringify({ project: "tama-server", turns: [{ role: "user", text: "x" }] }),
+    }));
+    expect(res.status).toBe(403);
+    expect(f.writes()).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("with no model configured the route says so and names the alternative", async () => {
+  const f = await serverFixture({}, { llm: null });
+  try {
+    const res = await f.routes.handle(req("/sessions/from-transcript", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({ project: "tama-server", turns: [{ role: "user", text: "x" }] }),
+    }));
+    expect(res.status).toBe(501);
+    const body = await res.json();
+    // /sessions still takes a summary the caller wrote, and a 501 that does
+    // not say that reads as "session logging needs a model", which is false.
+    expect(body.hint).toContain("/sessions");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a transcript with no turns is refused before any model is called", async () => {
+  const f = await serverFixture({}, { llm: cannedLlm('{"summary": "x"}') });
+  try {
+    for (const body of [{ project: "tama" }, { project: "tama", turns: [] }, { turns: [{ role: "user", text: "x" }] }]) {
+      const res = await f.routes.handle(req("/sessions/from-transcript", {
+        method: "POST",
+        token: f.ownerToken,
+        body: JSON.stringify(body),
+      }));
+      expect(res.status).toBe(400);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});

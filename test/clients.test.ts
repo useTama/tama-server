@@ -48,11 +48,27 @@ test("both clients ask for the two values a device needs, and mark the token sen
   for (const rel of ["clients/claude-desktop/manifest.json", "clients/claude-code/.claude-plugin/plugin.json"]) {
     const manifest = await readJson(rel);
     const config = manifest.user_config ?? manifest.userConfig;
-    expect(Object.keys(config).sort()).toEqual(["device_token", "server_url"]);
-    // A token in a plaintext settings file is the thing both formats offer to
+    // Both, in every client. A client that asks for only one of them cannot
+    // reach a server, and one that asks for neither silently does nothing.
+    expect(Object.keys(config)).toContain("server_url");
+    expect(Object.keys(config)).toContain("device_token");
+    // A token in a plaintext settings file is the thing both formats exist to
     // avoid, and the offer is one boolean wide.
     expect(config.device_token.sensitive).toBe(true);
     expect(config.server_url.sensitive).toBeUndefined();
+  }
+});
+
+test("anything a client asks for beyond those two is optional and off", async () => {
+  // A third question in an install dialog has to justify itself. The rule is
+  // that only the two connection values may be required, so an extra option
+  // can be added without making the install longer for someone who does not
+  // want it - and a feature that spends money per session defaults to off.
+  const plugin = await readJson("clients/claude-code/.claude-plugin/plugin.json");
+  for (const [name, field] of Object.entries<Record<string, unknown>>(plugin.userConfig)) {
+    if (name === "server_url" || name === "device_token") continue;
+    expect(field.required).not.toBe(true);
+    if (field.type === "boolean") expect(field.default).toBe(false);
   }
 });
 

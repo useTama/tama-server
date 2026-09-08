@@ -39,6 +39,7 @@ import type { Llm } from "./llm.ts";
 import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
+import { summariseSession } from "./session-summary.ts";
 import { appendSession } from "./session.ts";
 import { handleMcp, MCP_TOOL_NAMES } from "./mcp.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
@@ -616,6 +617,96 @@ const whatsapp = config.whatsapp
         recordFailure(db, { kind: "session-failed", detail, source: device.deviceName });
         console.error("session write failed:", detail);
         return json({ error: detail }, /nothing to record|no usable characters|unsafe/.test(detail) ? 400 : 500);
+      }
+    }
+
+    /**
+     * A session's transcript in, an entry in the log or nothing at all.
+     *
+     * The sibling of `/sessions`, which takes a finished summary. This takes
+     * the raw material, because the caller is a `SessionEnd` hook: it fires
+     * after the session it belongs to is gone, so it has a transcript and no
+     * way to ask a model anything about it.
+     *
+     * Owner-only, like `/sessions`. A scoped token reads; nothing that reads
+     * gets to decide what goes into somebody's engineering log.
+     *
+     * Answering 200 with `filed: false` rather than an error is the point. A
+     * session that reached nothing worth writing down is the common case, and
+     * a caller that fires on every session end must be able to tell "there was
+     * nothing to say" from "something broke" without parsing a message.
+     */
+    if (url.pathname === "/sessions/from-transcript" && req.method === "POST") {
+      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      if (!llm) {
+        return json({
+          error: "no language model configured, so a transcript cannot be summarised",
+          hint: "add an \"ask\" block to tama.config.json, or have the client call /sessions with a summary it wrote itself",
+        }, 501);
+      }
+
+      const b = (await req.json().catch(() => ({}))) as {
+        project?: string;
+        turns?: Array<{ role?: string; text?: string }>;
+      };
+      const project = String(b.project ?? "").trim();
+      if (!project) return json({ error: "project is required" }, 400);
+      if (!Array.isArray(b.turns) || b.turns.length === 0) {
+        return json({ error: "turns is required: the transcript, oldest first" }, 400);
+      }
+
+      // Trimmed again here. The hook already drops tool output and caps what it
+      // sends, and a cap that lives only in a client is not a cap: this is the
+      // route that spends the owner's money, so it is the route that decides
+      // how much.
+      //
+      // Both ends, never `slice(0, N)`. A real 25MB transcript reduces to ~500
+      // conversational turns, so a front slice at 400 silently discarded the
+      // last ninety - the outcome, which is the half an entry is actually
+      // about. The first turn states the task and the last ones say how it
+      // went; the middle is the searching.
+      const MAX_TURNS = 400;
+      const submitted = b.turns.map((t) => ({
+        role: t.role === "assistant" ? ("assistant" as const) : ("user" as const),
+        text: String(t.text ?? ""),
+      }));
+      const turns = submitted.length <= MAX_TURNS
+        ? submitted
+        : [submitted[0]!, ...submitted.slice(submitted.length - (MAX_TURNS - 1))];
+
+      // The client's session id, so a hook that retries - or a second machine
+      // syncing the same session - appends once rather than twice.
+      const key = req.headers.get("idempotency-key");
+      if (key) {
+        const claimed = idem.claim(db, device.id, key);
+        if (claimed.state === "duplicate") return json(claimed.response as object);
+        if (claimed.state === "in-flight") return json({ error: "busy, retry shortly" }, 503);
+      }
+
+      try {
+        const result = await summariseSession(llm, { project, turns });
+        if (!result.filed) {
+          const body = { ok: true, filed: false, reason: result.reason };
+          if (key) idem.complete(db, device.id, key, body);
+          console.log(`${grey("session")} ${grey(`nothing filed for ${project}: ${result.reason} <${device.deviceName}>`)}`);
+          return json(body);
+        }
+
+        const written = await appendSession(vault, result.entry);
+        const body = { ok: true, filed: true, ...written, dropped: result.dropped };
+        onWrite();
+        console.log(
+          `${green("session")} ${written.relPath} ` +
+            grey(`${written.bytes}B ${written.created ? "started" : "appended"} from ${turns.length} turn${turns.length === 1 ? "" : "s"} <${device.deviceName}>`),
+        );
+        if (key) idem.complete(db, device.id, key, body);
+        return json(body);
+      } catch (e) {
+        if (key) idem.release(db, device.id, key);
+        const detail = e instanceof Error ? e.message : String(e);
+        recordFailure(db, { kind: "session-summary-failed", detail, source: device.deviceName });
+        console.error("session summary failed:", detail);
+        return json({ error: detail }, /nothing to record|no usable characters|unsafe/.test(detail) ? 400 : 502);
       }
     }
 

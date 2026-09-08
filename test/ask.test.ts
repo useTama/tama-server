@@ -200,3 +200,53 @@ test("em dashes are removed from output, not merely discouraged in the prompt", 
   expect(stripEmDashes("2024\u20132026")).toBe("2024\u20132026");
   expect(stripEmDashes("nothing to change here")).toBe("nothing to change here");
 });
+
+// ---- #20: temporal reasoning, conflicts, length, citation density --------
+
+test("the prompt says what to do with the capture dates it was already given", () => {
+  // renderChunks has always stamped each excerpt with "captured <iso>" and the
+  // prompt never mentioned it, so "what is my current plan" could return a
+  // superseded note, cited, sounding authoritative.
+  const p = systemPrompt();
+  expect(p).toContain("Every excerpt carries the date it was captured");
+  expect(p).toContain("most recent note on the subject");
+});
+
+test("a newer note wins a disagreement, and the answer has to say so", () => {
+  // A second brain accumulates contradictions by design. Silently preferring
+  // the newer one is how the model's guess about which is current becomes
+  // invisible, so saying which it picked is the load-bearing half.
+  const p = systemPrompt();
+  expect(p).toContain("prefer the newer one and say that it is the newer one");
+  expect(p).toContain("Age alone is not staleness");
+});
+
+test("the model is told today's date, because it has no clock", () => {
+  // Without this, TEMPORAL_RULES is unfollowable: you cannot judge whether
+  // 2025-01-06 is stale without knowing what today is, and a model's own sense
+  // of the date comes from its training cutoff.
+  const messages = buildMessages("what am I doing now?", [], undefined, false, [], undefined,
+    new Date(2026, 8, 8, 18, 30));
+  expect(messages[0]?.content).toContain("Today is Tuesday, 8 September 2026.");
+});
+
+test("today's date stays out of the system prompt, which has to stay cacheable", () => {
+  // #24 needs a prefix that does not change. A date in the system prompt would
+  // invalidate the cache once a day for every audience.
+  expect(systemPrompt()).not.toContain("Today is");
+});
+
+test("answer length comes from the question in prose too, not only in chat", () => {
+  // "Be brief" was unconditional, so it applied equally to "when is the
+  // dentist" and "what have I said about the mic gain problem".
+  const p = systemPrompt({ style: "prose" });
+  expect(p).toContain("Let the question set the length");
+  expect(p).toContain("one fact gets that fact and nothing");
+});
+
+test("each claim carries its own citation, so an uncited fact is not hidden", () => {
+  const p = systemPrompt({ cite: true });
+  expect(p).toContain("Every distinct claim carries its own path");
+  // The failure being prevented, stated in the prompt so it survives edits.
+  expect(p).toContain("reads as invented");
+});

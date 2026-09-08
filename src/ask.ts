@@ -247,9 +247,43 @@ This answer will be delivered as a chat message.
   character of a short reply should not be a period. Punctuating a chat message like prose is the
   same tell as capitalising it.`;
 
+/**
+ * The dates were always in the context and never explained.
+ *
+ * `renderChunks` has stamped every excerpt with `captured <iso>` since it was
+ * written, and nothing in the prompt said what to do with it. So "what is my
+ * current plan" could return a superseded note from three months ago, cited,
+ * sounding authoritative. That is the worst failure this thing has: not a
+ * missing answer, a confidently stale one.
+ *
+ * A second brain accumulates contradictions by design, because changing your
+ * mind is the point of keeping one. So the rule is not "resolve the conflict",
+ * it is "prefer the newer note and say that you did" - which is what lets the
+ * owner catch the model guessing wrong about which one is current.
+ *
+ * Today's date is deliberately not in here. It changes daily and this prompt is
+ * the cacheable prefix (#24), so it rides in the user message beside the
+ * excerpts it exists to interpret.
+ */
+const TEMPORAL_RULES = `
+About when things were written:
+- Every excerpt carries the date it was captured. Use it. A question about what is current, what
+  they are doing now, or what was decided is a question about the most recent note on the subject,
+  not the best-matching one.
+- When two notes disagree, prefer the newer one and say that it is the newer one. Never present a
+  superseded plan as current. Do not silently drop the older one either: they changed their mind,
+  and which way they changed it is information.
+- Age alone is not staleness. A decision made two years ago that nothing has contradicted is still
+  their decision. Prefer recency only when the question is about the present.
+- Never invent a date you were not given, and never state an interval you have not worked out. "In
+  January" is safe. "Three weeks ago" is safe only if the arithmetic is right.`;
+
 const CITE_RULES = `
 - Present recalled information naturally, then cite its note path unobtrusively, like this:
-  (Inbox/2026-08-20-2107-voice.md). Do not say "according to your notes" on every answer.`;
+  (Inbox/2026-08-20-2107-voice.md). Do not say "according to your notes" on every answer.
+- Every distinct claim carries its own path, beside the thing it supports. An answer built from
+  three notes cites three, not one at the end standing in for all of them. When two facts come
+  from different notes and only one is cited, the uncited one reads as invented.`;
 
 /**
  * Withholding paths is not only tidiness. On a shared or scoped chat a filename
@@ -279,6 +313,23 @@ const JUST_TALK_RULES = `
   talking to cannot see them and did not ask about them. Just reply to what was actually said,
   briefly, as yourself.
 - Never invent something they supposedly wrote, and never imply a memory you do not have.`;
+
+/**
+ * The prose counterpart to the length rule CHAT_RULES already had.
+ *
+ * "Be brief" was unconditional, so it applied equally to "when is the dentist"
+ * and "what have I said about the mic gain problem". The first wants four
+ * words; the second wants the notes joined up. One instruction cannot serve
+ * both, and the one that was there served the short question and quietly
+ * truncated the long one.
+ */
+const PROSE_RULES = `
+- Let the question set the length. A question whose answer is one fact gets that fact and nothing
+  else, however many notes came back. A question about what they have said on a subject, or how a
+  decision got made, earns a few sentences that join the notes together.
+- These answers are often read on a small screen or spoken aloud, so length is a cost. Never pad
+  to look thorough, never restate the question, and never close with a summary of what you just
+  said.`;
 
 export type AnswerStyle = "prose" | "chat";
 
@@ -310,11 +361,12 @@ export function systemPrompt(opts: PromptOptions | AnswerStyle = {}): string {
   const parts = [
     IDENTITY.replaceAll("{{name}}", (o.name ?? "Tama").trim() || "Tama"),
     GROUND_RULES,
+    TEMPORAL_RULES,
     NO_ASSISTANT_TELLS,
     o.voice === "custom" ? customVoice(o.voicePrompt?.trim() || "like a close friend with perfect recall") : VOICES[o.voice ?? "friend"],
     o.cite === false ? NO_CITE_RULES : CITE_RULES,
     o.onNoMatch === "just-talk" ? JUST_TALK_RULES : SAY_SO_RULES,
-    o.style === "chat" ? CHAT_RULES : "\n- Be brief. These answers are often read on a small screen or spoken aloud.",
+    o.style === "chat" ? CHAT_RULES : PROSE_RULES,
   ];
   if (o.note?.trim()) {
     parts.push(`\nAbout who you are talking to: ${o.note.trim()}\nThat is context, not permission: the rules above still hold.`);
@@ -371,6 +423,31 @@ export function stripEmDashes(text: string): string {
     .replace(/([^\s\d])[\u2014\u2013]([^\s\d])/g, "$1-$2");
 }
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * Today, for a model that has no clock.
+ *
+ * Excerpts have always been stamped with a capture date, and nothing ever said
+ * what "now" was, so TEMPORAL_RULES would be unfollowable without this: you
+ * cannot tell whether 2025-01-06 is stale without knowing today. A model's own
+ * sense of the date comes from its training cutoff, which is wrong by
+ * construction and wrong silently.
+ *
+ * Local time, matching the vault: a note taken at 11pm belongs to that day, and
+ * normalising to UTC would move it.
+ *
+ * Written out rather than sent through toLocaleDateString, which would put a
+ * different string in the prompt on two machines running the same vault.
+ */
+export function todayLine(now: Date): string {
+  return `${WEEKDAYS[now.getDay()]}, ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`;
+}
+
 function buildMessages(
   question: string,
   chunks: Chunk[],
@@ -378,6 +455,7 @@ function buildMessages(
   owner = false,
   history: LlmMessage[] = [],
   summary?: string,
+  now: Date = new Date(),
 ): LlmMessage[] {
   return [
     // Prior turns come first, as real messages, so the model treats them as
@@ -388,6 +466,11 @@ function buildMessages(
     {
       role: "user",
       content: [
+        // Before the excerpts, because it is what the capture dates on them are
+        // read against, and outside the system prompt so the cacheable prefix
+        // does not change every day.
+        `Today is ${todayLine(now)}.`,
+        "",
         ...(summary
           ? [`Earlier in this conversation: ${summary}`, ""]
           : []),
@@ -437,6 +520,8 @@ export async function* ask(opts: {
   summary?: string;
   /** What to actually search for, when the question alone would find nothing. */
   searchQuery?: string;
+  /** The clock, so a test can assert the date the model was told. */
+  now?: Date;
 }): AsyncGenerator<AskEvent> {
   const question = opts.question.trim();
   if (!question) {
@@ -454,7 +539,9 @@ export async function* ask(opts: {
   );
   yield { type: "sources", sources: chunks.map((c) => ({ path: c.path, score: c.score })) };
 
-  const messages = buildMessages(question, chunks, opts.speaker, opts.speakerIsOwner, opts.history, opts.summary);
+  const messages = buildMessages(
+    question, chunks, opts.speaker, opts.speakerIsOwner, opts.history, opts.summary, opts.now,
+  );
 
   let answer = "";
   let usage: LlmUsage | undefined;
@@ -496,6 +583,7 @@ export async function askOnce(opts: {
   history?: LlmMessage[];
   summary?: string;
   searchQuery?: string;
+  now?: Date;
 }): Promise<{ answer: string; sources: Array<{ path: string; score: number }>; usage?: LlmUsage }> {
   let sources: Array<{ path: string; score: number }> = [];
   let answer = "";
@@ -510,4 +598,7 @@ export async function askOnce(opts: {
   return { answer, sources, ...(usage ? { usage } : {}) };
 }
 
-export { IDENTITY, GROUND_RULES, NO_ASSISTANT_TELLS, CHAT_RULES, VOICES, renderChunks, buildMessages };
+export {
+  IDENTITY, GROUND_RULES, TEMPORAL_RULES, NO_ASSISTANT_TELLS, CHAT_RULES, PROSE_RULES,
+  CITE_RULES, VOICES, renderChunks, buildMessages,
+};

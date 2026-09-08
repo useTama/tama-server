@@ -1,0 +1,34 @@
+{
+  "name": "tama",
+  "displayName": "Tama",
+  "version": "0.1.0",
+  "description": "Your own Markdown notes, searchable and writable from the terminal.",
+  "author": {
+    "name": "Tama",
+    "url": "https://github.com/useTama/tama-server"
+  },
+  "homepage": "https://github.com/useTama/tama-server",
+  "repository": "https://github.com/useTama/tama-server",
+  "license": "MIT",
+  "keywords": [
+    "notes",
+    "memory",
+    "markdown",
+    "second-brain"
+  ],
+  "mcpServers": "./.mcp.json",
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "Tama server address",
+      "description": "Where your Tama server answers. Keep the default if it runs on this machine; otherwise use the address `tama expose` printed. Claude Code dials it from here, so a private tailnet address works.",
+      "default": "http://127.0.0.1:8080"
+    },
+    "device_token": {
+      "type": "string",
+      "title": "Device token",
+      "description": "Run `tama token claude-code` on your server and paste what it prints. It is shown once. Add `--as AUDIENCE` there to give Claude a slice of the vault instead of all of it.",
+      "sensitive": true
+    }
+  }
+}

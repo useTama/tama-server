@@ -1,0 +1,15 @@
+{
+  "name": "usetama",
+  "description": "Tama: your own Markdown notes, from the terminal.",
+  "owner": {
+    "name": "Tama",
+    "url": "https://github.com/useTama/tama-server"
+  },
+  "plugins": [
+    {
+      "name": "tama",
+      "source": "./clients/claude-code",
+      "description": "Search your own notes from the terminal, and record what a session did."
+    }
+  ]
+}

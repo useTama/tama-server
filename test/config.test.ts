@@ -341,3 +341,22 @@ test("routing numbers are checked, because a bad one is a runaway cycle", async 
   // A confidence floor above 1 would never file anything.
   await bad({ minConfidence: 1.5 });
 });
+
+test("a whatsapp block holding only publicBaseUrl is refused", async () => {
+  // Pinned because a shell command depended on it going the other way.
+  // `tama expose` wrote publicBaseUrl with setdefault('whatsapp', {}), which
+  // on any install using the unofficial bridge - i.e. any install with no
+  // Cloud API block - turned a config that loaded into one that throws, and
+  // index.ts turns that into a restart loop. The command whose job is making
+  // the server reachable made it refuse to boot.
+  //
+  // The strictness is correct: a half-configured Cloud API must fail loudly
+  // rather than half-run. So this test exists to keep it strict, and
+  // docker/tama's writer is what had to change.
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret" },
+    whatsapp: { publicBaseUrl: "https://tama.tail1234.ts.net" },
+  });
+  expect(() => loadConfig(path)).toThrow(/phoneNumberId is required/);
+});

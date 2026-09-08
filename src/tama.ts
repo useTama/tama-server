@@ -30,6 +30,13 @@ if (command === "setup") {
     console.error(`Session: ${error instanceof Error ? error.message : "could not record the session"}`);
     process.exitCode = 1;
   }
+} else if (command === "route") {
+  const { runRoute } = await import("./route-cli.ts");
+  try { await runRoute(Bun.argv); }
+  catch (error) {
+    console.error(`Route: ${error instanceof Error ? error.message : "could not file the Inbox"}`);
+    process.exitCode = 1;
+  }
 } else if (command === "import") {
   const { runImport } = await import("./import.ts");
   try { await runImport(Bun.argv); }
@@ -45,6 +52,7 @@ if (command === "setup") {
   console.log(`${tama("tama-server")} token NAME [--as AUDIENCE] ${grey("mint a device token for a client")}`);
   console.log(`${tama("tama-server")} session PROJECT [--config PATH] ${grey("record what a work session did; body on stdin")}`);
   console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("copy existing Markdown into the configured vault")}`);
+  console.log(`${tama("tama-server")} route [--dry-run] [--config PATH] ${grey("file what is waiting in the Inbox, now")}`);
   console.log(grey("\nColour follows NO_COLOR and is dropped when output is not a terminal."));
 } else {
   await import("./index.ts");

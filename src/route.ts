@@ -429,7 +429,9 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
     committed: false,
     detail: e instanceof Error ? e.message : String(e),
   }));
-  if (!pre.committed && !/nothing to commit|no changes/i.test(pre.detail)) {
+  // "dry run" passes because nothing is written in that mode, so there is
+  // nothing for a commit to have protected.
+  if (!pre.committed && !/nothing to commit|no changes|dry run/i.test(pre.detail)) {
     // Refusing here is the whole safety model. Filing without a commit means
     // the pre-rewrite note exists only in the file that is about to be
     // overwritten.

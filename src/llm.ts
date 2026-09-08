@@ -297,6 +297,24 @@ export class OpenAiCompatibleLlm implements Llm {
 export const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 /**
+ * What one completion cost, as a log fragment.
+ *
+ * Lived inline in the one route that reported it. Every other place that spends
+ * money - the routing pass that files a note, conversation summarising, a
+ * session summary, the streaming half of ask, the WhatsApp worker - either had
+ * no such line or dropped the usage it was handed. So the bill had one
+ * instrument on it and five paths that bypassed the instrument, which is how a
+ * 402 arrives as a surprise rather than as a trend.
+ *
+ * Shared rather than copied so the five cannot drift into five formats.
+ */
+export function spendLabel(usage?: LlmUsage): string {
+  if (!usage) return "";
+  const cached = usage.cachedInputTokens ? ` (${usage.cachedInputTokens} cached)` : "";
+  return ` ${usage.inputTokens ?? "?"}in/${usage.outputTokens ?? "?"}out${cached}`;
+}
+
+/**
  * Anthropic via the official SDK.
  *
  * Hand-rolled HTTP here would buy nothing and cost retries, error typing and

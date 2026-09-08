@@ -31,9 +31,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import type { Llm } from "./llm.ts";
+import { spendLabel, type Llm, type LlmUsage } from "./llm.ts";
 import type { Vault } from "./vault.ts";
 import { recordFailure } from "./digest.ts";
+import { grey } from "./ui.ts";
 
 export type RouteConfig = {
   /** How often the cycle runs. */
@@ -88,10 +89,23 @@ export type Plan = {
  * `Llm` exposes streaming only, because answering a question should start
  * before it finishes. Filing a note has no reader waiting on the first token.
  */
-async function complete(llm: Llm, system: string, user: string): Promise<string> {
+async function complete(llm: Llm, system: string, user: string, label = "route"): Promise<string> {
   let out = "";
-  for await (const delta of llm.stream({ system, messages: [{ role: "user", content: user }] })) {
+  let usage: LlmUsage | undefined;
+  for await (const delta of llm.stream({
+    system,
+    messages: [{ role: "user", content: user }],
+    onUsage: (u) => { usage = u; },
+  })) {
     out += delta;
+  }
+  // Filing runs on its own, on a schedule, with nobody watching. It was the
+  // only model call in the system that reported nothing at all, which makes it
+  // the one whose cost would be discovered on an invoice rather than in a log.
+  const spend = spendLabel(usage);
+  if (spend) console.log(`${grey(label)}${grey(spend)}`);
+  if (usage?.stopReason === "length") {
+    console.error(`${label}: the model was cut off at its output cap, so this decision was made on a truncated answer`);
   }
   return out;
 }

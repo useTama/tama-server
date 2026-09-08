@@ -25,7 +25,8 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { Llm } from "./llm.ts";
+import { spendLabel, type Llm, type LlmUsage } from "./llm.ts";
+import { grey } from "./ui.ts";
 import { contentTerms } from "./retrieval.ts";
 
 /** Turns kept verbatim. Six exchanges is about as far back as "it" reaches. */
@@ -206,6 +207,7 @@ export async function summarise(db: Database, thread: string, llm: Llm, keep = K
     .join("\n");
 
   let summary = "";
+  let usage: LlmUsage | undefined;
   try {
     for await (const delta of llm.stream({
       system: SUMMARY_PROMPT,
@@ -217,6 +219,7 @@ export async function summarise(db: Database, thread: string, llm: Llm, keep = K
             : transcript,
         },
       ],
+      onUsage: (u) => { usage = u; },
     })) {
       summary += delta;
     }
@@ -235,6 +238,11 @@ export async function summarise(db: Database, thread: string, llm: Llm, keep = K
     ).run(thread, summary.trim(), through, new Date().toISOString());
     db.query("DELETE FROM conversation_turns WHERE thread = ? AND id <= ?").run(thread, through);
   })();
+  // Fired from a void call after a reply has already gone out, so nothing
+  // downstream would ever have reported this one. A busy chat summarises on a
+  // schedule of its own and spent nothing visible while doing it.
+  const spend = spendLabel(usage);
+  if (spend) console.log(`${grey("summarise")} ${grey(`${stale.length} turns folded${spend} <${thread}>`)}`);
   return true;
 }
 

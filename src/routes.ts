@@ -35,7 +35,7 @@ import {
 import { safeNotify, type Notifier } from "./notify.ts";
 import { recordCapture, recordFailure, buildDigest, renderDigest } from "./digest.ts";
 import type { Retriever } from "./retrieval.ts";
-import type { Llm } from "./llm.ts";
+import { DEFAULT_MAX_OUTPUT_TOKENS, spendLabel, type Llm } from "./llm.ts";
 import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
@@ -355,7 +355,7 @@ const whatsapp = config.whatsapp
         }
 
         const carried = `${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""}`;
-        console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms${carried} <${thread}>`)} `);
+        console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms${spendLabel(result.usage)}${carried} <${thread}>`)} `);
         return result.answer;
       },
       onError(message) {
@@ -688,7 +688,10 @@ const whatsapp = config.whatsapp
         if (!result.filed) {
           const body = { ok: true, filed: false, reason: result.reason };
           if (key) idem.complete(db, device.id, key, body);
-          console.log(`${grey("session")} ${grey(`nothing filed for ${project}: ${result.reason} <${device.deviceName}>`)}`);
+          // Reported even though nothing was written: declining is the common
+          // outcome and it still costs a completion, so a log that only shows
+          // filed entries understates what this feature spends.
+          console.log(`${grey("session")} ${grey(`nothing filed for ${project}:${spendLabel(result.usage)} ${result.reason} <${device.deviceName}>`)}`);
           return json(body);
         }
 
@@ -697,7 +700,7 @@ const whatsapp = config.whatsapp
         onWrite();
         console.log(
           `${green("session")} ${written.relPath} ` +
-            grey(`${written.bytes}B ${written.created ? "started" : "appended"} from ${turns.length} turn${turns.length === 1 ? "" : "s"} <${device.deviceName}>`),
+            grey(`${written.bytes}B ${written.created ? "started" : "appended"} from ${turns.length} turn${turns.length === 1 ? "" : "s"}${spendLabel(result.usage)} <${device.deviceName}>`),
         );
         if (key) idem.complete(db, device.id, key, body);
         return json(body);
@@ -794,12 +797,26 @@ const whatsapp = config.whatsapp
       if (b.stream) {
         // Server-sent events, one JSON object per event, so a client can show
         // sources immediately and text as it arrives.
+        const streamStarted = performance.now();
         const stream = new ReadableStream({
           async start(controller) {
             const enc = new TextEncoder();
             try {
               for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
+                // The streaming half reported nothing, so an answer streamed to
+                // a client spent money the log never mentioned - and the buffered
+                // half beside it reported every token. Same line, same shape.
+                if (ev.type === "done") {
+                  const ms = Math.round(performance.now() - streamStarted);
+                  console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> streamed ${ms}ms${spendLabel(ev.usage)} <${device.deviceName}>`)}`);
+                  if (ev.usage?.stopReason === "length") {
+                    console.error(
+                      `${orange("ask")} answer was truncated at ${config.ask?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS} output tokens. ` +
+                        `raise ask.maxTokens, or ask a narrower question`,
+                    );
+                  }
+                }
               }
             } catch (e) {
               const raw = e instanceof Error ? e.message : String(e);
@@ -859,16 +876,14 @@ const whatsapp = config.whatsapp
       }
       // Tokens on the same line as the answer, because a system that spends
       // money with no instrument reporting it is how a 402 becomes a surprise.
-      const spend = usage
-        ? ` ${usage.inputTokens ?? "?"}in/${usage.outputTokens ?? "?"}out${usage.cachedInputTokens ? ` (${usage.cachedInputTokens} cached)` : ""}`
-        : "";
+      const spend = spendLabel(usage);
       console.log(`${orange("ask")} "${question.slice(0, 60)}" ${grey(`-> ${sources.length} sources ${ms}ms${spend}${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""} <${device.deviceName}>`)}`);
       if (usage?.stopReason === "length") {
         // The failure this exists to catch: an answer cut at max_tokens looks
         // exactly like a short answer to everyone downstream, including the
         // person reading it.
         console.error(
-          `${orange("ask")} answer was truncated at ${config.ask?.maxTokens ?? 2048} output tokens. ` +
+          `${orange("ask")} answer was truncated at ${config.ask?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS} output tokens. ` +
             `raise ask.maxTokens, or ask a narrower question`,
         );
         recordFailure(db, { kind: "ask-truncated", detail: `${usage.outputTokens ?? "?"} output tokens`, source: device.deviceName });

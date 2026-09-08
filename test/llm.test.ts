@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { decodeSseFrame, normaliseStopReason } from "../src/llm.ts";
+import { decodeSseFrame, normaliseStopReason, spendLabel } from "../src/llm.ts";
 
 test("a usage frame is decoded rather than skipped", () => {
   // These arrive near the end, usually on a frame with an empty choices array,
@@ -43,4 +43,18 @@ test("stop reasons are normalised across the names providers use", () => {
   // normally" - a local model reports neither.
   expect(normaliseStopReason(undefined)).toBeUndefined();
   expect(normaliseStopReason("")).toBeUndefined();
+});
+
+test("spendLabel is empty when there is nothing to report, and one shape when there is", () => {
+  // Shared because it used to live inline in the single route that reported
+  // spend, while five other paths that spend money reported nothing. Five
+  // copies would have become five formats.
+  expect(spendLabel(undefined)).toBe("");
+  expect(spendLabel({})).toBe(" ?in/?out");
+  expect(spendLabel({ inputTokens: 1200, outputTokens: 340 })).toBe(" 1200in/340out");
+  expect(spendLabel({ inputTokens: 1200, outputTokens: 340, cachedInputTokens: 900 }))
+    .toBe(" 1200in/340out (900 cached)");
+  // Zero is not "no cache", it is a reported miss, and printing "(0 cached)"
+  // on every uncached request is noise.
+  expect(spendLabel({ inputTokens: 5, outputTokens: 5, cachedInputTokens: 0 })).toBe(" 5in/5out");
 });

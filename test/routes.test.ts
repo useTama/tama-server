@@ -9,6 +9,7 @@ import { GrepRetriever } from "../src/retrieval.ts";
 import { mintToken } from "../src/auth.ts";
 import { createRoutes, type RouteDeps } from "../src/routes.ts";
 import { whatsappSource } from "../src/whatsapp.ts";
+import { CaptureError } from "../src/capture-error.ts";
 import type { Llm } from "../src/llm.ts";
 import type { Stt } from "../src/stt.ts";
 import type { Config } from "../src/config.ts";
@@ -24,7 +25,7 @@ const ADMIN = "a".repeat(48);
  */
 async function serverFixture(
   overrides: Partial<Config> = {},
-  depsOverrides: { whatsappFetch?: typeof fetch } = {},
+  depsOverrides: Partial<RouteDeps> = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "tama-routes-"));
   await Vault.initialize(join(root, "vault"));
@@ -404,6 +405,92 @@ test("the WhatsApp conversation thread is a pseudonym, not a phone number", asyn
     // attributes a note to.
     expect(rows.every((r) => r.thread === whatsappSource("919876543210", WA.appSecret))).toBe(true);
     expect(JSON.stringify(rows)).not.toContain("919876543210");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- #67: a capture failure says which part failed ----------------------
+
+/**
+ * A valid 16 kHz mono s16 WAV, so ffmpeg accepts the upload and the request
+ * reaches the transcription stage. Posting arbitrary bytes would fail at
+ * ffmpeg with a 415 and never exercise the stage under test.
+ */
+function wav(samples = 1600): Uint8Array {
+  const data = samples * 2;
+  const buf = new ArrayBuffer(44 + data);
+  const view = new DataView(buf);
+  const tag = (at: number, s: string) => [...s].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
+  tag(0, "RIFF"); view.setUint32(4, 36 + data, true); tag(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true); view.setUint32(28, 32000, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  tag(36, "data"); view.setUint32(40, data, true);
+  // A quiet tone rather than silence, so nothing downstream treats the body as
+  // empty for a reason unrelated to what is being tested.
+  for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, Math.sin(i / 8) * 4000, true);
+  return new Uint8Array(buf);
+}
+
+const postAudio = (f: Awaited<ReturnType<typeof serverFixture>>) =>
+  f.routes.handle(new Request("http://tama.local/capture", {
+    method: "POST",
+    headers: { authorization: `Bearer ${f.ownerToken}`, "content-type": "audio/wav" },
+    body: new Blob([wav() as unknown as BlobPart], { type: "audio/wav" }),
+  }));
+
+test("an unreachable transcriber is 503 and names itself, not a bare 500", async () => {
+  if (!Bun.which("ffmpeg")) return;
+  // The failure behind #67: every stage collapsed into one 500, so whisper
+  // being down was indistinguishable from a bug in the server and the reply
+  // named neither.
+  const stt = {
+    async transcribe() {
+      throw new CaptureError(503, "stt", "speech to text is unreachable at http://127.0.0.1:8081/inference",
+        "is whisper-server running, and is stt.url pointing at it?");
+    },
+    async health() { return false; },
+    endpoint: "http://127.0.0.1:8081/inference",
+  } as unknown as Stt;
+
+  const f = await serverFixture({}, { stt });
+  try {
+    const res = await postAudio(f);
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string; stage: string };
+    expect(body.stage).toBe("stt");
+    expect(body.error).toContain("unreachable");
+    // The fix travels with the fault, because whoever hit this has no vendor
+    // to ask and is usually the person who can fix it.
+    expect(body.error).toContain("whisper-server");
+
+    // And the stage is recorded, so the failures table answers the question
+    // without anyone reading a stack trace.
+    const row = f.db.query("SELECT kind, detail FROM failures ORDER BY at DESC LIMIT 1")
+      .get() as { kind: string; detail: string };
+    expect(row.kind).toBe("capture-failed");
+    expect(row.detail).toStartWith("[stt]");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an unclassified failure is still a 500, with no invented stage", async () => {
+  if (!Bun.which("ffmpeg")) return;
+  const stt = {
+    async transcribe() { throw new Error("something nobody predicted"); },
+    async health() { return true; },
+    endpoint: "x",
+  } as unknown as Stt;
+
+  const f = await serverFixture({}, { stt });
+  try {
+    const res = await postAudio(f);
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string; stage?: string };
+    expect(body.error).toContain("something nobody predicted");
+    expect(body.stage).toBeUndefined();
   } finally {
     await f.cleanup();
   }

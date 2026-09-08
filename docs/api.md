@@ -164,8 +164,22 @@ posting in real time.
 |---|---|
 | `2xx` | dequeue |
 | `401` | stop, re-pair. never retry |
-| `413` `422` | drop, tell the user |
-| `429` `503` `5xx` timeout | retry with backoff, **same idempotency key** |
+| `413` `415` `422` | drop, tell the user |
+| `502` | drop, tell the user. An upstream answered and refused, so asking again spends the same rejection |
+| `429` `503` other `5xx`, timeout | retry with backoff, **same idempotency key** |
+
+A failed capture answers `{"error": "<what broke>. <what to do>"}`, and adds `"stage"` —
+`audio`, `stt` or `vault` — when it knows which part failed. **Show the `error` to the user.**
+It is the whole diagnostic on this path: capture needs no account and no key, so whoever hit
+the failure has no vendor to ask, and they are usually the person who can fix it.
+
+| Status | Means |
+|---|---|
+| `415` | ffmpeg ran and could not decode the upload. Truncated, empty, or a format this build has no decoder for |
+| `422` | decoded fine, but no speech came out. `reason: "no-speech-detected"` |
+| `502` | the speech-to-text provider refused: wrong key, wrong model, rejected file |
+| `503` | speech to text is unreachable or timed out. Not started, still loading a model, or a wrong `stt.url` |
+| `500` | the server's own fault, including ffmpeg not being installed |
 
 ## POST /ask
 

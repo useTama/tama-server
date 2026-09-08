@@ -23,6 +23,7 @@ import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
 import { toWav16k, wavSeconds } from "./audio.ts";
 import { resolveCaptureTime } from "./capture-time.ts";
+import { CaptureError } from "./capture-error.ts";
 import * as idem from "./idempotency.ts";
 import {
   adminTokenOk, verifyToken, mintToken, listTokens, revokeToken,
@@ -245,16 +246,28 @@ async function runCapture(req: Request, device: CaptureDevice, key: string | nul
     else if (key) idem.release(db, device.id, key);
     return res;
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
+    // A classified failure carries its own status and its own fix. Everything
+    // that threw in here used to become the same 500, so whisper being down
+    // was indistinguishable from a bug in the server, and the reply named
+    // neither. See capture-error.ts.
+    const known = e instanceof CaptureError ? e : null;
+    const detail = known ? known.detail : e instanceof Error ? e.message : String(e);
+    const status = known ? known.status : 500;
     if (key) idem.release(db, device.id, key);
-    recordFailure(db, { kind: "capture-failed", detail, source: device.deviceName });
+    // The stage is in the recorded detail so the failures table says which of
+    // ffmpeg, whisper or the vault it was without anyone reading a stack.
+    recordFailure(db, {
+      kind: "capture-failed",
+      detail: known ? `[${known.stage}] ${detail}` : detail,
+      source: device.deviceName,
+    });
     safeNotify(notifier, {
       level: "error",
       title: "Tama: a capture failed",
       message: `${device.deviceName}: ${detail.slice(0, 160)}`,
     });
     console.error("capture failed:", e);
-    return json({ error: detail }, 500);
+    return json(known ? { error: detail, stage: known.stage } : { error: detail }, status);
   } finally {
     inflight--;
   }

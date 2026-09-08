@@ -20,6 +20,8 @@
  * languages and code-mixed Hindi-English are where it beats whisper, and that
  * is a real capture language for real users, not a rounding error.
  */
+import { CaptureError, sttStatusFor } from "./capture-error.ts";
+
 export type SttConfig = {
   provider: "whisper-cpp" | "openai-compatible" | "sarvam";
   /** whisper.cpp's server root, the OpenAI-compatible API base, or Sarvam's. */
@@ -99,13 +101,39 @@ export class Stt {
       else form.append("model", this.config.model ?? "");
     }
 
-    const res = await fetch(this.endpoint, {
-      method: "POST",
-      headers: this.headers(),
-      body: form,
-      signal: AbortSignal.timeout(180_000),
-    });
-    if (!res.ok) throw new Error(`stt ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    let res: Response;
+    try {
+      res = await fetch(this.endpoint, {
+        method: "POST",
+        headers: this.headers(),
+        body: form,
+        signal: AbortSignal.timeout(180_000),
+      });
+    } catch (e) {
+      // Unreachable is the common one and the one worth naming: whisper not
+      // started, still loading its model, or a wrong url in the config. All
+      // three are the owner's to fix, and none of them is an internal error,
+      // which is what a 500 claimed. 503 also means a client's retry policy
+      // will wait for it to come up rather than dropping the recording.
+      throw new CaptureError(
+        503,
+        "stt",
+        `speech to text is unreachable at ${this.endpoint} (${e instanceof Error ? e.message : String(e)})`,
+        this.config.provider === "whisper-cpp"
+          ? "is whisper-server running, and is stt.url pointing at it?"
+          : "check stt.url and the network",
+      );
+    }
+    if (!res.ok) {
+      throw new CaptureError(
+        sttStatusFor(res.status),
+        "stt",
+        `speech to text refused the recording: ${res.status} ${(await res.text()).slice(0, 200).trim()}`,
+        res.status === 401 || res.status === 403
+          ? "the api key looks wrong. re-run tama-server setup"
+          : undefined,
+      );
+    }
 
     const ct = res.headers.get("content-type") ?? "";
     let raw: string;

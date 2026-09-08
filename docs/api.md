@@ -201,6 +201,26 @@ Emitting sources first is deliberate. A client can show what is being read from 
 model is still thinking, and a caller can tell "found nothing" apart from "the model had
 nothing to say".
 
+### Saying which surface you are
+
+A chat client should send `surface`, because nothing else can tell the server what medium the
+answer lands in:
+
+```json
+{ "question": "can you see this?", "surface": { "app": "whatsapp", "address": "918088775227" } }
+```
+
+`app` must be a surface this server knows (`whatsapp` today) and `address` is this client's own
+number on it. With them the model is told which app it is reached on, at what address, that a
+voice note becomes a note, and that images and documents do not reach it at all. Without them
+it answers questions about its own medium by guessing, and has nothing whatsoever for "what is
+your number".
+
+Both are validated, not repeated: an unknown `app` produces no sentence rather than putting a
+client's string into the system prompt, and a non-numeric `address` is dropped while the app is
+kept. Omit the block entirely from a terminal or a script - there is no surface to describe, and
+inventing one would be a confident lie about the situation rather than a missing fact.
+
 ### Providers
 
 The setup wizard can connect to an existing chat server, discover its models, and test a

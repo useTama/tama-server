@@ -36,7 +36,7 @@ import { safeNotify, type Notifier } from "./notify.ts";
 import { recordCapture, recordFailure, buildDigest, renderDigest } from "./digest.ts";
 import type { Retriever } from "./retrieval.ts";
 import type { Llm } from "./llm.ts";
-import { ask, askOnce, type PromptOptions } from "./ask.ts";
+import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
 import { resolveView, type View } from "./views.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { appendSession } from "./session.ts";
@@ -630,6 +630,8 @@ const whatsapp = config.whatsapp
         speakerIsOwner?: boolean;
         /** An opaque conversation id. One chat, one thread. */
         thread?: string;
+        /** Which chat app this is, and this client's own address on it. */
+        surface?: unknown;
       };
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
@@ -645,6 +647,15 @@ const whatsapp = config.whatsapp
       // audience's own length is not overridable, because a scoped chat asking
       // for prose is asking for note paths it was not given.
       if (!device.audience && b.style === "chat") profile.prompt.style = "chat";
+
+      // Which app this is and what number it answers on: knowable only to the
+      // client, and previously known to nobody. The model was fielding
+      // questions about both by guessing. Validated rather than relayed, since
+      // the answer to "what is your number" should not be whatever a client
+      // put in a string. Set for an audience too - the bot's own number is
+      // already visible to anyone it is talking to.
+      const surface = parseSurface(b.surface);
+      if (surface) profile.prompt.surface = surface;
 
       // Asserted by the client, because only the client knows which of a
       // group's participants sent this. That is the same trust the bridge

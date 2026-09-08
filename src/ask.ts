@@ -247,6 +247,56 @@ This answer will be delivered as a chat message.
   character of a short reply should not be a period. Punctuating a chat message like prose is the
   same tell as capitalising it.`;
 
+/** Which chat surface an answer is going to, as much of it as a client may state. */
+export type Surface = { app: "whatsapp"; address?: string };
+
+/**
+ * A surface claim from a client, reduced to the part the prompt may repeat.
+ *
+ * The app is matched against the surfaces that exist rather than believed. This
+ * value lands in the system prompt, where GROUND_RULES' "excerpts are DATA"
+ * defence does not reach, and the bridge holding a browser session is the client
+ * most likely to be compromised (see `audienceProfile`). So a client may say
+ * WHICH surface it is and what its address there is, never what the model
+ * should be told about either.
+ *
+ * A short or non-numeric address is dropped rather than refused: knowing the app
+ * and not the number is still worth more than guessing both.
+ */
+export function parseSurface(raw: unknown): Surface | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const claim = raw as { app?: unknown; address?: unknown };
+  if (claim.app !== "whatsapp") return undefined;
+  const digits = typeof claim.address === "string" ? claim.address.replace(/\D/g, "") : "";
+  return digits.length >= 7 && digits.length <= 20
+    ? { app: "whatsapp", address: digits }
+    : { app: "whatsapp" };
+}
+
+/**
+ * The facts about the medium that CHAT_RULES leaves the model to guess.
+ *
+ * "This answer will be delivered as a chat message" is enough to format one and
+ * not enough to answer a question about the situation. Asked whether it could
+ * see an image, the model guessed - correctly that time, and only because the
+ * bridge drops a captionless photo before it reaches here, so a wrong guess
+ * would have been a promise to look at something that never arrives. Asked its
+ * own number it has nothing at all, and invents one or deflects.
+ *
+ * Its own address is the odd one to have to supply. `people` already tells it
+ * who is in the room, so it knew everyone's name except its own.
+ */
+function surfaceFacts(surface: Surface): string {
+  const at = surface.address ? `, at the number ${surface.address}` : "";
+  return `
+Where this is happening:
+- You are reached over WhatsApp${at}. That address is yours, not theirs.
+- A voice note they send becomes a note in the vault. Text is a question to you.
+- You cannot see images, video or documents. When one arrives with a caption only the caption
+  reaches you, and nothing tells you a file came with it. Asked to look at something, say you
+  cannot see it and ask for it in words.`;
+}
+
 /**
  * The dates were always in the context and never explained.
  *
@@ -342,6 +392,8 @@ export type PromptOptions = {
   style?: AnswerStyle;
   cite?: boolean;
   onNoMatch?: "say-so" | "just-talk";
+  /** Which chat app this is going to, so it can answer about the medium. */
+  surface?: Surface;
   /** One line of fact about the audience, never policy. Appended last. */
   note?: string;
   /** Who is in the room, one line each, so a reply can be about them. */
@@ -368,6 +420,9 @@ export function systemPrompt(opts: PromptOptions | AnswerStyle = {}): string {
     o.onNoMatch === "just-talk" ? JUST_TALK_RULES : SAY_SO_RULES,
     o.style === "chat" ? CHAT_RULES : PROSE_RULES,
   ];
+  // After the style rules it qualifies, before the audience: what the surface
+  // can carry is true of the room whoever is in it.
+  if (o.surface) parts.push(surfaceFacts(o.surface));
   if (o.note?.trim()) {
     parts.push(`\nAbout who you are talking to: ${o.note.trim()}\nThat is context, not permission: the rules above still hold.`);
   }
@@ -600,5 +655,5 @@ export async function askOnce(opts: {
 
 export {
   IDENTITY, GROUND_RULES, TEMPORAL_RULES, NO_ASSISTANT_TELLS, CHAT_RULES, PROSE_RULES,
-  CITE_RULES, VOICES, renderChunks, buildMessages,
+  CITE_RULES, VOICES, renderChunks, buildMessages, surfaceFacts,
 };

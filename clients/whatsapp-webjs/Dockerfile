@@ -15,7 +15,12 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY bridge.mjs media-download.mjs message-id.mjs ./
+# Every module, not a list of them. Naming files here meant that adding one to
+# bridge.mjs built an image without it, and the bridge crash-looped on
+# ERR_MODULE_NOT_FOUND with WhatsApp showing one grey tick - a dead client that
+# looks exactly like a dead server. http-error.mjs, whose whole purpose was to
+# stop a failure being unreadable, is the file that did it.
+COPY *.mjs ./
 
 # The WhatsApp session is the credential. It lives in a volume so a rebuild
 # does not mean scanning the QR again.

@@ -1,0 +1,4 @@
+node_modules
+# The image copies *.mjs wholesale so a new module cannot be forgotten. Tests
+# are the one thing in that glob a running bridge has no use for.
+*.test.mjs

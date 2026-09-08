@@ -121,10 +121,16 @@ Desktop's own one-click install format.
 tama token claude-desktop
 ```
 
-**On your computer**, download `tama.mcpb`, double-click it, and fill in the
-two fields Claude Desktop shows: the server address and that token. The token
-field is `sensitive`, so it is masked and kept in the OS keychain rather than a
-config file. Node is not a prerequisite - Claude Desktop ships its own.
+**On your computer**, download the bundle, double-click it, and fill in the two
+fields Claude Desktop shows: the server address and that token.
+
+```sh
+curl -LO https://github.com/useTama/tama-server/releases/latest/download/tama.mcpb
+```
+
+That link always resolves to the current release, so it does not go stale. The
+token field is `sensitive`, so it is masked and kept in the OS keychain rather
+than a config file. Node is not a prerequisite - Claude Desktop ships its own.
 
 ### Why not a custom connector
 

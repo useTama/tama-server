@@ -1,0 +1,88 @@
+name: release
+
+# A tag builds the desktop bundle and attaches it to the release, so the
+# download link in the docs is a permanent one:
+#
+#   https://github.com/useTama/tama-server/releases/latest/download/tama.mcpb
+#
+# That URL is why the asset is named for the plugin and not for its version.
+# Someone following an install guide should not have to know which release is
+# current, and a versioned filename would make the guide wrong at every bump.
+on:
+  push:
+    tags: ["v*"]
+  # For checking the build without cutting a release. Uploads an artifact
+  # rather than publishing anything.
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The tag and the manifest are the same number written twice. A release
+      # tagged v0.2.0 that ships a bundle claiming 0.1.0 installs fine and then
+      # never offers an update, so disagreement fails the build rather than
+      # shipping quietly.
+      - name: the tag and the manifest must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(bun --print 'JSON.parse(await Bun.file("clients/claude-desktop/manifest.json").text()).version')
+          plugin=$(bun --print 'JSON.parse(await Bun.file("clients/claude-code/.claude-plugin/plugin.json").text()).version')
+          echo "tag=$tag  bundle=$manifest  plugin=$plugin"
+          test "$tag" = "$manifest" || { echo "::error::tag $tag != bundle manifest $manifest"; exit 1; }
+          test "$tag" = "$plugin"   || { echo "::error::tag $tag != plugin manifest $plugin"; exit 1; }
+
+      - run: bunx --bun @anthropic-ai/mcpb@latest validate clients/claude-desktop/manifest.json
+
+      - name: pack
+        run: |
+          mkdir -p dist
+          bunx --bun @anthropic-ai/mcpb@latest pack clients/claude-desktop dist/tama.mcpb
+
+      # A bundle that packs but does not start is the failure this repo already
+      # shipped once, as an image missing a file its entry point imported. So
+      # the archive is unpacked and run: it must speak MCP over stdio before it
+      # is allowed anywhere near a release.
+      - name: the packed bundle must actually start and answer
+        run: |
+          mkdir -p /tmp/unpacked && cd /tmp/unpacked && unzip -q "$GITHUB_WORKSPACE/dist/tama.mcpb"
+          test -f server/index.mjs || { echo "::error::entry point missing from the archive"; exit 1; }
+          # No server to talk to, so the relay must answer a request with a
+          # readable JSON-RPC error rather than dying. Anything that reaches
+          # stdout has to be one parseable message.
+          out=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | TAMA_URL=http://127.0.0.1:9 TAMA_TOKEN=x timeout 60 node server/index.mjs)
+          echo "$out"
+          echo "$out" | node -e '
+            const line = require("fs").readFileSync(0, "utf8").trim();
+            if (!line) { console.error("the bundle wrote nothing"); process.exit(1); }
+            const msg = JSON.parse(line);
+            if (msg.id !== 1 || !msg.error || !/Could not reach Tama/.test(msg.error.message)) {
+              console.error("unexpected reply:", line); process.exit(1);
+            }
+            console.log("the bundle runs and reports an unreachable server in words");
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tama-mcpb
+          path: dist/tama.mcpb
+
+      # Idempotent: a re-run of a tag updates the asset instead of failing on a
+      # release that already exists.
+      - name: attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME" dist/tama.mcpb \
+            || gh release upload "$GITHUB_REF_NAME" dist/tama.mcpb --clobber

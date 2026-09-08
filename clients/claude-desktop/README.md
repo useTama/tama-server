@@ -53,8 +53,13 @@ tama token claude-desktop
 It prints once. Add `--as AUDIENCE` to give Claude a slice of the vault rather
 than all of it.
 
-**On your computer**: download `tama.mcpb`, double-click it, and fill in the two
-fields Claude Desktop shows:
+**On your computer**: download the bundle and double-click it.
+
+```sh
+curl -LO https://github.com/useTama/tama-server/releases/latest/download/tama.mcpb
+```
+
+Then fill in the two fields Claude Desktop shows:
 
 | Field | What to put |
 |---|---|
@@ -75,6 +80,13 @@ bun run pack:desktop     # -> dist/tama.mcpb
 `.mcpbignore` keeps the tests out of the archive. The manifest is validated
 against the real schema as part of packing, so a broken manifest fails the
 build rather than the install.
+
+Releases are built by `.github/workflows/release.yml` on a `v*` tag. It refuses
+to publish if the tag and the two manifests disagree on the version, and it
+unpacks the archive and runs the entry point before attaching it - because a
+bundle that packs cleanly and then cannot start is a failure this repo has
+already shipped once, as an image that copied a list of files and missed the
+newest one.
 
 ## Tests
 

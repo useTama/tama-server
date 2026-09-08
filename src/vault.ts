@@ -358,6 +358,115 @@ export class Vault {
   }
 
   /**
+   * Overwrite a note with new text.
+   *
+   * The only method here that destroys bytes a human may have written, and it
+   * exists for one caller: the routing cycle, which integrates a capture into
+   * the note it belongs in instead of stapling another dated section to the
+   * bottom. Appending is precisely what turns a topic note into a
+   * reverse-chronological log, which is the clutter routing exists to remove.
+   *
+   * What makes that safe is not this method, it is the commit its caller takes
+   * first: every pre-rewrite version is in git, so a bad pass is one revert
+   * away. What this method adds is a floor under an obviously broken rewrite,
+   * because a model that misreads its instructions fails by returning almost
+   * nothing, and a silent ninety percent deletion is not a thing anyone
+   * notices until they go looking for the note weeks later.
+   */
+  async replaceMarkdown(
+    relPath: string,
+    text: string,
+    opts: { minRetainedFraction?: number } = {},
+  ): Promise<WriteResult & { previousBytes: number }> {
+    const { dir: relDir, name } = this.checkedPath(relPath);
+    const body = text.endsWith("\n") ? text : `${text}\n`;
+    const bytes = Buffer.byteLength(body, "utf8");
+    if (!text.trim()) throw new Error(`refusing to blank ${relPath}: the replacement is empty`);
+
+    const dir = await this.confineDir(relDir);
+    const abs = join(dir, name);
+
+    // Never creates. A rewrite of a note that is not there means the caller
+    // resolved the wrong path, and creating it would hide that by leaving a
+    // plausible-looking note in a place nothing links to.
+    const st = await lstat(abs).catch((e: NodeJS.ErrnoException) => {
+      throw e.code === "ENOENT" ? new Error(`no note to replace at ${relPath}`) : e;
+    });
+    if (st.isSymbolicLink() || !st.isFile()) {
+      throw new Error(`replace destination is not a regular file: ${relPath}`);
+    }
+    const previousBytes = st.size;
+
+    // Small notes are exempt: a stub of two lines legitimately triples or
+    // halves, and a fraction of a tiny number says nothing about intent.
+    const floor = opts.minRetainedFraction ?? 0.5;
+    if (previousBytes >= 400 && bytes < previousBytes * floor) {
+      throw new Error(
+        `refusing to shrink ${relPath} from ${previousBytes} to ${bytes} bytes ` +
+          `(under ${Math.round(floor * 100)}% retained)`,
+      );
+    }
+
+    if (this.dryRun) {
+      console.log(`${amber("[dry-run]")} would replace ${relPath} (${previousBytes}B -> ${bytes}B)`);
+      return { path: abs, relPath, bytes, dryRun: true, previousBytes };
+    }
+
+    // Same atomic write as capture: temp file in the same directory, fsync,
+    // rename over the target. Obsidian must never observe a half-written note,
+    // and a power cut must leave either the old note or the new one.
+    const tmp = join(dir, `.tama-tmp-${process.pid}-${crypto.randomUUID()}`);
+    const fh = await open(tmp, "w");
+    try {
+      await fh.writeFile(body, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, abs);
+
+    try {
+      await this.journal({ op: "replace", at: new Date(), relPath, bytes, source: "tama-route" });
+    } catch (error) {
+      console.error(`journal write failed for replaced ${relPath}:`, error);
+    }
+    return { path: abs, relPath, bytes, dryRun: false, previousBytes };
+  }
+
+  /**
+   * Delete a note, for emptying the Inbox once a capture has been filed.
+   *
+   * This is only defensible because the vault is a git repository and tama
+   * commits its own writes: the raw transcript stays in history and in the
+   * write journal, so "the Inbox is a staging area, not an archive" costs
+   * nothing and the date-stamped file never has to become a node in the graph.
+   * On a vault with no commits it would be real data loss, which is the state
+   * preflight() already refuses to start against.
+   */
+  async removeNote(relPath: string): Promise<{ relPath: string; bytes: number; dryRun: boolean }> {
+    const { dir: relDir, name } = this.checkedPath(relPath);
+    const dir = await this.confineDir(relDir);
+    const abs = join(dir, name);
+
+    const st = await lstat(abs);
+    if (st.isSymbolicLink() || !st.isFile()) {
+      throw new Error(`refusing to remove a non-file: ${relPath}`);
+    }
+    if (this.dryRun) {
+      console.log(`${amber("[dry-run]")} would remove ${relPath} (${st.size}B)`);
+      return { relPath, bytes: st.size, dryRun: true };
+    }
+
+    await unlink(abs);
+    try {
+      await this.journal({ op: "remove", at: new Date(), relPath, bytes: st.size, source: "tama-route" });
+    } catch (error) {
+      console.error(`journal write failed for removed ${relPath}:`, error);
+    }
+    return { relPath, bytes: st.size, dryRun: false };
+  }
+
+  /**
    * The path checks shared by every caller-chosen path.
    *
    * Lifted out of importMarkdown rather than duplicated: this is the security
@@ -449,7 +558,7 @@ export class Vault {
   }
 
   /** Invariant 4: every write is auditable without reading source code. */
-  private async journal(e: { op: "capture" | "import" | "append"; at: Date; relPath: string; bytes: number; source: string }) {
+  private async journal(e: { op: "capture" | "import" | "append" | "replace" | "remove"; at: Date; relPath: string; bytes: number; source: string }) {
     const dir = await this.confineDir(".tama");
     const line = JSON.stringify({
       ts: e.at.toISOString(),

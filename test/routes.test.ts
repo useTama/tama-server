@@ -495,3 +495,53 @@ test("an unclassified failure is still a 500, with no invented stage", async () 
     await f.cleanup();
   }
 });
+
+test("a group sender's number becomes the name the prompt already uses", async () => {
+  // The bug: `people` is keyed by name and the bridge sends whatever WhatsApp
+  // gave it, which for someone with no push name and no address-book entry is
+  // the bare phone number. The model got "Who is in this room: Priya" beside
+  // "A message from 919876543210" and nothing joining them.
+  const f = await serverFixture({
+    audiences: {
+      guest: {
+        view: "work", voice: "friend", cite: false, length: "chat",
+        onNoMatch: "say-so", mention: "always", capture: false,
+        people: { Priya: "my cofounder, runs infra" },
+        identities: { "919876543210": "Priya", priya: "Priya" },
+      },
+    },
+  } as unknown as Partial<Config>);
+  try {
+    const res = await f.routes.handle(req("/ask", {
+      method: "POST",
+      token: f.guestToken,
+      body: JSON.stringify({ question: "who is handling infra?", speaker: "919876543210" }),
+    }));
+    expect(res.status).toBe(200);
+
+    const sent = f.asked().at(-1)!;
+    const turn = String(sent.at(-1)!.content);
+    expect(turn).toContain("A message from Priya");
+    // And the number is gone, so the model is never asked to join them itself.
+    expect(turn).not.toContain("919876543210");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an unnamed group sender is still attributed, not anonymised", async () => {
+  const f = await serverFixture();
+  try {
+    await f.routes.handle(req("/ask", {
+      method: "POST",
+      token: f.guestToken,
+      body: JSON.stringify({ question: "who is that?", speaker: "917777788888" }),
+    }));
+    const turn = String(f.asked().at(-1)!.at(-1)!.content);
+    // A number the owner has not mapped beats "someone", and inventing a name
+    // would be worse than either.
+    expect(turn).toContain("A message from 917777788888");
+  } finally {
+    await f.cleanup();
+  }
+});

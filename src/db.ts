@@ -122,6 +122,24 @@ export function openDb(path: string): Database {
       updated_at      TEXT NOT NULL
     );
 
+    -- Dates a note's text talks about, as opposed to when it was captured.
+    --
+    -- Derived and rebuildable by re-reading the vault, so it is safe to delete,
+    -- and deliberately not in the vault itself: captures are append-only and
+    -- never edited, so an extraction that improves later must not need to
+    -- rewrite a note somebody already trusts.
+    --
+    -- The precision column records how much of the date the note actually
+    -- said. 'month' means the day is ours, and nothing may show it as a day.
+    CREATE TABLE IF NOT EXISTS note_dates (
+      note_path TEXT NOT NULL,
+      at        TEXT NOT NULL,          -- 'YYYY-MM-DD', local
+      precision TEXT NOT NULL,          -- 'day' | 'month'
+      text      TEXT NOT NULL,          -- what the note said, for quoting back
+      PRIMARY KEY (note_path, at, precision)
+    );
+    CREATE INDEX IF NOT EXISTS note_dates_at ON note_dates(at);
+
     -- A per-sender ceiling, so one person cannot spend the owner's model
     -- budget or fill their vault. The notified column is why a sender past the
     -- limit is told once and then met with silence: replying to every message

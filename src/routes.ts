@@ -18,12 +18,14 @@
  */
 
 import type { Config } from "./config.ts";
+import { resolveSpeaker } from "./config.ts";
 import type { Database } from "bun:sqlite";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
 import { toWav16k, wavSeconds } from "./audio.ts";
 import { resolveCaptureTime } from "./capture-time.ts";
 import { CaptureError } from "./capture-error.ts";
+import { mentionedDates, recordDates } from "./dates.ts";
 import * as idem from "./idempotency.ts";
 import {
   adminTokenOk, verifyToken, mintToken, listTokens, revokeToken,
@@ -157,6 +159,16 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   const result = await vault.capture({ text, source: device, at: t.at });
   const ms = Math.round(performance.now() - started);
 
+  // Derived, and never allowed to fail a capture. The note is already written
+  // and journalled by this point; losing an extracted date costs a reminder,
+  // while throwing here would cost the thought, and the table can be rebuilt
+  // from the vault at any time.
+  try {
+    recordDates(db, result.relPath, mentionedDates(text, t.at));
+  } catch (e) {
+    console.error("date extraction failed:", e);
+  }
+
   recordCapture(db, {
     id: crypto.randomUUID(),
     capturedAt: t.at,
@@ -198,7 +210,9 @@ type CaptureDevice = { id: string; deviceName: string; audience?: string };
  * No audience on the token means the owner's own device: everything, cited,
  * which is what every token minted before audiences existed meant.
  */
-function audienceProfile(name: string | undefined): { view?: View; prompt: PromptOptions } {
+function audienceProfile(
+  name: string | undefined,
+): { view?: View; prompt: PromptOptions; identities?: Record<string, string> } {
   const worldName = config.world?.name;
   if (!name) return { prompt: { name: worldName, voice: "friend", cite: true } };
 
@@ -221,6 +235,7 @@ function audienceProfile(name: string | undefined): { view?: View; prompt: Promp
       onNoMatch: audience.onNoMatch,
       note: audience.note,
     },
+    ...(audience.identities ? { identities: audience.identities } : {}),
   };
 }
 
@@ -444,7 +459,7 @@ const whatsapp = config.whatsapp
     // servers, and a personal daemon behind a static token is explicitly
     // sufficient.
     if (url.pathname === "/mcp") {
-      let profile: { view?: View; prompt: PromptOptions };
+      let profile: ReturnType<typeof audienceProfile>;
       try {
         profile = audienceProfile(device.audience);
       } catch (e) {
@@ -571,7 +586,7 @@ const whatsapp = config.whatsapp
       const question = (b.question ?? "").trim();
       if (!question) return json({ error: "question is required" }, 400);
 
-      let profile: { view?: View; prompt: PromptOptions };
+      let profile: ReturnType<typeof audienceProfile>;
       try {
         profile = audienceProfile(device.audience);
       } catch (e) {
@@ -587,7 +602,17 @@ const whatsapp = config.whatsapp
       // group's participants sent this. That is the same trust the bridge
       // already has for choosing an audience at all, and it cannot widen what
       // the audience reads: the view comes from the token.
-      const speaker = typeof b.speaker === "string" ? b.speaker.slice(0, 64) : undefined;
+      //
+      // Resolved to the name the prompt already uses for that person, because
+      // the client can only report what WhatsApp told it: a push name, an
+      // address-book name, or a bare phone number. Unresolved, the model was
+      // given "Who is in this room: Priya, Anand" beside "A message from
+      // 919876543210" and nothing joining them, so in a group it could not
+      // tell who was talking.
+      const speaker = resolveSpeaker(
+        typeof b.speaker === "string" ? b.speaker.slice(0, 64) : undefined,
+        profile.identities,
+      );
       const speakerIsOwner = b.speakerIsOwner === true;
 
       // Scoped to the token, so two audiences in the same chat cannot read each

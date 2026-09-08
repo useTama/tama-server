@@ -26,6 +26,7 @@ import { downloadRawMedia } from "./media-download.mjs";
 import { errorDetail } from "./http-error.mjs";
 import { verdictFromCommand, verdictFromReaction } from "./feedback-input.mjs";
 import { repairSerializedMessageId } from "./message-id.mjs";
+import { stripOurMention } from "./mention.mjs";
 
 // whatsapp-web.js is CommonJS and has no named ESM exports.
 const require = createRequire(import.meta.url);
@@ -291,6 +292,17 @@ const utterance = (chatId, text) => `${chatId}\u0000${text.trim()}`;
 
 let selfId = "";
 let selfNumber = "";
+
+/**
+ * Every digit string that means us.
+ *
+ * `selfNumber` is the phone number and `selfId` the jid it came from, which
+ * under `@lid` addressing is an opaque id instead - and a mention of us can
+ * carry either one.
+ */
+function ourNumbers() {
+  return [selfNumber, String(selfId).replace(/@.*$/, "").replace(/\D/g, "")].filter(Boolean);
+}
 
 async function reply(message, text) {
   const chatId = message.fromMe ? message.to : message.from;
@@ -807,7 +819,11 @@ async function onMessage(message) {
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
-    return askQuestion(message, text, audience, { name: await speakerName(message), isOwner }, chatId);
+    // Stripped here and not where `text` is derived: the number appearing in
+    // the body is one of the things mentionsUs() matches on, so taking it out
+    // any earlier would stop us noticing we were spoken to at all.
+    const question = stripOurMention(text, ourNumbers());
+    return askQuestion(message, question, audience, { name: await speakerName(message), isOwner }, chatId);
   }
 
 

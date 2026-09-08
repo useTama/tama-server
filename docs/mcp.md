@@ -91,7 +91,41 @@ cannot search your job applications. It also cannot write: `append_note` and
 putting entries into someone's notes is a different kind of access than reading
 them.
 
-## 5. Connecting a client
+## 5. Connecting the Claude app
+
+One file, two fields. `clients/claude-desktop` is an `.mcpb` bundle: Claude
+Desktop's own one-click install format.
+
+**On the server**, mint a token:
+
+```sh
+tama token claude-desktop
+```
+
+**On your computer**, download `tama.mcpb`, double-click it, and fill in the
+two fields Claude Desktop shows: the server address and that token. The token
+field is `sensitive`, so it is masked and kept in the OS keychain rather than a
+config file. Node is not a prerequisite - Claude Desktop ships its own.
+
+### Why not a custom connector
+
+Because a custom connector cannot reach this server. **A remote connector is
+dialled from Anthropic's servers, not from your computer**, so a vault on a
+tailnet, a LAN or `127.0.0.1` is unreachable from there whatever the URL says.
+Making one work means a domain, TLS, and OAuth 2.1 with dynamic client
+registration - all of it in order to put one person's notes on the public
+internet.
+
+An `.mcpb` runs locally over stdio, so it reaches whatever you can reach, and
+`tama expose` is enough. This is also the answer to the note in
+`docs/deploy-docker.md` that `tama expose` covers MCP: it does, for a client
+running on a machine of yours. It never covers a remote connector.
+
+The bundle owns no vault, no database and no logic - it forwards JSON-RPC to
+the route below. Section 2's reason for not shipping a stdio server stands; the
+bundle is a pipe to the daemon, not a second one.
+
+## 5b. Connecting Claude Code, Cursor, or anything else over HTTP
 
 The server binds `127.0.0.1:8080`, so a laptop needs a tunnel. **Run this on
 the laptop, not on the server** - the server has no key to itself:

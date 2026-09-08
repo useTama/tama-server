@@ -358,6 +358,11 @@ It installs Tailscale if needed, signs the machine in, serves port 8080, writes
 | Then this works | Previously |
 |---|---|
 | MCP from your editor | an SSH tunnel in a terminal you must not close |
+
+One caveat on that row: `tama expose` reaches a client running on a machine
+of yours. It cannot reach a Claude **custom connector**, which is dialled from
+Anthropic's servers - use the `.mcpb` bundle in `clients/claude-desktop`, which
+runs locally and therefore can. See `docs/mcp.md` section 5.
 | Pairing a phone off-LAN | impossible |
 | `publicBaseUrl` | unset |
 

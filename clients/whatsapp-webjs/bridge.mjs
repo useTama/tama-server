@@ -557,9 +557,13 @@ async function sendFeedback(message, chatId, verdict) {
  * what everyone in the group sees, so it is the right handle for a reply that
  * names them. Falls back to the number, since a reply that says "someone" is
  * worse than one that says a number.
+ *
+ * The owner used to be reported as "you", which the server rendered as "A
+ * message from you (the owner...)". A model reads "you" as itself, so being
+ * mentioned in a group came back as "you are saying hello to yourself". Who the
+ * owner is travels in `speakerIsOwner`; this is only ever a name.
  */
-async function speakerName(message, isOwner) {
-  if (isOwner) return "you";
+async function speakerName(message) {
   try {
     const contact = await message.getContact();
     const name = contact?.pushname || contact?.name || contact?.number;
@@ -803,7 +807,7 @@ async function onMessage(message) {
       return;
     }
     seen(isOwner ? `ask as ${audience.name}, from you` : `ask as ${audience.name}`);
-    return askQuestion(message, text, audience, { name: await speakerName(message, isOwner), isOwner }, chatId);
+    return askQuestion(message, text, audience, { name: await speakerName(message), isOwner }, chatId);
   }
 
 

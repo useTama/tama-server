@@ -247,6 +247,32 @@ This answer will be delivered as a chat message.
   character of a short reply should not be a period. Punctuating a chat message like prose is the
   same tell as capitalising it.`;
 
+/**
+ * Words that are never a name, however a client reports them.
+ *
+ * The list is short on purpose: these are the ones that break the sentence the
+ * prompt puts them in, not a general filter on what someone may call themselves.
+ */
+const NOT_A_NAME = new Set(["you", "u", "me", "i", "myself", "yourself", "self", "it", "them", "him", "her", "us"]);
+
+/**
+ * A speaker name the prompt can put in a sentence, or nothing.
+ *
+ * The WhatsApp bridge reported the owner as "you", which rendered as "A message
+ * from you (the owner, the one you answer to)". A model reads "you" as itself,
+ * so a group mention of its own number came back as "you are saying hello to
+ * yourself" - it had been told the message came from itself.
+ *
+ * A pronoun is not a name. It is dropped here rather than fixed only in the
+ * bridge, because any client may assert a speaker and this sentence has to
+ * survive whatever it says.
+ */
+export function speakerLabel(raw?: string): string | undefined {
+  const name = (raw ?? "").trim();
+  if (!name) return undefined;
+  return NOT_A_NAME.has(name.toLowerCase()) ? undefined : name;
+}
+
 /** Which chat surface an answer is going to, as much of it as a client may state. */
 export type Surface = { app: "whatsapp"; address?: string };
 
@@ -543,9 +569,21 @@ function buildMessages(
         // Saying which of them is the owner is the whole point of the label.
         // Without it, an instruction from a stranger in the room is
         // indistinguishable from one from the person the bot answers to.
-        speaker
-          ? `A message from ${speaker}${owner ? " (the owner, the one you answer to)" : " (someone else in the room, not the owner)"}: ${question}`
-          : `My question: ${question}`,
+        (() => {
+          const name = speakerLabel(speaker);
+          if (name) {
+            const role = owner ? " (the owner, the one you answer to)" : " (someone else in the room, not the owner)";
+            return `A message from ${name}${role}: ${question}`;
+          }
+          // No usable name. A client that asserted nothing is a one-to-one
+          // chat, which keeps the plain form. A client that asserted something
+          // unusable was naming a real person in a room, and a stranger there
+          // still needs the label: it is what decides whose instructions count.
+          const asserted = (speaker ?? "").trim().length > 0;
+          return owner || !asserted
+            ? `My question: ${question}`
+            : `A message from someone else in the room, not the owner: ${question}`;
+        })(),
       ].join("\n"),
     },
   ];

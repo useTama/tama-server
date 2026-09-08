@@ -30,7 +30,10 @@
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 import type { Llm } from "./llm.ts";
+import type { Vault } from "./vault.ts";
+import { recordFailure } from "./digest.ts";
 
 export type RouteConfig = {
   /** How often the cycle runs. */
@@ -379,4 +382,215 @@ export async function waiting(
     }
   }
   return out;
+}
+
+/** What one cycle did. Feeds the log line and the digest. */
+export type RouteReport = {
+  filed: { capture: string; destination: string; created: boolean }[];
+  /** Placed nowhere, on purpose: too vague, or nothing fits yet. */
+  unfiled: { capture: string; why: string }[];
+  /** Tried and went wrong. These are worth telling someone about. */
+  failed: { capture: string; why: string }[];
+  nowUpdated: boolean;
+  /** Captures left for a later cycle because this one was full. */
+  remaining: number;
+};
+
+export type RouteDeps = {
+  vault: Vault;
+  db: Database;
+  llm: Llm;
+  /** Absolute vault root, for reading notes the vault has no getter for. */
+  root: string;
+  inbox: string;
+  config: RouteConfig;
+  onWrite?: () => void;
+};
+
+/**
+ * One pass over the Inbox.
+ *
+ * The commit at the top is not housekeeping, it is the precondition for
+ * everything below it. Rewriting a note is only reversible because the version
+ * before the rewrite is in git, so a cycle that cannot commit does not get to
+ * rewrite. That is also why a capture rests for a couple of minutes first: a
+ * note written and filed inside one debounce window would be rewritten from a
+ * state git never saw.
+ *
+ * Nothing here throws. A cycle runs unattended on a timer, and a provider that
+ * rate-limits at three in the morning must cost one skipped pass, not a dead
+ * server and an Inbox nobody is watching.
+ */
+export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
+  const { vault, db, llm, root, inbox, config } = deps;
+  const report: RouteReport = { filed: [], unfiled: [], failed: [], nowUpdated: false, remaining: 0 };
+
+  const pre = await vault.commit("tama: before routing").catch((e: unknown) => ({
+    committed: false,
+    detail: e instanceof Error ? e.message : String(e),
+  }));
+  if (!pre.committed && !/nothing to commit|no changes/i.test(pre.detail)) {
+    // Refusing here is the whole safety model. Filing without a commit means
+    // the pre-rewrite note exists only in the file that is about to be
+    // overwritten.
+    recordFailure(db, { kind: "route-blocked", detail: `not committing, so not rewriting: ${pre.detail}`, source: "route" });
+    return report;
+  }
+
+  const tries = db.query<{ rel_path: string; tries: number }, []>(
+    "SELECT rel_path, tries FROM route_attempts",
+  ).all();
+  const triedByPath = new Map(tries.map((r) => [r.rel_path, r.tries]));
+
+  const all = await waiting(root, inbox);
+  const eligible = all.filter(
+    (w) => w.ageSeconds >= config.minAgeSeconds && (triedByPath.get(w.relPath) ?? 0) < config.maxTries,
+  );
+  const batch = eligible.slice(0, config.maxPerSweep);
+  report.remaining = eligible.length - batch.length;
+  if (!batch.length) return report;
+
+  const u = await universe(root, inbox);
+  const known = new Set(u.notes);
+  const loops: string[] = [];
+
+  for (const w of batch) {
+    const capture = noteBody(w.text);
+    if (!capture) {
+      // An empty capture cannot be filed and will never become fileable.
+      noteAttempt(db, w.relPath, "empty capture", config.maxTries);
+      report.unfiled.push({ capture: w.relPath, why: "empty" });
+      continue;
+    }
+
+    try {
+      const plan = await planCapture(llm, { capture, universe: { notes: [...known], topLevel: u.topLevel }, inbox });
+      if (plan.openLoops.length) loops.push(...plan.openLoops);
+
+      if (!plan.destination || plan.confidence < config.minConfidence) {
+        const why = plan.destination
+          ? `confidence ${plan.confidence.toFixed(2)} below ${config.minConfidence}`
+          : plan.reason || "nothing fits yet";
+        noteAttempt(db, w.relPath, why, config.maxTries);
+        report.unfiled.push({ capture: w.relPath, why });
+        continue;
+      }
+
+      const dest = plan.destination;
+      const exists = known.has(dest);
+      const current = exists ? await readFile(join(root, dest), "utf8").catch(() => "") : "";
+
+      const rewritten = await integrateNote(llm, { relPath: dest, current, capture, title: plan.title });
+      if ("error" in rewritten) {
+        noteAttempt(db, w.relPath, rewritten.error, config.maxTries);
+        report.failed.push({ capture: w.relPath, why: rewritten.error });
+        continue;
+      }
+
+      // A destination that does not exist yet has to be created, and
+      // replaceMarkdown deliberately refuses to create: a rewrite of a missing
+      // note means the path was resolved wrong.
+      if (exists) await vault.replaceMarkdown(dest, rewritten.text);
+      else await vault.appendMarkdown(dest, rewritten.text);
+      known.add(dest);
+
+      // Only now. The capture is gone from the Inbox once its content is
+      // somewhere else, never before, so a crash in between leaves a duplicate
+      // rather than a hole.
+      await vault.removeNote(w.relPath);
+      db.run("DELETE FROM route_attempts WHERE rel_path = ?", [w.relPath]);
+      report.filed.push({ capture: w.relPath, destination: dest, created: !exists });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      noteAttempt(db, w.relPath, why, config.maxTries);
+      report.failed.push({ capture: w.relPath, why });
+    }
+  }
+
+  if (loops.length) {
+    try {
+      const nowPath = config.nowNote;
+      const current = await readFile(join(root, nowPath), "utf8").catch(() => "");
+      const next = await refreshNow(llm, { current, loops });
+      if ("error" in next) {
+        report.failed.push({ capture: nowPath, why: next.error });
+      } else if (current.trim()) {
+        await vault.replaceMarkdown(nowPath, next.text);
+        report.nowUpdated = true;
+      } else {
+        await vault.appendMarkdown(nowPath, next.text);
+        report.nowUpdated = true;
+      }
+    } catch (e) {
+      report.failed.push({ capture: config.nowNote, why: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  for (const f of report.failed) {
+    recordFailure(db, { kind: "route-failed", detail: `${f.capture}: ${f.why}`, source: "route" });
+  }
+  if (report.filed.length || report.nowUpdated) {
+    await vault.commit(`tama: filed ${report.filed.length} capture${report.filed.length === 1 ? "" : "s"}`)
+      .catch((e: unknown) => console.error("could not commit the routing pass:", e));
+    deps.onWrite?.();
+  }
+  return report;
+}
+
+/**
+ * Count a failed attempt, and say so once it is the last one.
+ *
+ * A capture nothing can place would otherwise be triaged on every cycle
+ * forever. Three goes is enough to ride out a bad answer or a rate limit; past
+ * that it wants a human, and the digest is where a human finds out.
+ */
+function noteAttempt(db: Database, relPath: string, why: string, maxTries: number): void {
+  db.run(
+    `INSERT INTO route_attempts (rel_path, tries, last_at, last_why) VALUES (?, 1, ?, ?)
+     ON CONFLICT(rel_path) DO UPDATE SET tries = tries + 1, last_at = excluded.last_at, last_why = excluded.last_why`,
+    [relPath, new Date().toISOString(), why.slice(0, 300)],
+  );
+  const row = db.query<{ tries: number }, [string]>("SELECT tries FROM route_attempts WHERE rel_path = ?").get(relPath);
+  if (row && row.tries >= maxTries) {
+    recordFailure(db, {
+      kind: "route-gave-up",
+      detail: `${relPath} could not be filed after ${row.tries} tries: ${why.slice(0, 200)}`,
+      source: "route",
+    });
+  }
+}
+
+/** Captures sitting in the Inbox that routing has given up on. */
+export function stuck(db: Database, maxTries: number): { relPath: string; why: string }[] {
+  return db
+    .query<{ rel_path: string; last_why: string | null }, [number]>(
+      "SELECT rel_path, last_why FROM route_attempts WHERE tries >= ? ORDER BY last_at DESC",
+    )
+    .all(maxTries)
+    .map((r) => ({ relPath: r.rel_path, why: r.last_why ?? "unknown" }));
+}
+
+/**
+ * Run the cycle on a timer.
+ *
+ * Never overlaps itself: a pass that is still waiting on a model when the next
+ * tick fires would triage the same captures twice and file both copies. Skipped
+ * rather than queued, because the next tick is minutes away.
+ */
+export function scheduleRouting(deps: RouteDeps, onFire?: (r: RouteReport) => void): () => void {
+  let running = false;
+  const timer = setInterval(async () => {
+    if (running) return;
+    running = true;
+    try {
+      const r = await routeOnce(deps);
+      onFire?.(r);
+    } catch (e) {
+      console.error("routing cycle failed:", e);
+    } finally {
+      running = false;
+    }
+  }, Math.max(1, deps.config.everyMinutes) * 60_000);
+  timer.unref();
+  return () => clearInterval(timer);
 }

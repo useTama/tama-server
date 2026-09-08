@@ -73,6 +73,17 @@ export function openDb(path: string): Database {
       source       TEXT NOT NULL
     );
 
+    -- What the routing cycle has already tried and failed to file. Working
+    -- state, not vault content: the decision lives in the notes, and a capture
+    -- that no model can place must stop being billed for after a few goes.
+    -- Safe to delete; the worst case is one extra attempt per capture.
+    CREATE TABLE IF NOT EXISTS route_attempts (
+      rel_path TEXT PRIMARY KEY,
+      tries    INTEGER NOT NULL DEFAULT 0,
+      last_at  TEXT NOT NULL,
+      last_why TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS failures (
       id         TEXT PRIMARY KEY,
       at         TEXT NOT NULL,

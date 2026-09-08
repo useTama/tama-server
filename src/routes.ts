@@ -60,6 +60,13 @@ export type RouteDeps = {
   notifier: Notifier;
   /** Called after a vault write, so the caller can schedule a commit. */
   onWrite: () => void;
+  /**
+   * Graph API transport for the WhatsApp integration. `WhatsAppIntegration`
+   * already takes one; this threads it through so the dependencies built here -
+   * capture, ask, and the conversation memory around ask - are reachable from a
+   * test without a network. Left undefined in production, which means `fetch`.
+   */
+  whatsappFetch?: typeof fetch;
 };
 
 export type Routes = {
@@ -69,7 +76,7 @@ export type Routes = {
 };
 
 export function createRoutes(deps: RouteDeps): Routes {
-  const { config, db, vault, stt, retriever, llm, notifier, onWrite } = deps;
+  const { config, db, vault, stt, retriever, llm, notifier, onWrite, whatsappFetch } = deps;
   let inflight = 0;
 
 const json = (b: unknown, s = 200) =>
@@ -257,6 +264,7 @@ const whatsapp = config.whatsapp
   ? new WhatsAppIntegration({
       db,
       config: config.whatsapp,
+      ...(whatsappFetch ? { fetch: whatsappFetch } : {}),
       async capture(input) {
         const source = whatsappSource(input.sender, config.whatsapp!.appSecret);
         const req = new Request("http://tama.local/capture", {
@@ -278,15 +286,46 @@ const whatsapp = config.whatsapp
       async ask(input) {
         if (!llm) return "Ask is not configured on this Tama server yet. Voice notes still work.";
         const started = performance.now();
+
+        // The thread is the keyed pseudonym, not the phone number. Two reasons.
+        //
+        // A conversation outlives its inbox row - drain() blanks `sender` the
+        // moment a reply is sent, precisely so a number does not sit in the
+        // database - and putting the raw number in conversation_turns would
+        // undo that in a table nothing ever wipes.
+        //
+        // It also cannot collide with a paired device's thread, because /ask
+        // namespaces those as "<audience>:<thread>" and this has no colon.
+        //
+        // Sender is the whole thread identity because the Cloud API delivers
+        // one-to-one messages to a business number: the sender IS the chat.
+        const thread = whatsappSource(input.sender, config.whatsapp!.appSecret);
+        const memory = recall(db, thread);
+        const search = searchQuery(input.question, memory.turns);
+
         const result = await askOnce({
           question: input.question,
           retriever,
           llm,
           maxChunks: config.ask?.maxChunks,
           prompt: { name: config.world?.name, style: "chat", cite: false },
+          history: asMessages(memory.turns),
+          summary: memory.summary,
+          searchQuery: search,
         });
         const ms = Math.round(performance.now() - started);
-        console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms <${whatsappSource(input.sender, config.whatsapp!.appSecret)}>`)} `);
+
+        // Only on an answer, and only after one. A failed reply leaves the
+        // question unremembered rather than recording a turn that never
+        // happened, and summarising is a model call nobody should wait on.
+        if (result.answer) {
+          remember(db, thread, "user", input.question);
+          remember(db, thread, "assistant", result.answer);
+          void summarise(db, thread, llm).catch((e) => console.error("summarise failed:", e));
+        }
+
+        const carried = `${memory.turns.length ? ` +${memory.turns.length} turns` : ""}${memory.summary ? " +summary" : ""}`;
+        console.log(`${orange("ask")} ${grey(`-> ${result.sources.length} sources ${ms}ms${carried} <${thread}>`)} `);
         return result.answer;
       },
       onError(message) {

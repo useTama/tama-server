@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { Vault } from "../src/vault.ts";
 import { GrepRetriever } from "../src/retrieval.ts";
 import { mintToken } from "../src/auth.ts";
 import { createRoutes, type RouteDeps } from "../src/routes.ts";
+import { whatsappSource } from "../src/whatsapp.ts";
 import type { Llm } from "../src/llm.ts";
 import type { Stt } from "../src/stt.ts";
 import type { Config } from "../src/config.ts";
@@ -20,7 +22,10 @@ const ADMIN = "a".repeat(48);
  * previously lived in a closure inside `Bun.serve`: the auth resolution, the
  * write refusal, the idempotency claim, the withheld sources.
  */
-async function serverFixture(overrides: Partial<Config> = {}) {
+async function serverFixture(
+  overrides: Partial<Config> = {},
+  depsOverrides: { whatsappFetch?: typeof fetch } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "tama-routes-"));
   await Vault.initialize(join(root, "vault"));
   await mkdir(join(root, "vault/Work"), { recursive: true });
@@ -45,9 +50,13 @@ async function serverFixture(overrides: Partial<Config> = {}) {
   } as unknown as Config;
 
   let written = 0;
+  // Every message list the model was handed, so a test can assert what context
+  // a request actually carried rather than only what it wrote afterwards.
+  const asked: Array<Array<{ role: string; content: string }>> = [];
   const llm: Llm = {
     name: "fake",
-    async *stream() {
+    async *stream(opts) {
+      asked.push(opts.messages.map((m) => ({ role: m.role, content: m.content })));
       yield "the answer";
     },
   };
@@ -62,6 +71,7 @@ async function serverFixture(overrides: Partial<Config> = {}) {
     llm,
     notifier: { name: "console", async send() {} },
     onWrite: () => { written++; },
+    ...depsOverrides,
   };
   const routes = createRoutes(deps);
 
@@ -69,6 +79,7 @@ async function serverFixture(overrides: Partial<Config> = {}) {
     routes,
     db,
     config,
+    asked: () => asked,
     writes: () => written,
     ownerToken: mintToken(db, "laptop").token,
     guestToken: mintToken(db, "group", "guest").token,
@@ -302,6 +313,97 @@ test("ask answers 501 with a useful body when no model is configured", async () 
     // than pretending the route does not exist.
     expect(body.retrievalWorks).toBe(true);
     expect(body.wouldHaveUsed.length).toBeGreaterThan(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const WA: NonNullable<Config["whatsapp"]> = {
+  phoneNumberId: "111222333",
+  allowedFrom: ["919876543210"],
+  accessToken: "access-secret",
+  appSecret: "app-secret",
+  verifyToken: "verify-secret",
+  graphApiVersion: "v23.0",
+};
+
+/** One inbound text message, signed the way Meta signs it. */
+function waText(body: string, id: string): Request {
+  const raw = JSON.stringify({
+    object: "whatsapp_business_account",
+    entry: [{ changes: [{ field: "messages", value: {
+      messaging_product: "whatsapp",
+      metadata: { phone_number_id: WA.phoneNumberId },
+      messages: [{ from: "919876543210", id, timestamp: "1788700000", type: "text", text: { body } }],
+    } }] }],
+  });
+  return new Request("http://tama.local/webhooks/whatsapp", {
+    method: "POST",
+    headers: { "x-hub-signature-256": `sha256=${createHmac("sha256", WA.appSecret).update(raw).digest("hex")}` },
+    body: raw,
+  });
+}
+
+/**
+ * The Cloud API path had no conversation memory at all.
+ *
+ * `/ask` has remembered turns since memory.ts landed, but only when the client
+ * supplies a thread, and this transport never did: it called askOnce with the
+ * question and nothing else, so every WhatsApp message was a cold start and a
+ * follow-up like "and the other one?" had no other one. The bridge in
+ * clients/ passed a thread, so the unofficial path remembered and the official
+ * one did not.
+ */
+test("a WhatsApp question carries the previous exchange", async () => {
+  const sent: string[] = [];
+  const f = await serverFixture({ whatsapp: WA }, {
+    whatsappFetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)).text.body);
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.out" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch,
+  });
+  try {
+    expect((await f.routes.handle(waText("what did I say about the mic gain?", "wamid.1"))).status).toBe(200);
+    await f.routes.whatsapp!.drain();
+    expect((await f.routes.handle(waText("and the other one?", "wamid.2"))).status).toBe(200);
+    await f.routes.whatsapp!.drain();
+
+    expect(sent).toEqual(["the answer", "the answer"]);
+
+    // Prior turns arrive as real messages ahead of the fenced excerpts, so the
+    // second question is answered by something that knows what the first was.
+    const second = f.asked()[1]!;
+    expect(second.length).toBe(3);
+    expect(second[0]!.content).toBe("what did I say about the mic gain?");
+    expect(second[1]!.content).toBe("the answer");
+    expect(second[2]!.content).toContain("and the other one?");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("the WhatsApp conversation thread is a pseudonym, not a phone number", async () => {
+  const f = await serverFixture({ whatsapp: WA }, {
+    whatsappFetch: (async (_input: string | URL | Request) =>
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
+  });
+  try {
+    await f.routes.handle(waText("what did I say about the mic gain?", "wamid.1"));
+    await f.routes.whatsapp!.drain();
+
+    const rows = f.db.query("SELECT thread, role, text FROM conversation_turns ORDER BY id")
+      .all() as Array<{ thread: string; role: string; text: string }>;
+    expect(rows.map((r) => r.role)).toEqual(["user", "assistant"]);
+
+    // drain() blanks the sender off the inbox row once a reply is sent, so a
+    // raw number in conversation_turns - a table nothing ever wipes - would
+    // quietly undo that. The thread is the same keyed pseudonym capture
+    // attributes a note to.
+    expect(rows.every((r) => r.thread === whatsappSource("919876543210", WA.appSecret))).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain("919876543210");
   } finally {
     await f.cleanup();
   }

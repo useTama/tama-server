@@ -102,6 +102,12 @@ audio with the Cloud API, processes the message, and replies in the same chat. M
 deduplicate webhook retries and become capture idempotency keys. Pending work survives restarts;
 completed rows retain only the opaque message ID, discarding the sender, question and answer.
 
+Text messages carry conversation memory, so a follow-up in a chat means something. The thread is
+the same keyed pseudonym capture attributes a note to, not the phone number: `conversation_turns`
+outlives the inbox row the sender is blanked from, so a raw number there would undo that
+discarding in a table nothing wipes. It is also disjoint from a paired device's history by
+construction, because `/ask` namespaces those as `<audience>:<thread>`.
+
 This is not part of the local/accountless default. With no `whatsapp` block, no webhook is exposed
 and capture remains useful without Meta, a public hostname, or any additional credential.
 

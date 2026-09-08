@@ -91,7 +91,26 @@ cannot search your job applications. It also cannot write: `append_note` and
 putting entries into someone's notes is a different kind of access than reading
 them.
 
-## 5. Connecting the Claude app
+## 5. Connecting a client
+
+Two clients, one for each place a session actually happens. Both dial from the
+user's own machine, so both reach a server only that user can reach, and
+neither needs a domain or an OAuth flow.
+
+### The terminal
+
+```sh
+claude plugin marketplace add useTama/tama-server
+claude plugin install tama@usetama
+```
+
+Claude Code prompts for the server address and a device token, keeps the token
+`sensitive` rather than in shell history, and adds a `/tama:save` command
+beside the five tools. `clients/claude-code` is the plugin.
+
+Mint the token with `tama token claude-code`.
+
+### The desktop app
 
 One file, two fields. `clients/claude-desktop` is an `.mcpb` bundle: Claude
 Desktop's own one-click install format.

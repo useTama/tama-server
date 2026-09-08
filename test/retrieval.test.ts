@@ -288,3 +288,45 @@ test("a word ending in ss or us is not stripped into a shorter prefix", async ()
   const got = await new GrepRetriever(root).search("class");
   expect(got.map((c) => c.path)).toEqual(["Class.md"]);
 });
+
+// ---- transcribed numbers -------------------------------------------------
+
+/**
+ * Both sides of a search are Whisper output, and it is not consistent about
+ * where a number ends. Each inconsistency used to cost the query its most
+ * identifying term while still returning the note on the generic words, which
+ * is worse than a miss: it looks like a weak answer rather than a broken match.
+ */
+test("a number split from its metric name scores the same as the joined form", async () => {
+  await note("Work/latency.md", "the p95 latency on the list endpoint is too high", null);
+  const r = new GrepRetriever(root);
+
+  const joined = await r.search("why is p95 latency high");
+  const split = await r.search("why is p 95 latency high");
+  expect(split[0]?.path).toBe("Work/latency.md");
+  expect(split[0]?.score).toBe(joined[0]!.score);
+});
+
+test("a thousands separator in the question does not split the number", async () => {
+  await note("Car/service.md", "next service is due at 40000 km", null);
+  const got = await new GrepRetriever(root).search("what about 40,000 km");
+  expect(got.map((c) => c.path)).toContain("Car/service.md");
+});
+
+test("a numeric term may touch a letter but never another digit", async () => {
+  // 95 inside p95 is the same number. 95 inside 1995 is not, and 40 inside
+  // 40000 is not, which is the whole reason words and numbers need different
+  // boundary rules.
+  await note("A.md", "p95 was the metric", null);
+  await note("B.md", "back in 1995 we shipped it", null);
+  const got = await new GrepRetriever(root).search("95");
+  expect(got.map((c) => c.path)).toEqual(["A.md"]);
+});
+
+test("a single-letter English word is not glued onto a following number", async () => {
+  // "a 5 minute walk" must not normalise to "a5 minute walk", which would lose
+  // the 5 and invent a term that matches nothing.
+  await note("Walk.md", "it is a 5 minute walk from the station", null);
+  const got = await new GrepRetriever(root).search("how long is the 5 minute walk");
+  expect(got.map((c) => c.path)).toContain("Walk.md");
+});

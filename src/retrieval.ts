@@ -61,6 +61,37 @@ const DEFAULT_LIMIT = 8;
 /** Characters that scan as part of a word, so a match boundary can be tested. */
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
 const TERM_PATTERN = /[\p{L}\p{N}]+/gu;
+const DIGIT = /\p{N}/u;
+const DIGITS_ONLY = /^\p{N}+$/u;
+
+/**
+ * Fold the two ways a spoken number reaches this differently from a typed one.
+ *
+ * Both sides of a search are Whisper output: the notes are transcripts, and a
+ * question arriving as a voice note is a transcript too. Whisper is not
+ * consistent about where a number ends, and every inconsistency cost the query
+ * its most identifying term - "40,000" tokenised to "40" and "000", neither of
+ * which matches "40000", and "p 95" tokenised to "95" and a dropped "p".
+ *
+ * Applied to the query only. The note body cannot be folded the same way
+ * because `excerpt` slices it by the offsets `findHits` returns, and deleting a
+ * character would move every offset after it. Matching a note that writes
+ * "40,000" against a query that writes "40000" needs an offset map or a real
+ * index, and belongs with #54.
+ */
+export function normaliseNumbers(text: string): string {
+  return (
+    text
+      // A separator between digits is not a boundary. The lookahead leaves the
+      // trailing digit unconsumed, so one pass catches every group in
+      // "1,234,567" rather than alternate ones.
+      .replace(/(\p{N})[,_](?=\p{N})/gu, "$1")
+      // "p 95" is p95: Whisper splits a metric's name from its number. "a" and
+      // "i" are excluded because they are words - "a 5 minute walk" must not
+      // become "a5 minute walk", which would both lose the 5 and invent a term.
+      .replace(/\b([b-hj-z])\s+(?=\p{N})/giu, "$1")
+  );
+}
 
 /**
  * Terms shorter than this are dropped before the stopword pass. Two characters
@@ -190,7 +221,7 @@ const MAX_HITS_PER_TERM = 64;
  * is a much worse answer than a weak one.
  */
 export function tokenise(query: string): string[] {
-  const raw = Array.from(query.toLowerCase().matchAll(TERM_PATTERN), (m) => m[0]);
+  const raw = Array.from(normaliseNumbers(query.toLowerCase()).matchAll(TERM_PATTERN), (m) => m[0]);
   const kept = raw.filter((t) => t.length >= MIN_TERM_LENGTH && !STOPWORDS.has(t));
   return dedupe(kept.length > 0 ? kept : raw);
 }
@@ -242,17 +273,36 @@ function isWordChar(ch: string | undefined): boolean {
   return ch !== undefined && WORD_CHAR.test(ch);
 }
 
-/** Positions where `term` occurs in already-lowercased `haystack`, as a word or word prefix. */
+function isDigit(ch: string | undefined): boolean {
+  return ch !== undefined && DIGIT.test(ch);
+}
+
+/**
+ * Positions where `term` occurs in already-lowercased `haystack`, as a word or
+ * word prefix.
+ *
+ * A digits-only term gets its own boundary rule, because the rule for words is
+ * wrong for numbers. "95" pressed against a letter is still 95 - Whisper writes
+ * p95 as "p 95", so the query carries "95" and the note says "p95" - while "95"
+ * pressed against another digit is a different number, which is what keeps 95
+ * out of 1995 and 40 out of 40000.
+ *
+ * Suffix tolerance is off for numbers for the same reason: it exists so
+ * "recyklo" finds "recyklos", and a plural is not a thing a number has.
+ */
 function findHits(haystack: string, term: string, cap: number): number[] {
   const out: number[] = [];
-  const tolerateSuffix = term.length >= SUFFIX_TOLERANT_LENGTH;
+  const numeric = DIGITS_ONLY.test(term);
+  const tolerateSuffix = !numeric && term.length >= SUFFIX_TOLERANT_LENGTH;
   let from = 0;
   while (out.length < cap) {
     const at = haystack.indexOf(term, from);
     if (at === -1) break;
     from = at + term.length;
-    if (isWordChar(haystack[at - 1])) continue;
-    if (!tolerateSuffix && isWordChar(haystack[from])) continue;
+    const before = haystack[at - 1];
+    const after = haystack[from];
+    if (numeric ? isDigit(before) : isWordChar(before)) continue;
+    if (numeric ? isDigit(after) : !tolerateSuffix && isWordChar(after)) continue;
     out.push(at);
   }
   return out;

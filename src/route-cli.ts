@@ -60,6 +60,7 @@ export async function runRoute(argv: string[] = Bun.argv): Promise<void> {
       vault, db, llm,
       root: config.vault.path,
       inbox: config.vault.inbox,
+      dryRun: dryRun || config.safety.dryRun,
       config: { ...routeConfig, maxPerSweep: Math.max(routeConfig.maxPerSweep, inboxNow.length) },
     });
 

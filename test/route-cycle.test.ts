@@ -211,3 +211,49 @@ test("a full Inbox drains over several cycles rather than in one bill", async ()
   expect(report.unfiled).toHaveLength(2);
   expect(report.remaining).toBe(1);
 });
+
+test("a dry run decides, prints and records nothing", async () => {
+  // A preview that counts against maxTries would make three previews give up
+  // on a capture for real, which is the one thing a preview must not do.
+  const vault = new Vault(root, "Inbox", true);
+  await mkdir(join(root, "Projects", "remote-star"), { recursive: true });
+  await writeFile(join(root, "Projects", "remote-star", "notes.md"), "## Pricing\n\nMonthly.\n");
+  const cap = await new Vault(root, "Inbox").capture({ text: "going annual", source: "whatsapp", at });
+
+  for (let i = 0; i < ROUTE_DEFAULTS.maxTries + 1; i++) {
+    await routeOnce({
+      ...(await deps(stub(triage({ destination: null, confidence: 0, reason: "no idea" })), vault)),
+      dryRun: true,
+    });
+  }
+
+  expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM route_attempts").get()!.n).toBe(0);
+  expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM failures").get()!.n).toBe(0);
+  expect(stuck(db, config.maxTries)).toEqual([]);
+  // And the capture is still there, unfiled, for a real pass to pick up.
+  expect(await readdir(join(root, "Inbox"))).toEqual([cap.relPath.split("/")[1]]);
+});
+
+test("a dry run leaves every note exactly as it was", async () => {
+  const vault = new Vault(root, "Inbox", true);
+  await mkdir(join(root, "Projects", "remote-star"), { recursive: true });
+  await writeFile(join(root, "Projects", "remote-star", "notes.md"), "## Pricing\n\nMonthly.\n");
+  await new Vault(root, "Inbox").capture({ text: "going annual", source: "whatsapp", at });
+
+  const report = await routeOnce({
+    ...(await deps(
+      stub(
+        triage({ destination: "Projects/remote-star/notes.md", openLoops: ["send the quote"] }),
+        "## Pricing\n\nAnnual billing.\n",
+        "## Now\n\n- send the quote\n",
+      ),
+      vault,
+    )),
+    dryRun: true,
+  });
+
+  // It still reports what it would have done, which is the point of a preview.
+  expect(report.filed[0]).toMatchObject({ destination: "Projects/remote-star/notes.md" });
+  expect(await readFile(join(root, "Projects/remote-star/notes.md"), "utf8")).toBe("## Pricing\n\nMonthly.\n");
+  expect(await readdir(join(root, "Inbox"))).toHaveLength(1);
+});

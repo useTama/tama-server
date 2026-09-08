@@ -404,6 +404,12 @@ export type RouteDeps = {
   root: string;
   inbox: string;
   config: RouteConfig;
+  /**
+   * Decide, print, record nothing. Without this a preview counted against
+   * maxTries, so three dry runs made the cycle give up on a capture for real -
+   * the one thing a preview must never do.
+   */
+  dryRun?: boolean;
   onWrite?: () => void;
 };
 
@@ -435,7 +441,9 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
     // Refusing here is the whole safety model. Filing without a commit means
     // the pre-rewrite note exists only in the file that is about to be
     // overwritten.
-    recordFailure(db, { kind: "route-blocked", detail: `not committing, so not rewriting: ${pre.detail}`, source: "route" });
+    if (!deps.dryRun) {
+      recordFailure(db, { kind: "route-blocked", detail: `not committing, so not rewriting: ${pre.detail}`, source: "route" });
+    }
     return report;
   }
 
@@ -460,7 +468,7 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
     const capture = noteBody(w.text);
     if (!capture) {
       // An empty capture cannot be filed and will never become fileable.
-      noteAttempt(db, w.relPath, "empty capture", config.maxTries);
+      if (!deps.dryRun) noteAttempt(db, w.relPath, "empty capture", config.maxTries);
       report.unfiled.push({ capture: w.relPath, why: "empty" });
       continue;
     }
@@ -473,7 +481,7 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
         const why = plan.destination
           ? `confidence ${plan.confidence.toFixed(2)} below ${config.minConfidence}`
           : plan.reason || "nothing fits yet";
-        noteAttempt(db, w.relPath, why, config.maxTries);
+        if (!deps.dryRun) noteAttempt(db, w.relPath, why, config.maxTries);
         report.unfiled.push({ capture: w.relPath, why });
         continue;
       }
@@ -484,7 +492,7 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
 
       const rewritten = await integrateNote(llm, { relPath: dest, current, capture, title: plan.title });
       if ("error" in rewritten) {
-        noteAttempt(db, w.relPath, rewritten.error, config.maxTries);
+        if (!deps.dryRun) noteAttempt(db, w.relPath, rewritten.error, config.maxTries);
         report.failed.push({ capture: w.relPath, why: rewritten.error });
         continue;
       }
@@ -504,7 +512,7 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
       report.filed.push({ capture: w.relPath, destination: dest, created: !exists });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
-      noteAttempt(db, w.relPath, why, config.maxTries);
+      if (!deps.dryRun) noteAttempt(db, w.relPath, why, config.maxTries);
       report.failed.push({ capture: w.relPath, why });
     }
   }
@@ -528,8 +536,10 @@ export async function routeOnce(deps: RouteDeps): Promise<RouteReport> {
     }
   }
 
-  for (const f of report.failed) {
-    recordFailure(db, { kind: "route-failed", detail: `${f.capture}: ${f.why}`, source: "route" });
+  if (!deps.dryRun) {
+    for (const f of report.failed) {
+      recordFailure(db, { kind: "route-failed", detail: `${f.capture}: ${f.why}`, source: "route" });
+    }
   }
   if (report.filed.length || report.nowUpdated) {
     await vault.commit(`tama: filed ${report.filed.length} capture${report.filed.length === 1 ? "" : "s"}`)

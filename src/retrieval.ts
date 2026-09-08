@@ -224,6 +224,31 @@ function findHits(haystack: string, term: string, cap: number): number[] {
   return out;
 }
 
+/**
+ * A query term, plus the singular it may be the plural of.
+ *
+ * `findHits` tolerates a suffix on the NOTE, never on the query: needle
+ * "recyklo" finds "recyklos", but needle "todos" can never find "todo". So
+ * "what are my todos" scored exactly zero against a note full of "TODO:" lines
+ * - the question this product exists to answer, missing the note that answers
+ * it - while matching any note that merely used the word "todos" in prose.
+ *
+ * Deliberately not a stemmer. Trailing "s" and "es" cover the plural a spoken
+ * question actually uses ("todos", "issues", "notes", "meetings"), and carrying
+ * a real stemmer would mean carrying its false positives into a ranking that is
+ * already the tuning point.
+ *
+ * "ss" and "us" endings are left alone. Stripping them yields "clas", "pres"
+ * and "statu", which are long enough to be suffix-tolerant and would then match
+ * "clash", "preset" and "statue" - noise on a word that was already correct.
+ */
+export function variants(term: string): string[] {
+  if (term.endsWith("ss") || term.endsWith("us")) return [term];
+  if (term.length >= 5 && term.endsWith("es")) return [term, term.slice(0, -2), term.slice(0, -1)];
+  if (term.length >= 4 && term.endsWith("s")) return [term, term.slice(0, -1)];
+  return [term];
+}
+
 type Hit = { pos: number; term: number };
 
 /**
@@ -310,13 +335,28 @@ export function scoreNote(
     const term = terms[i];
     if (!term) continue;
 
-    const found = findHits(lowerBody, term, MAX_HITS_PER_TERM);
-    if (found.length > 0) {
+    // Positions, not counts, and deduplicated: "todos" and "todo" both hit the
+    // same offset in a note that says "todos", and counting it twice would
+    // inflate the repetition term for a note that said the word once.
+    const forms = variants(term);
+    const positions = new Set<number>();
+    for (const form of forms) {
+      for (const pos of findHits(lowerBody, form, MAX_HITS_PER_TERM)) {
+        positions.add(pos);
+        if (positions.size >= MAX_HITS_PER_TERM) break;
+      }
+      if (positions.size >= MAX_HITS_PER_TERM) break;
+    }
+    if (positions.size > 0) {
       bodyDistinct++;
       matched.add(i);
-      for (const pos of found) hits.push({ pos, term: i });
+      // Every form scores under the same term index, so a note matching both
+      // the plural and the singular still covers one term. Coverage is weighed
+      // highest of all the signals; inflating it here would be the loudest
+      // possible way to get this wrong.
+      for (const pos of positions) hits.push({ pos, term: i });
     }
-    if (findHits(lowerPath, term, 1).length > 0) {
+    if (forms.some((form) => findHits(lowerPath, form, 1).length > 0)) {
       pathDistinct++;
       matched.add(i);
     }

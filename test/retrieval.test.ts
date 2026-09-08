@@ -248,3 +248,43 @@ test("a view bounds what retrieval can return at all", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ---- plural queries against singular notes -------------------------------
+
+/**
+ * The failure that prompted `variants`, from a real WhatsApp exchange.
+ *
+ * "whats my todos" tokenises to ["whats", "todos"], and suffix tolerance runs
+ * the wrong way: needle "todos" cannot match a note that writes "TODO:". So the
+ * log holding every actual todo scored zero, while a note that used the word
+ * "todos" in a sentence ranked first, and the answer was a confident subset of
+ * the wrong notes.
+ */
+test("a plural question finds a note written in the singular", async () => {
+  await note("Log.md", "TODO: fix the untidy test/e2e go module on pr 3125\nTODO: reply to tariq on pr 3138", null);
+  await note("Chat.md", "we were talking about todos in general", null);
+
+  const got = await new GrepRetriever(root).search("whats my todos");
+  expect(got.map((c) => c.path)).toContain("Log.md");
+});
+
+test("the singular form scores under the same term, not as a second one", async () => {
+  // A note saying both "todos" and "todo" must not out-cover a note that
+  // answers the whole question. Coverage is the heaviest signal there is, so
+  // double-counting one term here would quietly reorder every result.
+  await note("Both.md", "todos and todo", null);
+  await note("Whole.md", "these are the deploy todos", null);
+
+  const got = await new GrepRetriever(root).search("deploy todos");
+  expect(got[0]?.path).toBe("Whole.md");
+});
+
+test("a word ending in ss or us is not stripped into a shorter prefix", async () => {
+  // "class" -> "clas" is suffix-tolerant and would match "clash"; "status" ->
+  // "statu" would match "statue". Both words were already correct.
+  await note("Clash.md", "there was a clash in the schedule", null);
+  await note("Class.md", "the class was moved to friday", null);
+
+  const got = await new GrepRetriever(root).search("class");
+  expect(got.map((c) => c.path)).toEqual(["Class.md"]);
+});

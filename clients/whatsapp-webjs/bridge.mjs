@@ -412,6 +412,12 @@ async function askQuestion(message, question, audience, who, thread) {
     body: JSON.stringify({
       question,
       ...(audience ? {} : { style: "chat" }),
+      // Which app this is and what number it answers on. Only this client can
+      // know either, and until it said so the model was guessing about the
+      // medium it was speaking through and had nothing at all for its own
+      // address. The server renders the sentence: this names the surface, not
+      // what to say about it.
+      surface: { app: "whatsapp", ...(selfNumber ? { address: selfNumber } : {}) },
       ...(who?.name ? { speaker: who.name } : {}),
       ...(who ? { speakerIsOwner: who.isOwner } : {}),
       // One chat, one thread. The server scopes it by token as well, so two

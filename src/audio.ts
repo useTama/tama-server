@@ -10,6 +10,12 @@
  */
 import { CaptureError } from "./capture-error.ts";
 
+const SAMPLE_RATE = 16000;
+const CHANNELS = 1;
+const BYTES_PER_SAMPLE = 2;
+/** Canonical PCM WAV: RIFF, one `fmt ` chunk, one `data` chunk, no metadata. */
+export const WAV_HEADER_BYTES = 44;
+
 export async function toWav16k(input: Uint8Array, maxSeconds = 300): Promise<Uint8Array> {
   let proc;
   try {
@@ -19,10 +25,13 @@ export async function toWav16k(input: Uint8Array, maxSeconds = 300): Promise<Uin
         "-hide_banner", "-loglevel", "error",
         "-i", "pipe:0",
         "-t", String(maxSeconds),
-        "-ac", "1",
-        "-ar", "16000",
+        "-ac", String(CHANNELS),
+        "-ar", String(SAMPLE_RATE),
         "-c:a", "pcm_s16le",
-        "-f", "wav",
+        // Raw samples, not a wav container. See wavFromPcm: the wav muxer
+        // cannot write correct chunk sizes into a pipe, and one provider
+        // believes them.
+        "-f", "s16le",
         "pipe:1",
       ],
       { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
@@ -79,10 +88,48 @@ export async function toWav16k(input: Uint8Array, maxSeconds = 300): Promise<Uin
       "is it actually an audio file?",
     );
   }
-  return new Uint8Array(out);
+  return wavFromPcm(new Uint8Array(out));
+}
+
+/**
+ * Wrap raw 16 kHz mono s16 samples in a wav header that states their real size.
+ *
+ * ffmpeg's wav muxer writes placeholder sizes and patches them on close by
+ * seeking back to the header. A pipe cannot seek, so both the RIFF size and the
+ * `data` size stay 0xFFFFFFFF. ffmpeg, ffprobe and whisper.cpp all shrug and
+ * believe the byte count instead, so this was invisible for as long as those
+ * were the only readers. Sarvam believes the header, and 0xFFFFFFFF bytes of
+ * this format is 37 hours, so a two second voice note came back as "Audio
+ * duration exceeds the maximum limit of 30 seconds".
+ *
+ * Building the header here is also what makes `wavSeconds` exact: the muxer
+ * inserted a `LIST`/`INFO` chunk naming the Lavf version, which the fixed
+ * 44-byte assumption below counted as audio.
+ */
+function wavFromPcm(pcm: Uint8Array): Uint8Array {
+  const wav = new Uint8Array(WAV_HEADER_BYTES + pcm.byteLength);
+  const h = new DataView(wav.buffer);
+  const ascii = (at: number, s: string) => {
+    for (let i = 0; i < s.length; i++) wav[at + i] = s.charCodeAt(i);
+  };
+  const blockAlign = CHANNELS * BYTES_PER_SAMPLE;
+  ascii(0, "RIFF");
+  h.setUint32(4, 36 + pcm.byteLength, true); // everything after this field
+  ascii(8, "WAVEfmt ");
+  h.setUint32(16, 16, true); // fmt chunk length
+  h.setUint16(20, 1, true); // 1 is uncompressed PCM
+  h.setUint16(22, CHANNELS, true);
+  h.setUint32(24, SAMPLE_RATE, true);
+  h.setUint32(28, SAMPLE_RATE * blockAlign, true); // byte rate
+  h.setUint16(32, blockAlign, true);
+  h.setUint16(34, 8 * BYTES_PER_SAMPLE, true);
+  ascii(36, "data");
+  h.setUint32(40, pcm.byteLength, true);
+  wav.set(pcm, WAV_HEADER_BYTES);
+  return wav;
 }
 
 /** Seconds of audio in a 16 kHz mono s16 WAV, from the byte count. */
 export function wavSeconds(wav: Uint8Array): number {
-  return Math.max(0, (wav.byteLength - 44) / (16000 * 2));
+  return Math.max(0, (wav.byteLength - WAV_HEADER_BYTES) / (SAMPLE_RATE * BYTES_PER_SAMPLE));
 }

@@ -36,8 +36,13 @@ function isHarnessNoise(text) {
     t.startsWith("<system-reminder>") ||
     t.startsWith("<local-command-") ||
     t.startsWith("<command-name>") ||
+    t.startsWith("<command-message>") ||
     t.startsWith("<bash-input>") ||
-    t.startsWith("Caveat: The messages below")
+    t.startsWith("Caveat: The messages below") ||
+    // A skill's whole body arrives as a user turn. They are the largest fake
+    // user messages in a real transcript - one measured at 103,268 characters -
+    // so missing them costs the budget as well as the summary's accuracy.
+    t.startsWith("Base directory for this skill:")
   );
 }
 
@@ -61,6 +66,10 @@ export function turnsFrom(lines) {
       continue;
     }
     if (record.isSidechain) continue;
+    // `isMeta` marks a user turn the harness wrote rather than the person: an
+    // image placeholder, an injected note. 76 of 1546 user records in a real
+    // corpus, none of them typed by anybody.
+    if (record.isMeta) continue;
     if (record.type !== "user" && record.type !== "assistant") continue;
 
     const text = textOf(record.message?.content).trim();
@@ -87,6 +96,23 @@ export function turnsFrom(lines) {
 const WIRE_BUDGET = 120_000;
 
 /**
+ * One turn's ceiling on the wire, twice the server's own.
+ *
+ * Without it, the backward fill below stopped at the first turn bigger than
+ * the remaining budget and shipped only the opening turn - so a session whose
+ * last message was a large paste sent the task and threw away the outcome,
+ * which is the exact failure the fill exists to avoid. Real transcripts carry
+ * turns of 103KB and 185KB (pasted terminal output, an injected skill body),
+ * so this is not a hypothetical shape.
+ *
+ * Clipped rather than skipped, because a huge turn can be the outcome. Twice
+ * `MAX_TURN_CHARS` in src/session-summary.ts, which keeps the same headroom
+ * over the server that WIRE_BUDGET keeps over its character budget: the server
+ * will clip to 4,000 anyway, and a later raise there finds the text still here.
+ */
+const MAX_TURN_WIRE_CHARS = 8_000;
+
+/**
  * Turns from both ends until the budget is spent.
  *
  * The same rule the server applies, for the same reason: the first turn states
@@ -96,8 +122,13 @@ const WIRE_BUDGET = 120_000;
  */
 export function trimToWire(turns, budget = WIRE_BUDGET) {
   if (turns.length === 0) return turns;
+  const clip = (t) =>
+    t.text.length > MAX_TURN_WIRE_CHARS
+      ? { role: t.role, text: `${t.text.slice(0, MAX_TURN_WIRE_CHARS)}\n[...turn truncated]` }
+      : t;
   const cost = (t) => t.text.length + 16;
 
+  turns = turns.map(clip);
   const first = turns[0];
   if (turns.length === 1 || cost(first) >= budget) return [first];
 

@@ -48,10 +48,19 @@ async function main() {
     let buf = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => (buf += c));
-    process.stdin.on("end", () => resolve(buf));
     // No stdin at all rather than empty stdin happens when a hook is run by
-    // hand. Answering after a beat beats hanging until the timeout.
-    setTimeout(() => resolve(buf), 5000);
+    // hand. Answering after a beat beats hanging until the hook timeout.
+    //
+    // Cleared on "end", and that matters more than it looks: an uncleared
+    // timer keeps the event loop alive after the work is done, so every
+    // ordinary session end sat here for the full five seconds before the
+    // process could exit. A hook that fires on every teardown must not add a
+    // fixed delay to every teardown.
+    const fallback = setTimeout(() => resolve(buf), 5000);
+    process.stdin.on("end", () => {
+      clearTimeout(fallback);
+      resolve(buf);
+    });
   });
 
   let payload;
@@ -101,9 +110,21 @@ async function main() {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
-        // The session id, so a retry - or a second machine syncing the same
-        // session - appends one entry rather than two.
-        ...(payload.session_id ? { "idempotency-key": `session-end:${payload.session_id}` } : {}),
+        // The session id AND how much of it there is. The id alone was wrong
+        // in a way that reported success: `claude --resume` keeps the same
+        // session id and appends to the same transcript, so the second
+        // SessionEnd replayed the stored response, the resumed hours were
+        // never summarised, and the hook still printed "recorded this
+        // session". Worse in the other direction too - if the first half had
+        // filed nothing, a session that only became worth keeping after the
+        // resume was refused for the whole 24h that a completed key lives.
+        //
+        // The turn count is monotonic within a session, so a longer transcript
+        // is a new request while a genuine retry of the same one is still
+        // deduplicated.
+        ...(payload.session_id
+          ? { "idempotency-key": `session-end:${payload.session_id}:${all.length}` }
+          : {}),
       },
       body: JSON.stringify({ project, turns }),
       signal: AbortSignal.timeout(90_000),

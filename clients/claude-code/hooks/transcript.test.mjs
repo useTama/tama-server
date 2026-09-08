@@ -118,3 +118,57 @@ test("a short session goes over the wire untouched", () => {
   expect(trimToWire(turns)).toEqual(turns);
   expect(trimToWire([])).toEqual([]);
 });
+
+test("a huge last turn does not take the whole tail with it", () => {
+  // The fill used to `break` on the first turn bigger than the remaining
+  // budget, so a session whose last message was a large paste shipped only the
+  // opening turn — the task, without the outcome, which is the exact failure
+  // the both-ends fill exists to prevent. The old test could not catch it
+  // because every one of its 900 turns was the same size.
+  const turns = [{ role: "user", text: "THE TASK" }];
+  for (let i = 0; i < 80; i++) turns.push({ role: "assistant", text: "m".repeat(400) });
+  turns.push({ role: "assistant", text: "P".repeat(130_000) });
+  turns.push({ role: "assistant", text: "THE OUTCOME" });
+
+  const wire = trimToWire(turns);
+  expect(wire[0].text).toBe("THE TASK");
+  expect(wire.at(-1).text).toBe("THE OUTCOME");
+  // The middle survives too, rather than being cut off at the giant turn.
+  expect(wire.length).toBeGreaterThan(50);
+  // And the giant turn is clipped rather than dropped, because a big turn can
+  // itself be the outcome.
+  const giant = wire.find((t) => t.text.startsWith("P"));
+  expect(giant.text).toContain("turn truncated");
+  expect(giant.text.length).toBeLessThan(9_000);
+});
+
+test("one turn cannot exceed the per-turn wire ceiling, even as the first turn", () => {
+  const wire = trimToWire([
+    { role: "user", text: "Q".repeat(200_000) },
+    { role: "assistant", text: "the answer" },
+  ]);
+  expect(wire[0].text.length).toBeLessThan(9_000);
+  // The old code returned only the first turn here, uncapped.
+  expect(wire.at(-1).text).toBe("the answer");
+});
+
+test("a user turn the harness wrote is not a user turn", () => {
+  // `isMeta` marks an image placeholder or an injected note: 76 of 1546 user
+  // records in a real corpus, none of them typed by anybody.
+  const turns = turnsFrom([
+    line({ type: "user", isMeta: true, message: { content: "[Image: source: /var/folders/.../Screenshot.png]" } }),
+    line({ type: "user", message: { content: "why is the bridge down" } }),
+  ]);
+  expect(turns.map((t) => t.text)).toEqual(["why is the bridge down"]);
+});
+
+test("a skill body and a slash command are not things the person said", () => {
+  // A skill's whole body arrives as a user turn — one measured at 103,268
+  // characters — so missing it costs the budget as well as the accuracy.
+  const turns = turnsFrom([
+    user("Base directory for this skill: /tmp/skills/claude-api\n\n# Building LLM apps"),
+    user("<command-message>workflow-authoring</command-message>"),
+    user("finish up the other issues"),
+  ]);
+  expect(turns.map((t) => t.text)).toEqual(["finish up the other issues"]);
+});

@@ -1,0 +1,8 @@
+# A running bundle has no use for the tests, and the archive is what a user
+# downloads. Same reasoning as the whatsapp client's .dockerignore.
+*.test.mjs
+# Repo-facing: it explains how to build the bundle, which a user of it
+# never does. Claude Desktop shows long_description from the manifest.
+README.md
+node_modules
+bun.lock

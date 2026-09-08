@@ -1,0 +1,59 @@
+{
+  "manifest_version": "0.3",
+  "name": "tama",
+  "display_name": "Tama",
+  "version": "0.1.0",
+  "description": "Your own Markdown notes, readable and writable from Claude.",
+  "long_description": "Tama keeps voice notes and work summaries as Markdown in a git repo you own. This extension lets Claude search those notes, read one, append to them, and record what a session did - so a decision made today is still answerable in six weeks. It talks to a Tama server you already run; nothing is sent anywhere else.",
+  "author": {
+    "name": "Tama",
+    "url": "https://github.com/useTama/tama-server"
+  },
+  "homepage": "https://github.com/useTama/tama-server",
+  "documentation": "https://github.com/useTama/tama-server/blob/main/docs/mcp.md",
+  "support": "https://github.com/useTama/tama-server/issues",
+  "icon": "icon.png",
+  "keywords": ["notes", "memory", "markdown", "voice", "second-brain"],
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.mjs"],
+      "env": {
+        "TAMA_URL": "${user_config.server_url}",
+        "TAMA_TOKEN": "${user_config.device_token}"
+      }
+    }
+  },
+  "user_config": {
+    "server_url": {
+      "type": "string",
+      "title": "Tama server address",
+      "description": "Where your Tama server is reachable from this computer. If Tama runs on this machine, keep the default. If it runs elsewhere, use the address `tama expose` printed - it is dialled from here, not from Anthropic, so a private tailnet address works.",
+      "default": "http://127.0.0.1:8080",
+      "required": true
+    },
+    "device_token": {
+      "type": "string",
+      "title": "Device token",
+      "description": "Run `tama token claude-desktop` on your server and paste what it prints. It is shown once. Add `--as AUDIENCE` there to give Claude a slice of the vault instead of all of it.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "tools": [
+    { "name": "search_notes", "description": "Search the notes and return the passages that match." },
+    { "name": "read_note", "description": "Read one note by its path." },
+    { "name": "append_note", "description": "Write a new note into the vault." },
+    { "name": "record_session", "description": "Record what this session did in the project's log." },
+    { "name": "today", "description": "What the user has been working on lately." }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  }
+}

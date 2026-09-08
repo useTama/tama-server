@@ -12,7 +12,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/tama.ts --compile --outfile dist/tama-server",
-    "eval": "bun test test/eval"
+    "eval": "bun test test/eval",
+    "pack:desktop": "cd clients/claude-desktop && bunx @anthropic-ai/mcpb pack . ../../dist/tama.mcpb"
   },
   "devDependencies": {
     "@types/bun": "latest",

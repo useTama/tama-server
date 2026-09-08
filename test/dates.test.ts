@@ -106,3 +106,70 @@ test("every mention quotes the text that produced it", () => {
 test("an unparseable capture time yields nothing rather than throwing", () => {
   expect(mentionedDates("start in august", "not a date")).toEqual([]);
 });
+
+// ---- persistence and the digest ----------------------------------------
+
+import { afterEach, beforeEach } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Database } from "bun:sqlite";
+import { openDb } from "../src/db.ts";
+import { describe as label, recordDates, upcomingDates } from "../src/dates.ts";
+import { buildDigest, renderDigest } from "../src/digest.ts";
+
+let dir: string;
+let db: Database;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "tama-dates-"));
+  db = openDb(join(dir, "tama.db"));
+});
+
+afterEach(async () => {
+  db.close();
+  await rm(dir, { recursive: true, force: true });
+});
+
+const NOW = new Date(2025, 0, 14, 9, 0);
+
+test("a month-precision date never renders as a day", () => {
+  // The whole trap: the note said "november 2026". Printing 1 November would
+  // be this code asserting a day the owner never gave.
+  expect(label({ text: "november 2026", at: "2026-11-01", precision: "month" })).toBe("November 2026");
+  expect(label({ text: "15th of march", at: "2025-03-15", precision: "day" })).toBe("15 March 2025");
+});
+
+test("re-reading a note replaces its dates instead of accumulating them", () => {
+  // The table is derived and the note is the truth, so an extractor that
+  // improves must not leave yesterday's wrong guesses behind.
+  recordDates(db, "Inbox/a.md", [{ text: "in august", at: "2025-08-01", precision: "month" }]);
+  recordDates(db, "Inbox/a.md", [{ text: "15 august", at: "2025-08-15", precision: "day" }]);
+  const rows = db.query("SELECT at FROM note_dates WHERE note_path = ?").all("Inbox/a.md");
+  expect(rows).toEqual([{ at: "2025-08-15" }]);
+});
+
+test("upcoming covers the window inclusively and ignores what is outside it", () => {
+  recordDates(db, "Inbox/past.md", [{ text: "yesterday", at: "2025-01-13", precision: "day" }]);
+  recordDates(db, "Inbox/today.md", [{ text: "today", at: "2025-01-14", precision: "day" }]);
+  recordDates(db, "Inbox/edge.md", [{ text: "21 january", at: "2025-01-21", precision: "day" }]);
+  recordDates(db, "Inbox/far.md", [{ text: "november 2026", at: "2026-11-01", precision: "month" }]);
+
+  const got = upcomingDates(db, NOW, 7);
+  expect(got.map((u) => u.at)).toEqual(["2025-01-14", "2025-01-21"]);
+});
+
+test("the digest quotes the note and cites it, so a bad parse looks like one", () => {
+  recordDates(db, "Inbox/2025-01-18-1105-rent.md", [
+    { text: "15th of march", at: "2025-01-16", precision: "day" },
+  ]);
+  const rendered = renderDigest(buildDigest(db, "2025-01-13T00:00:00.000Z", NOW));
+  expect(rendered.message).toContain("coming up:");
+  expect(rendered.message).toContain('"15th of march"');
+  expect(rendered.message).toContain("Inbox/2025-01-18-1105-rent.md");
+});
+
+test("nothing coming up adds no section rather than an empty one", () => {
+  const rendered = renderDigest(buildDigest(db, "2025-01-13T00:00:00.000Z", NOW));
+  expect(rendered.message).not.toContain("coming up");
+});

@@ -24,6 +24,7 @@ import { Stt } from "./stt.ts";
 import { toWav16k, wavSeconds } from "./audio.ts";
 import { resolveCaptureTime } from "./capture-time.ts";
 import { CaptureError } from "./capture-error.ts";
+import { mentionedDates, recordDates } from "./dates.ts";
 import * as idem from "./idempotency.ts";
 import {
   adminTokenOk, verifyToken, mintToken, listTokens, revokeToken,
@@ -156,6 +157,16 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   const t = resolveCaptureTime(timeInput);
   const result = await vault.capture({ text, source: device, at: t.at });
   const ms = Math.round(performance.now() - started);
+
+  // Derived, and never allowed to fail a capture. The note is already written
+  // and journalled by this point; losing an extracted date costs a reminder,
+  // while throwing here would cost the thought, and the table can be rebuilt
+  // from the vault at any time.
+  try {
+    recordDates(db, result.relPath, mentionedDates(text, t.at));
+  } catch (e) {
+    console.error("date extraction failed:", e);
+  }
 
   recordCapture(db, {
     id: crypto.randomUUID(),

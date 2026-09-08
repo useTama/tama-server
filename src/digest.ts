@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Notifier } from "./notify.ts";
 import { safeNotify } from "./notify.ts";
+import { describe, upcomingDates, type NoteDate } from "./dates.ts";
 
 /**
  * The daily digest.
@@ -14,6 +15,15 @@ import { safeNotify } from "./notify.ts";
  * saved and it is not, and you find out weeks later when you go looking for it.
  */
 
+/**
+ * How far ahead the digest looks.
+ *
+ * A week, because this fires daily: anything further away will be reported
+ * again tomorrow, and a digest that lists next November every morning for a
+ * year is a digest people stop reading.
+ */
+export const UPCOMING_DAYS = 7;
+
 export type Digest = {
   since: string;
   captures: number;
@@ -22,9 +32,11 @@ export type Digest = {
   failures: { kind: string; detail: string; at: string }[];
   additionalFailures: number;
   quietDays: number;
+  /** What the notes themselves say is coming. Still no model involved. */
+  upcoming: NoteDate[];
 };
 
-export function buildDigest(db: Database, sinceIso: string): Digest {
+export function buildDigest(db: Database, sinceIso: string, now: Date = new Date()): Digest {
   const cap = db
     .query(
       "SELECT COUNT(*) n, COALESCE(SUM(words),0) w, COALESCE(SUM(audio_secs),0) s FROM captures WHERE received_at >= ?",
@@ -49,6 +61,7 @@ export function buildDigest(db: Database, sinceIso: string): Digest {
     failures,
     additionalFailures: Math.max(0, failureCount - failures.length),
     quietDays,
+    upcoming: upcomingDates(db, now, UPCOMING_DAYS),
   };
 }
 
@@ -60,6 +73,18 @@ export function renderDigest(d: Digest): { title: string; message: string; level
     lines.push(d.quietDays > 1 ? `nothing captured in ${d.quietDays} days` : "nothing captured yesterday");
   } else {
     lines.push(`${d.captures} capture${d.captures === 1 ? "" : "s"}, ${d.words} words, ${d.audioMinutes} min of audio`);
+  }
+
+  if (d.upcoming.length) {
+    lines.push("");
+    lines.push("coming up:");
+    // The quoted text and the note path are not decoration. An extracted date
+    // is a guess about prose, so a bad parse has to be visibly a bad parse
+    // rather than a reminder from nowhere the owner cannot argue with.
+    for (const u of d.upcoming.slice(0, 5)) {
+      lines.push(`  ${describe(u)} - "${u.text}" (${u.notePath})`);
+    }
+    if (d.upcoming.length > 5) lines.push(`  +${d.upcoming.length - 5} more`);
   }
 
   if (d.failures.length) {

@@ -39,6 +39,8 @@
  * trace.
  */
 
+import type { Database } from "bun:sqlite";
+
 export type Precision = "day" | "month";
 
 export type Mention = {
@@ -276,4 +278,61 @@ export function mentionedDates(body: string, capturedAt: string | Date): Mention
   return accepted
     .sort((a, b) => a.index - b.index)
     .map(({ text, at, precision }) => ({ text, at, precision }));
+}
+
+/** One mention, attached to the note that said it. */
+export type NoteDate = Mention & { notePath: string };
+
+/**
+ * Replace what is known about one note's dates.
+ *
+ * Delete-then-insert rather than upsert, so re-reading a note after the
+ * extractor improves does not leave yesterday's wrong guesses behind. The table
+ * is derived; the note is the truth.
+ */
+export function recordDates(db: Database, notePath: string, mentions: Mention[]): void {
+  db.transaction(() => {
+    db.query("DELETE FROM note_dates WHERE note_path = ?").run(notePath);
+    const insert = db.query(
+      "INSERT OR REPLACE INTO note_dates (note_path, at, precision, text) VALUES (?, ?, ?, ?)",
+    );
+    for (const m of mentions) insert.run(notePath, m.at, m.precision, m.text);
+  })();
+}
+
+/**
+ * What the notes say is coming, between `from` and `days` later inclusive.
+ *
+ * Dates are compared as local `YYYY-MM-DD` strings, which sorts and ranges
+ * correctly and avoids reintroducing a timezone at the one place the whole
+ * point is what day it is where the owner is.
+ */
+export function upcomingDates(db: Database, from: Date, days: number): NoteDate[] {
+  const start = localDate(from.getFullYear(), from.getMonth(), from.getDate());
+  const until = new Date(from.getFullYear(), from.getMonth(), from.getDate() + days);
+  const end = localDate(until.getFullYear(), until.getMonth(), until.getDate());
+  return db
+    .query(
+      `SELECT note_path AS notePath, at, precision, text FROM note_dates
+       WHERE at >= ? AND at <= ? ORDER BY at, note_path`,
+    )
+    .all(start, end) as NoteDate[];
+}
+
+const MONTH_LABELS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * How a mention is allowed to be shown.
+ *
+ * A month-precision mention must never render as a day. "November 2026" is
+ * what the note said; "1 November 2026" is a date this code made up, and a
+ * reminder that states it would be asserting precision the owner never gave.
+ */
+export function describe(m: Mention): string {
+  const [y, mo, d] = m.at.split("-");
+  const month = MONTH_LABELS[Number(mo) - 1] ?? mo;
+  return m.precision === "month" ? `${month} ${y}` : `${Number(d)} ${month} ${y}`;
 }

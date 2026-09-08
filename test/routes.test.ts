@@ -483,6 +483,69 @@ test("an unreachable transcriber is 503 and names itself, not a bare 500", async
   }
 });
 
+test("a vault that cannot be written to says so, and says it was the vault", async () => {
+  // The third candidate in #67's own list, and the one still collapsing into
+  // an unclassified 500: CaptureStage declared "vault" and nothing ever
+  // constructed it, so docs/api.md promised a stage on every failed capture
+  // while being wrong for the write itself.
+  const full = new Vault("/nonexistent", "Inbox", false, false);
+  full.capture = async () => {
+    const e = new Error("ENOSPC: no space left on device, write") as NodeJS.ErrnoException;
+    e.code = "ENOSPC";
+    throw e;
+  };
+
+  const f = await serverFixture({}, { vault: full });
+  try {
+    const res = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({ text: "a thought worth keeping" }),
+    }));
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string; stage?: string };
+    expect(body.stage).toBe("vault");
+    expect(body.error).toContain("full");
+    // The fix belongs in the message: the person reading it is the one who can
+    // free the space.
+    expect(body.error).toContain("free space");
+
+    const row = f.db.query<{ kind: string; detail: string }, []>(
+      "SELECT kind, detail FROM failures ORDER BY at DESC LIMIT 1",
+    ).get()!;
+    expect(row.kind).toBe("capture-failed");
+    expect(row.detail).toStartWith("[vault]");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an unwritable vault directory is told apart from a full one", async () => {
+  const readonly = new Vault("/nonexistent", "Inbox", false, false);
+  readonly.capture = async () => {
+    const e = new Error("EACCES: permission denied, open") as NodeJS.ErrnoException;
+    e.code = "EACCES";
+    throw e;
+  };
+
+  const f = await serverFixture({}, { vault: readonly });
+  try {
+    const res = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({ text: "a thought worth keeping" }),
+    }));
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string; stage?: string };
+    expect(body.stage).toBe("vault");
+    // Two different fixes, so two different sentences. "Something went wrong
+    // writing the note" would have covered both and helped with neither.
+    expect(body.error).toContain("permissions");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("an unclassified failure is still a 500, with no invented stage", async () => {
   if (!Bun.which("ffmpeg")) return;
   const stt = {

@@ -158,7 +158,32 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   }
 
   const t = resolveCaptureTime(timeInput);
-  const result = await vault.capture({ text, source: device, at: t.at });
+  // The third of the three things that can fail, and the only one that was
+  // still an unclassified 500 with no stage - so `CaptureStage` declared
+  // "vault" that nothing ever constructed, and docs/api.md promised a stage on
+  // every failed capture while being wrong for the write itself.
+  //
+  // 500 in every branch, deliberately. A full disk and a read-only mount both
+  // fail a retry identically, so 503 would send a client back with the same
+  // idempotency key against the same full disk; docs/api.md already defines
+  // 500 as the server being set up wrong rather than the request being wrong,
+  // which is exactly what these are.
+  let result: Awaited<ReturnType<typeof vault.capture>>;
+  try {
+    result = await vault.capture({ text, source: device, at: t.at });
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    const message = e instanceof Error ? e.message : String(e);
+    if (code === "ENOSPC") {
+      throw new CaptureError(500, "vault", "the disk holding the vault is full", "free space on the server, then send it again");
+    }
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
+      throw new CaptureError(500, "vault", `the server cannot write to the vault: ${message}`, "check the vault directory's owner and permissions");
+    }
+    // A path that escapes the vault root is a bug in a caller, not an
+    // environment to fix, so it gets the stage and no advice.
+    throw new CaptureError(500, "vault", message);
+  }
   const ms = Math.round(performance.now() - started);
 
   // Derived, and never allowed to fail a capture. The note is already written

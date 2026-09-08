@@ -20,8 +20,12 @@
  *        retrying only spends the same rejection three times.
  *   415  the upload was not audio ffmpeg could decode. Sending it again will
  *        not change that.
- *   500  genuinely ours, and a missing ffmpeg belongs here: it is the server
- *        being set up wrong, not the request being wrong.
+ *   500  genuinely ours. A missing ffmpeg belongs here, and so does a vault
+ *        that cannot be written to - a full disk, a read-only mount, an
+ *        unwritable directory. All of them are the server being set up wrong
+ *        rather than the request being wrong, and none of them heals on a
+ *        retry: 503 would send the client back with the same idempotency key
+ *        against the same full disk.
  */
 
 export type CaptureStage = "audio" | "stt" | "vault";

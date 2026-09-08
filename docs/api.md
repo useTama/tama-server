@@ -179,7 +179,7 @@ the failure has no vendor to ask, and they are usually the person who can fix it
 | `422` | decoded fine, but no speech came out. `reason: "no-speech-detected"` |
 | `502` | the speech-to-text provider refused: wrong key, wrong model, rejected file |
 | `503` | speech to text is unreachable or timed out. Not started, still loading a model, or a wrong `stt.url` |
-| `500` | the server's own fault, including ffmpeg not being installed |
+| `500` | the server's own fault: ffmpeg not installed, or the vault unwritable - a full disk, a read-only mount, a directory the server does not own. Retrying spends the same failure, so this is a drop-and-tell-the-user despite being a 5xx |
 
 ## POST /ask
 

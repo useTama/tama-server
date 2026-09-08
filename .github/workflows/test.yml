@@ -23,3 +23,13 @@ jobs:
       # broke in production: which identifiers a message presents, the media
       # retry, and our own mention.
       - run: bun test clients/whatsapp-webjs
+      # And the desktop bundle's, for the same reason. Its relay is the piece
+      # that turns a wrong URL or a revoked token into a sentence someone can
+      # act on, and every one of its tests is about that text.
+      - run: bun test clients/claude-desktop
+      # Validated against the real mcpb schema rather than only parsed as JSON,
+      # so a manifest that installs nowhere fails here instead of at somebody's
+      # double-click. The bundle only: `mcpb validate` rejects a Claude Code
+      # plugin.json as an unsupported manifest version, and the plugin's own
+      # shape is asserted in test/clients.test.ts.
+      - run: bunx --bun @anthropic-ai/mcpb@latest validate clients/claude-desktop/manifest.json

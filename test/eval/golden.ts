@@ -65,15 +65,19 @@ export const ANSWERABLE: Golden[] = [
     gist: ["primary key"] },
 
   // q1-goals also names p95 latency, as a target rather than a cause.
-  // The first real finding from this eval. q1-goals wins by a hair (8.74 to
-  // 8.64) because it contains the phrase "p95 latency ... list endpoint"
+  // The first real finding from this eval, and now fixed. q1-goals won by a
+  // hair because it contains the phrase "p95 latency ... list endpoint"
   // verbatim, while the note that actually explains the latency never says
   // the word in its body, only in its filename. Notes that explain a thing
   // tend not to repeat its name, which is the shape of question keyword
   // scoring is worst at.
+  //
+  // The diagnosis above is what fixed it. Proximity was paying a compact
+  // restatement of a question more than a spread-out answer to it, so
+  // W_PROXIMITY was halved to 1. Keep this case: it is the only thing in the
+  // set holding that weight down, and nothing yet holds it up.
   { id: "latency", q: "why is p95 latency high on the list endpoint",
     find: ["Work/latency-investigation.md"], top: "Work/latency-investigation.md",
-    knownGap: "a goal note quoting the question outranks the note that answers it",
     gist: ["n+1", "tags"] },
 
   { id: "hiring", q: "what did we change about the hiring loop",

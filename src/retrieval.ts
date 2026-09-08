@@ -128,7 +128,41 @@ const STOPWORDS = new Set([
  * ranking is the problem before reaching for embeddings.
  */
 const W_COVERAGE = 6;
-const W_PROXIMITY = 2;
+/**
+ * Halved from 2, which closes the `latency` gap in the golden set.
+ *
+ * That case failed because a note explaining a thing does not repeat its name.
+ * The investigation matched "latency" only in its filename and spread the rest
+ * of the question across paragraphs, while a goals note stating "p95 latency
+ * ... list endpoint" on one line collected the whole proximity bonus. This
+ * weight was paying a compact restatement of a question more than a spread-out
+ * answer to it.
+ *
+ * Swept one weight at a time across all 47 answerable cases. Recall and the
+ * unanswerable floor never move; what moves is how much the right note wins by:
+ *
+ *   2     the answer loses
+ *   1.5   wins by 0.002   <- closes the case, but a coin flip
+ *   1     wins by 0.102
+ *   0.5   wins by 0.202
+ *   0     wins by 0.302
+ *
+ * 1.5 is the smallest change that passes and was rejected anyway: a margin of
+ * 0.002 is one edited note away from flipping back, and a test that passes by
+ * luck is worse than one that fails honestly.
+ *
+ * Note that 0 also passes everything, so no case in the golden set currently
+ * requires proximity at all - the eval constrains this weight from above and
+ * not from below. Halving rather than removing is therefore a judgement, not a
+ * measurement: proximity still has a real job separating a note that discusses
+ * the whole question in one place from one mentioning each term in a different
+ * paragraph, and the set simply has no case that exercises it yet.
+ *
+ * Raising W_PATH to 2 closes the same case and was not chosen: 2.5 pushes an
+ * unanswerable question above the answerable median, so that lever sits one
+ * step from a regression while this one has room on both sides.
+ */
+const W_PROXIMITY = 1;
 const W_PATH = 1.5;
 const W_REPETITION = 1;
 const W_RECENCY = 1.5;

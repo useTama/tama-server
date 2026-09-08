@@ -143,3 +143,45 @@ test("forget clears both halves", async () => {
     await cleanup();
   }
 });
+
+// ---- #57: carrying context, but only when it is needed ------------------
+
+test("a change of subject is not searched with the previous subject's words", () => {
+  // The bug: carrying was unconditional, so this searched "mic gain rent
+  // review". Coverage is the heaviest signal in the ranking, so the mic note
+  // could cover two of three terms and beat the rent note that covered one,
+  // and nothing looked wrong: a note was retrieved and an answer was cited.
+  const turns = [
+    { id: 1, role: "user" as const, text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant" as const, text: "you landed on 60" },
+  ];
+  const query = searchQuery("when is the rent review", turns);
+  expect(query).toBe("when is the rent review");
+  expect(query).not.toContain("mic gain");
+});
+
+test("a question pointing at something already said still carries it", () => {
+  // "other" and "one" survive tokenise, so counting terms cannot tell this
+  // from a question that names its own subject. They are anaphora, not
+  // stopwords, and that distinction is what decides this case.
+  const turns = [
+    { id: 1, role: "user" as const, text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant" as const, text: "you landed on 60" },
+  ];
+  for (const follow of ["and the other one?", "other then that", "what about that"]) {
+    expect(searchQuery(follow, turns)).toContain("mic gain");
+  }
+});
+
+test("one substantive term is not enough to stand alone", () => {
+  // "roast him too" has only "roast" and still needs to know who him is.
+  const turns = [
+    { id: 1, role: "user" as const, text: "what do i have on anand" },
+    { id: 2, role: "assistant" as const, text: "interview feedback" },
+  ];
+  expect(searchQuery("roast him too", turns)).toContain("anand");
+});
+
+test("with no prior turns a question is searched as itself, whatever its shape", () => {
+  expect(searchQuery("and the other one?", [])).toBe("and the other one?");
+});

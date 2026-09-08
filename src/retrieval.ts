@@ -220,10 +220,27 @@ const MAX_HITS_PER_TERM = 64;
  * otherwise score zero notes and read to the user as "my note is gone", which
  * is a much worse answer than a weak one.
  */
+function rawTerms(query: string): string[] {
+  return Array.from(normaliseNumbers(query.toLowerCase()).matchAll(TERM_PATTERN), (m) => m[0]);
+}
+
+/**
+ * The terms that carry information, with no fallback. Empty for a question made
+ * entirely of common words.
+ *
+ * Separate from `tokenise` because the two answer different questions.
+ * Searching wants something to search for even when the query is thin, which is
+ * what the fallback below is for. Deciding whether a question can be searched
+ * at all wants the truth: "what about that" has no subject, and the fallback
+ * would report "what" and "about" as though it did.
+ */
+export function contentTerms(query: string): string[] {
+  return dedupe(rawTerms(query).filter((t) => t.length >= MIN_TERM_LENGTH && !STOPWORDS.has(t)));
+}
+
 export function tokenise(query: string): string[] {
-  const raw = Array.from(normaliseNumbers(query.toLowerCase()).matchAll(TERM_PATTERN), (m) => m[0]);
-  const kept = raw.filter((t) => t.length >= MIN_TERM_LENGTH && !STOPWORDS.has(t));
-  return dedupe(kept.length > 0 ? kept : raw);
+  const content = contentTerms(query);
+  return content.length > 0 ? content : dedupe(rawTerms(query));
 }
 
 function dedupe(terms: string[]): string[] {

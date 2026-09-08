@@ -26,6 +26,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { Llm } from "./llm.ts";
+import { contentTerms } from "./retrieval.ts";
 
 /** Turns kept verbatim. Six exchanges is about as far back as "it" reaches. */
 export const KEEP_TURNS = 12;
@@ -95,6 +96,34 @@ export function recall(db: Database, thread: string, keep = KEEP_TURNS): Recalle
 }
 
 /**
+ * Words that point at something already said instead of naming it.
+ *
+ * These are what make a question unable to stand alone, and they are not
+ * stopwords: `contentTerms` keeps "other" and "one", so counting surviving
+ * terms cannot tell "and the other one?" (two terms, both empty of subject)
+ * from "when is the rent review" (two terms that are the subject).
+ *
+ * Deliberately only the pointing words. "last" and "next" are absent because
+ * "what did I decide last week" is a real question about time, and the content
+ * term beside them carries it anyway.
+ */
+const ANAPHORIC = new Set([
+  "other", "ones", "one", "that", "this", "those", "these", "it", "them", "him", "her",
+  "same", "else", "another", "again", "too", "both", "either", "neither", "such",
+]);
+
+/**
+ * Terms that name a subject, rather than pointing back at one.
+ *
+ * `contentTerms` and not `tokenise`: the latter falls back to the raw words
+ * when the stoplist empties a query, so "what about that" would report "what"
+ * and "about" as substantive and be judged able to stand alone.
+ */
+function substantive(question: string): string[] {
+  return contentTerms(question).filter((t) => !ANAPHORIC.has(t));
+}
+
+/**
  * What to search the vault for, given a question that may not stand alone.
  *
  * `GrepRetriever` scores on word overlap, so "and the other one?" retrieves
@@ -103,11 +132,28 @@ export function recall(db: Database, thread: string, keep = KEEP_TURNS): Recalle
  * of what a proper rewrite (#23) would, because the words that matter were
  * usually said a message or two ago.
  *
+ * Carried *conditionally*, which is #57. Doing it unconditionally was right for
+ * the follow-up and wrong for a change of subject: ask about the mic gain, get
+ * an answer, then ask "when is the rent review", and the search ran on "mic
+ * gain rent review" - two stale discriminating terms against one live one.
+ * Coverage is the heaviest signal, so the mic note could cover two of three
+ * terms and outrank the rent note that covered one. There was no symptom: a
+ * note was retrieved, an answer was produced, and it cited something plausible.
+ *
+ * Two substantive terms is the threshold. One is not enough: "roast him too"
+ * has only "roast" and still needs to know who, and the same holds for "what
+ * about the mic" when the mic was three messages ago.
+ *
+ * The tokeniser is the retriever's own, not a copy. A threshold that decides
+ * whether a question can be searched has to split words the way the thing doing
+ * the searching splits them, or the decision is about a query nobody runs.
+ *
  * Only user turns. The assistant's own words are drawn from the notes, so
  * feeding them back would score those same notes higher for reasons that have
  * nothing to do with the question.
  */
 export function searchQuery(question: string, turns: Turn[], lookBack = 2): string {
+  if (substantive(question).length >= 2) return question.slice(0, 1000);
   const recent = turns
     .filter((t) => t.role === "user")
     .slice(-lookBack)

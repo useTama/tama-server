@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { SARVAM_URL, type SttConfig } from "./stt.ts";
 import { BUILTIN_VIEWS, resolveView, type View } from "./views.ts";
 import type { AnswerStyle, Voice } from "./ask.ts";
+import { ROUTE_DEFAULTS, type RouteConfig } from "./route.ts";
 
 export type Config = {
   vault: { path: string; inbox: string };
@@ -34,6 +35,14 @@ export type Config = {
      */
     maxTokens?: number;
   };
+  /**
+   * Post-processing. Absent, the Inbox is the second brain: captures pile up as
+   * dated files, nothing links to them and no note is ever rewritten. Present,
+   * a cycle files each capture into the note it belongs in and empties the
+   * Inbox. It needs `ask`, because deciding where a thought belongs needs a
+   * model, and it reuses that one rather than adding a second key to keep.
+   */
+  route?: RouteConfig & { enabled: boolean };
   /**
    * What the user named this. The wizard asks, so the assistant should use it
    * rather than calling itself Tama at someone who named it something else.
@@ -342,6 +351,50 @@ export function loadConfig(path = defaultConfigPath()): Config {
     };
   }
 
+  // Absent `route` is the old behaviour exactly: captures stay in the Inbox and
+  // no note is ever rewritten. Turning it on is a decision about somebody's
+  // notes, so it is never a default.
+  let route: Config["route"];
+  if (raw.route) {
+    const num = (value: unknown, fallback: number, name: string): number => {
+      if (value === undefined) return fallback;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`config: route.${name} must be a non-negative number, got ${JSON.stringify(value)}`);
+      }
+      return n;
+    };
+
+    // now.md is rewritten whole every cycle, so it has to be one file at the
+    // vault root and not, say, a folder that a typo would turn into one.
+    const nowNote = String(raw.route.nowNote ?? ROUTE_DEFAULTS.nowNote);
+    if (!nowNote.toLowerCase().endsWith(".md") || nowNote.includes("/") || nowNote.startsWith(".")) {
+      throw new Error(`config: route.nowNote must be a Markdown file at the vault root, got ${JSON.stringify(nowNote)}`);
+    }
+    const minConfidence = num(raw.route.minConfidence, ROUTE_DEFAULTS.minConfidence, "minConfidence");
+    if (minConfidence > 1) {
+      throw new Error(`config: route.minConfidence is a probability between 0 and 1, got ${JSON.stringify(raw.route.minConfidence)}`);
+    }
+
+    route = {
+      enabled: raw.route.enabled !== false,
+      everyMinutes: num(raw.route.everyMinutes, ROUTE_DEFAULTS.everyMinutes, "everyMinutes"),
+      minAgeSeconds: num(raw.route.minAgeSeconds, ROUTE_DEFAULTS.minAgeSeconds, "minAgeSeconds"),
+      maxPerSweep: num(raw.route.maxPerSweep, ROUTE_DEFAULTS.maxPerSweep, "maxPerSweep"),
+      minConfidence,
+      maxTries: num(raw.route.maxTries, ROUTE_DEFAULTS.maxTries, "maxTries"),
+      nowNote,
+    };
+    // Loudly, at load, rather than as a cycle that quietly does nothing every
+    // fifteen minutes for a week.
+    if (route.enabled && !ask) {
+      throw new Error("config: route needs an ask block. Filing a capture means deciding where it belongs, which needs the model");
+    }
+    if (route.everyMinutes < 1) {
+      throw new Error("config: route.everyMinutes must be at least 1");
+    }
+  }
+
   const rawViews = (raw.views ?? {}) as Record<string, unknown>;
   const views: Record<string, View> = {};
   for (const [name, raw] of Object.entries(rawViews)) {
@@ -413,6 +466,7 @@ export function loadConfig(path = defaultConfigPath()): Config {
   return {
     vault: { path: expand(raw.vault.path), inbox: raw.vault.inbox ?? "Inbox" },
     ask,
+    route,
     whatsapp,
     ...(raw.world?.name ? { world: { name: String(raw.world.name) } } : {}),
     views,

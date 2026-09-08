@@ -6,9 +6,10 @@ import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
 import { ConsoleNotifier, NtfyNotifier, type Notifier } from "./notify.ts";
 import { scheduleDigest } from "./digest.ts";
+import { scheduleRouting } from "./route.ts";
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
-import { tama, grey, amber } from "./ui.ts";
+import { tama, grey, amber, green } from "./ui.ts";
 import { safeNotify } from "./notify.ts";
 import { recordFailure } from "./digest.ts";
 import { sweepExpiredCodes } from "./auth.ts";
@@ -159,10 +160,30 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
 const stopDigest = scheduleDigest(db, notifier, config.notify.digestAt);
 setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
 
+// Post-processing runs in the server process rather than a cron entry, because
+// it needs the same vault, the same debounced commit and the same database as
+// capture. Off unless configured: it rewrites notes.
+const stopRouting = config.route?.enabled && llm
+  ? scheduleRouting(
+      { vault, db, llm, root: config.vault.path, inbox: config.vault.inbox, config: config.route, onWrite: commitSoon },
+      (r) => {
+        if (!r.filed.length && !r.failed.length && !r.nowUpdated) return;
+        const parts = [`filed ${r.filed.length}`];
+        if (r.unfiled.length) parts.push(`${r.unfiled.length} left`);
+        if (r.failed.length) parts.push(`${r.failed.length} failed`);
+        if (r.nowUpdated) parts.push(config.route!.nowNote);
+        console.log(`${green("route")} ${grey(parts.join(", "))}`);
+      },
+    )
+  : () => {};
+
 console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
 console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
 console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
 console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
+if (config.route?.enabled) {
+  console.log(`${grey("  route  ")} every ${config.route.everyMinutes}m -> ${config.route.nowNote} ${grey(`(min confidence ${config.route.minConfidence})`)}`);
+}
 if (routes.whatsapp) {
   const callback = config.whatsapp!.publicBaseUrl
     ? `${config.whatsapp!.publicBaseUrl}/webhooks/whatsapp`
@@ -176,6 +197,7 @@ const shutdown = () => {
   if (stopping) return;
   stopping = true;
   stopDigest();
+  stopRouting();
   routes.whatsapp?.stop();
   db.close();
   server.stop(true);

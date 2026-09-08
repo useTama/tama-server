@@ -293,3 +293,51 @@ test("one identity claimed by two people fails at startup, not silently", async 
   });
   expect(() => loadConfig(path)).toThrow(/maps "919876543210" to both/);
 });
+
+const base = { vault: { path: "/vault" }, server: { adminToken: "secret" } };
+const withAsk = {
+  ...base,
+  ask: { provider: "openai-compatible", model: "google/gemini-3.5-flash-lite", baseUrl: "https://example.test/v1" },
+};
+
+test("routing is off unless it is configured", async () => {
+  // Absent route is the old behaviour exactly, and it has to stay that way:
+  // turning it on means a model rewrites somebody's notes.
+  expect(loadConfig(await config(withAsk)).route).toBeUndefined();
+});
+
+test("routing fills in defaults and can be turned off without deleting it", async () => {
+  const on = loadConfig(await config({ ...withAsk, route: {} })).route;
+  expect(on).toMatchObject({ enabled: true, everyMinutes: 15, nowNote: "now.md" });
+  expect(loadConfig(await config({ ...withAsk, route: { enabled: false } })).route!.enabled).toBe(false);
+});
+
+test("routing without a model fails at load, not on the first cycle", async () => {
+  // Otherwise it is a timer that quietly does nothing every fifteen minutes.
+  const path = await config({ ...base, route: {} });
+  expect(() => loadConfig(path)).toThrow(/route needs an ask block/);
+  // Disabled needs no model: that is how someone turns it off after the key goes.
+  expect(loadConfig(await config({ ...base, route: { enabled: false } })).route!.enabled).toBe(false);
+});
+
+test("now.md must be one file at the vault root", async () => {
+  // It is rewritten whole every cycle, so a typo that names a folder, or a path
+  // into a subtree, is worth refusing before anything is overwritten.
+  for (const nowNote of ["Notes/now.md", "now", ".now.md"]) {
+    const path = await config({ ...withAsk, route: { nowNote } });
+    expect(() => loadConfig(path)).toThrow(/route.nowNote/);
+  }
+  expect(loadConfig(await config({ ...withAsk, route: { nowNote: "Now.md" } })).route!.nowNote).toBe("Now.md");
+});
+
+test("routing numbers are checked, because a bad one is a runaway cycle", async () => {
+  const bad = async (route: unknown) => {
+    const path = await config({ ...withAsk, route });
+    expect(() => loadConfig(path)).toThrow();
+  };
+  await bad({ everyMinutes: 0 });
+  await bad({ everyMinutes: -5 });
+  await bad({ maxPerSweep: "lots" });
+  // A confidence floor above 1 would never file anything.
+  await bad({ minConfidence: 1.5 });
+});

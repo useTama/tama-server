@@ -15,7 +15,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY bridge.mjs ./
+COPY bridge.mjs media-download.mjs message-id.mjs ./
 
 # The WhatsApp session is the credential. It lives in a volume so a rebuild
 # does not mean scanning the QR again.

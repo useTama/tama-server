@@ -863,7 +863,7 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
       { value: "views" as const, label: "Views — named slices of the vault, for audiences to see through" },
       { value: "ask" as const, label: "Ask — which model answers your questions" },
       { value: "stt" as const, label: "Speech-to-text — who transcribes your voice notes" },
-      { value: "bridge" as const, label: "WhatsApp bridge — your own numbers, self-chat behaviour, token" },
+      { value: "bridge" as const, label: "WhatsApp bridge — your own numbers and token" },
       { value: "devices" as const, label: "Devices — list what is paired, revoke one" },
       { value: "wizard" as const, label: "Everything else — vault, transcription, Ask (full setup)" },
       { value: "done" as const, label: "Done" },

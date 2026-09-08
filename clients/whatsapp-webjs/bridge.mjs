@@ -13,9 +13,8 @@
  * violation that can get the account banned. The supported path is the
  * `whatsapp` block in tama.config.json.
  *
- * Routing mirrors the Cloud API adapter: a voice note is a capture, text is a
- * question. The one difference is your own chat with yourself, where plain
- * text is left alone and only the ask prefix asks — see onMessage.
+ * Routing mirrors the Cloud API adapter: a voice note is a capture and text is
+ * a question, including plain text in your own chat with yourself.
  */
 
 import { createRequire } from "node:module";
@@ -23,6 +22,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import qrcode from "qrcode-terminal";
+import { downloadRawMedia } from "./media-download.mjs";
+import { repairSerializedMessageId } from "./message-id.mjs";
 
 // whatsapp-web.js is CommonJS and has no named ESM exports.
 const require = createRequire(import.meta.url);
@@ -40,10 +41,10 @@ const SETTINGS_PATH = process.env.WA_SETTINGS ?? "/etc/tama/whatsapp-bridge.json
 
 /**
  * `tama-server setup` and `tama-server settings` write this file: the device
- * token they minted, the numbers allowed to write in, and what plain self-chat
- * text means. Environment variables still win, so a one-off override or a
- * deployment that predates the wizard support keeps working, but nobody should
- * have to hand-edit .env to add a phone number.
+ * token they minted and the numbers allowed to write in. Environment variables
+ * still win, so a one-off override or a deployment that predates the wizard
+ * support keeps working, but nobody should have to hand-edit .env to add a
+ * phone number.
  */
 function loadSettings() {
   let file = {};
@@ -322,12 +323,32 @@ async function downloadAudio(message) {
     } catch (error) {
       lastError = error;
     }
+    // A WhatsApp Web LID migration can leave the message visible to the event
+    // handler but absent from the collection downloadMedia() searches. The
+    // Message still carries the encrypted-media fields, so use the library's
+    // own browser download manager without repeating the broken lookup.
+    try {
+      const media = await downloadRawMedia(message, client.pupPage);
+      if (media?.data) {
+        log("media download", "used raw-message fallback");
+        return media;
+      }
+    } catch (error) {
+      lastError = error;
+    }
     log("media download failed", `attempt ${attempt + 1}: ${lastError?.message ?? lastError}`);
   }
   throw lastError ?? new Error("could not download the audio");
 }
 
 async function capture(message) {
+  const messageId = repairSerializedMessageId(message);
+  if (!messageId) {
+    log("capture failed", "WhatsApp supplied no stable message id");
+    await reply(message, "I couldn't identify that voice note safely. Send it again?");
+    return;
+  }
+
   let media;
   try {
     media = await downloadAudio(message);
@@ -348,7 +369,7 @@ async function capture(message) {
       "content-type": media.mimetype || "audio/ogg",
       // WhatsApp redelivers on reconnect. The message id is stable, so the
       // server's idempotency table collapses a redelivery into one note.
-      "idempotency-key": message.id._serialized,
+      "idempotency-key": messageId,
       "x-tama-captured-at": new Date(message.timestamp * 1000).toISOString(),
     },
     body: audio,
@@ -565,7 +586,11 @@ async function claimChat(message, chatId, name) {
 }
 
 async function onMessage(message) {
-  if (message.id?._serialized && ours.has(message.id._serialized)) return;
+  // Current WhatsApp Web calls this field `$1`; whatsapp-web.js still expects
+  // `_serialized` in downloadMedia(), reply(), and its other message methods.
+  // Repair it once at the boundary so every later operation gets a real id.
+  const messageId = repairSerializedMessageId(message);
+  if (messageId && ours.has(messageId)) return;
 
   const chatId = message.fromMe ? message.to : message.from;
   if (chatId && saying.has(utterance(chatId, message.body ?? ""))) return;
@@ -636,8 +661,8 @@ async function onMessage(message) {
 
   // The allowlist is the owner's other numbers, not a guest list. A second
   // phone is still Shivansh, so it gets the self treatment: the owner's own
-  // token, the whole vault, and the self-chat text setting. Anybody who is not
-  // the owner needs an audience, which is what decides what they may see.
+  // token and the whole vault. Anybody who is not the owner needs an audience,
+  // which is what decides what they may see.
   const isSelfChat = (selfNumber && ids.has(selfNumber))
     || chatId === selfId
     || [...ids].some((id) => settings.allowed.has(id));

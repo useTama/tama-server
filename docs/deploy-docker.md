@@ -498,7 +498,7 @@ it holds a device token and posts to `/capture` and `/ask` like the iOS Shortcut
 so the server needs no `whatsapp` block for it at all. The wizard sets it up:
 
 ```sh
-tama settings                       # WhatsApp bridge -> answer three questions
+tama settings                       # WhatsApp bridge -> add any other owner numbers
 tama start
 tama logs whatsapp-webjs            # scan the QR
 ```

@@ -27,21 +27,17 @@ and does not know it exists — no `whatsapp` block, no webhook, no app secret.
 |---|---|
 | Voice note | transcribes and saves a note, replies with the path |
 | Voice note in your own self-chat | same |
-| Text in your own self-chat | asks your notes — or is ignored, if you chose the scratchpad setting |
-| `?question` in self-chat | asks your notes either way |
+| Text in your own self-chat | asks your notes |
 | Any text from an allowed contact | asks your notes |
 | Anything in a group | ignored |
 | Anything from a number not on the allowlist | ignored |
 
-Voice note captures, text asks. That mirrors the Cloud API adapter. Your own
-chat with yourself is the one place you get a choice, because it doubles as a
-scratchpad: `ignore` leaves plain text alone so pasting yourself a link does
-not spend a model call, and the prefix asks. `ask` is the default — a bot that
-says nothing when you talk to it reads as broken.
+Voice note captures, text asks. That mirrors the Cloud API adapter. Plain text
+in your own chat always asks; there is no prefix or scratchpad mode.
 
 ## Setup
 
-One command, three questions:
+One command:
 
 ```sh
 tama settings
@@ -50,13 +46,11 @@ tama settings
 Pick **WhatsApp bridge**. (No `tama` command yet? `sudo ln -s "$PWD/docker/tama"
 /usr/local/bin/tama` from the repo, or use `docker compose run --rm settings`.)
 The first-run wizard, `tama setup`, offers the same thing under **WhatsApp** →
-**Link your own WhatsApp number**. Either way it asks:
+**Link your own WhatsApp number**. It asks:
 
 | Question | What it means |
 |---|---|
-| Your own other numbers | Your second phone, your work number. They are treated as you: the whole vault, your own token, the self-chat setting. Anyone who is not you needs an audience instead. |
-| Plain text in your own chat with yourself | **Answer it** makes that chat your assistant. **Ignore it** keeps it a scratchpad, and a prefix asks. |
-| Prefix that marks a question | Only asked in "ignore" mode. Defaults to `?`. |
+| Your own other numbers | Your second phone, your work number. They are treated as you and can use the whole vault with your token. Anyone who is not you needs an audience instead. |
 
 It mints the device token itself and writes `config/whatsapp-bridge.json`
 (0600). There is no token to copy, and nothing to put in `.env`.
@@ -127,12 +121,12 @@ from that, so a compromised bridge cannot widen what a group reads.
 ### Changing it later
 
 `tama settings` again (or `tama-server settings` on a source checkout). The
-**WhatsApp bridge** section edits the allowed numbers, the self-chat behaviour
-and the token without walking the whole wizard; **Devices** lists what is paired
-and revokes one. Then `tama restart` — the bridge reads the file at startup.
+**WhatsApp bridge** section edits the allowed numbers and token without walking
+the whole wizard; **Devices** lists what is paired and revokes one. The bridge
+reloads these settings while it is running.
 
 **Upgrading from a `.env` install.** Earlier versions took `TAMA_TOKEN` and
-`WA_ALLOWED` from `.env`. Run `tama settings`, answer the three questions, and
+`WA_ALLOWED` from `.env`. Run `tama settings`, enter any other owner numbers, and
 then delete those two lines, because environment variables override the settings
 file and would keep the old values in force:
 
@@ -153,8 +147,6 @@ the wizard support:
 | `TAMA_TOKEN` | from the file | device token |
 | `TAMA_URL` | `http://tama:8080` | the server, over the Compose network |
 | `WA_ALLOWED` | from the file | comma-separated senders, country code + digits |
-| `WA_ASK_PREFIX` | from the file | what marks a self-chat message as a question |
-| `WA_SELF_CHAT_TEXT` | from the file | `ask` or `ignore` |
 | `WA_WEB_VERSION_HTML` | unset | pin the WhatsApp Web page (see below) |
 
 ## When it breaks

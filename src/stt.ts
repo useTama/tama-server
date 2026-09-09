@@ -21,6 +21,7 @@
  * is a real capture language for real users, not a rounding error.
  */
 import { CaptureError, sttStatusFor } from "./capture-error.ts";
+import { splitWav, wavSeconds } from "./audio.ts";
 
 export type SttConfig = {
   provider: "whisper-cpp" | "openai-compatible" | "sarvam";
@@ -34,10 +35,25 @@ export type SttConfig = {
    */
   language?: string;
   apiKey?: string;
+  /**
+   * Longest recording this provider will take in one request. Over it, the
+   * audio is split and the pieces are transcribed in order. Defaults per
+   * provider; whisper.cpp and the OpenAI shape have no such limit worth
+   * enforcing here.
+   */
+  maxChunkSeconds?: number;
 };
 
 /** What Sarvam serves when no model is named. */
 export const SARVAM_DEFAULT_MODEL = "saaras:v3";
+
+/**
+ * Sarvam's real-time route documents a thirty second limit. The margin is
+ * because the number it compares against is its own reading of the file, and a
+ * request sitting exactly on a documented boundary is the kind of thing that
+ * fails for one caller in twenty.
+ */
+export const SARVAM_MAX_CHUNK_SECONDS = 28;
 export const SARVAM_URL = "https://api.sarvam.ai";
 
 export class Stt {
@@ -84,7 +100,38 @@ export class Stt {
     }
   }
 
+  /** The longest single request this provider accepts, if it has a limit. */
+  private get chunkSeconds(): number | undefined {
+    if (this.config.maxChunkSeconds) return this.config.maxChunkSeconds;
+    return this.config.provider === "sarvam" ? SARVAM_MAX_CHUNK_SECONDS : undefined;
+  }
+
+  /**
+   * Transcribe a recording, in as many requests as the provider needs.
+   *
+   * Sequentially, not in parallel: the pieces have to be joined in order
+   * anyway, and firing eleven requests at once is how a five minute note earns
+   * a rate limit. Any piece failing fails the whole capture, because half a
+   * transcript saved as a note is worse than no note at all - it looks like it
+   * worked, and nobody re-records what they think they already said.
+   */
   async transcribe(wav16k: Uint8Array): Promise<string> {
+    const limit = this.chunkSeconds;
+    if (!limit || wavSeconds(wav16k) <= limit) return this.transcribeOne(wav16k);
+
+    const pieces = splitWav(wav16k, limit);
+    const parts: string[] = [];
+    for (const piece of pieces) {
+      const text = await this.transcribeOne(piece);
+      // A piece of pure silence contributes nothing rather than a gap. All of
+      // them empty still comes back empty, which is what the caller turns into
+      // "nothing was heard".
+      if (text.trim()) parts.push(text.trim());
+    }
+    return parts.join(" ");
+  }
+
+  private async transcribeOne(wav16k: Uint8Array): Promise<string> {
     const form = new FormData();
     form.append("file", new Blob([wav16k as BufferSource], { type: "audio/wav" }), "audio.wav");
 

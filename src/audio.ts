@@ -133,3 +133,66 @@ function wavFromPcm(pcm: Uint8Array): Uint8Array {
 export function wavSeconds(wav: Uint8Array): number {
   return Math.max(0, (wav.byteLength - WAV_HEADER_BYTES) / (SAMPLE_RATE * BYTES_PER_SAMPLE));
 }
+
+/**
+ * Cut a long recording into pieces a provider will accept.
+ *
+ * Sarvam's real-time route refuses anything over thirty seconds and says to use
+ * its batch API instead. Batch is asynchronous - submit, poll, collect - which
+ * would make capture asynchronous too, and "your note will appear at some
+ * point" is a different product. So a long recording is split and the pieces
+ * are transcribed in order.
+ *
+ * The cut lands at the quietest moment near the boundary rather than exactly on
+ * it. A fixed cut falls mid-word about as often as not, and the two halves come
+ * back as two wrong words rather than one right one - so the search is worth
+ * fifteen lines. It looks backwards only, so no piece ever exceeds the limit.
+ */
+export function splitWav(
+  wav: Uint8Array,
+  maxSeconds: number,
+  opts: { searchSeconds?: number } = {},
+): Uint8Array[] {
+  if (wavSeconds(wav) <= maxSeconds) return [wav];
+
+  const pcm = wav.subarray(WAV_HEADER_BYTES);
+  // A DataView rather than an Int16Array: a typed array needs its byte offset
+  // aligned to its element size, and a caller who handed us a subarray of an
+  // odd-offset buffer would get a RangeError instead of a transcript.
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  const total = Math.floor(pcm.byteLength / BYTES_PER_SAMPLE);
+  const at = (i: number) => Math.abs(view.getInt16(i * BYTES_PER_SAMPLE, true));
+
+  const perChunk = Math.max(1, Math.floor(maxSeconds * SAMPLE_RATE));
+  const searchSpan = Math.min(perChunk - 1, Math.floor((opts.searchSeconds ?? 2) * SAMPLE_RATE));
+  // 20 ms. Long enough that one loud sample cannot win it, short enough to fit
+  // in the gap between two words.
+  const window = Math.max(1, Math.floor(0.02 * SAMPLE_RATE));
+
+  const out: Uint8Array[] = [];
+  let start = 0;
+  while (start < total) {
+    const hardEnd = Math.min(total, start + perChunk);
+    let end = hardEnd;
+
+    // The last piece takes whatever is left. There is no boundary to be gentle
+    // about, and searching would only shave off the final word.
+    if (hardEnd < total) {
+      let quietestAt = hardEnd;
+      let quietest = Infinity;
+      for (let w = hardEnd - window; w >= hardEnd - searchSpan && w > start; w -= window) {
+        let energy = 0;
+        for (let i = w; i < w + window; i++) energy += at(i);
+        if (energy < quietest) {
+          quietest = energy;
+          quietestAt = w + Math.floor(window / 2);
+        }
+      }
+      end = quietestAt;
+    }
+
+    out.push(wavFromPcm(pcm.subarray(start * BYTES_PER_SAMPLE, end * BYTES_PER_SAMPLE)));
+    start = end;
+  }
+  return out;
+}

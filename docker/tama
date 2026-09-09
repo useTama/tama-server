@@ -154,6 +154,69 @@ case $command in
   logs)     compose logs -f --tail 100 "${@:-tama}" ;;
   health)   curl -s localhost:8080/health ;;
 
+  # Everything a client needs, in one command, as a line to paste.
+  #
+  # Setting up the editor plugin used to be four separate acts of assembly:
+  # mint a token here, copy it, work out for yourself which address the laptop
+  # can reach, and then compose an install command from a doc. Every one of
+  # those is a step where somebody stops. And the token step is the worst of
+  # them, because the only way to get a value from this box into a command on
+  # a laptop is to paste it somewhere - which is how a live credential ends up
+  # in a chat log.
+  #
+  # So this prints the finished command. The address is chosen rather than
+  # asked for: the tailnet name if this machine is serving on one, then a
+  # configured publicBaseUrl, then loopback with a note about what that means.
+  mcp|connect)
+    name=${1:-claude-code}
+
+    url=$(tailscale_url)
+    # `tailscale serve status` prints "No serve config" when it is not serving,
+    # which is output - so testing for "any output" says yes when the answer is
+    # no, and this command then hands over a name that resolves and a port that
+    # never answers. That is a worse failure than loopback, because it looks
+    # like a working address. Match what it actually says.
+    if [ -n "$url" ] && tailscale serve status 2>/dev/null | grep -qi "no serve config"; then
+      # On a tailnet but not serving: the name resolves and the port does not
+      # answer, which is a worse failure than loopback because it looks like a
+      # working address.
+      echo "This machine is on a tailnet but not serving yet. Run 'tama expose' first," >&2
+      echo "or press on and use the loopback address with a tunnel." >&2
+      echo "" >&2
+      url=""
+    fi
+    [ -z "$url" ] && url=$(config_value publicBaseUrl)
+    reach=""
+    if [ -z "$url" ]; then
+      url="http://127.0.0.1:8080"
+      reach="loopback"
+    fi
+
+    token=$(compose exec -T tama bun run src/tama.ts token "$name" 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
+    if [ -z "$token" ]; then
+      echo "Could not mint a token. Is tama running? 'tama status'" >&2
+      exit 1
+    fi
+
+    echo "Run these two lines on the machine you work on:"
+    echo ""
+    echo "  claude plugin marketplace add useTama/tama-server"
+    echo "  claude plugin install tama@usetama --scope user \\"
+    echo "    --config server_url=$url \\"
+    echo "    --config device_token=$token"
+    echo ""
+    if [ "$reach" = "loopback" ]; then
+      echo "That address is this machine's loopback, so it only works if you work HERE."
+      echo "From a laptop, either:"
+      echo "  tama expose                      a tailnet address, no tunnel, every device"
+      echo "  scripts/tama-tunnel install ...   an ssh tunnel that restarts itself"
+      echo ""
+    fi
+    echo "The token is unrestricted and shown once. It went to this terminal and"
+    echo "nowhere else - keep it out of a chat window, and revoke it under Devices"
+    echo "in 'tama settings' if it ever gets somewhere it should not be."
+    ;;
+
   # Make this daemon addressable, once, and print the URL.
   #
   # Four features wanted this and each had its own workaround: MCP needed an
@@ -215,16 +278,44 @@ case $command in
         # The serve syntax has changed across releases, so try the forms in
         # order and report which one worked rather than guessing one and
         # failing opaquely.
+        # Serve is a tailnet-wide feature and is OFF until somebody enables it
+        # in the admin console, which is a second click after the device
+        # sign-in. `tailscale serve` reacts by printing a URL and then WAITING
+        # FOREVER for it to be visited - so this loop used to hang with no
+        # output at all, because it sent both streams to /dev/null. An hour of
+        # somebody's evening went into working that out.
+        #
+        # Captured rather than discarded, timed rather than trusted, and the
+        # captured text is printed when nothing worked.
         served=""
+        attempt_log=$(mktemp)
         for attempt in "--bg 8080" "--bg http://127.0.0.1:8080" "https / http://127.0.0.1:8080"; do
           # shellcheck disable=SC2086
-          if sudo tailscale serve $attempt >/dev/null 2>&1; then served="tailscale serve $attempt"; break; fi
+          if timeout 20 sudo tailscale serve $attempt >>"$attempt_log" 2>&1; then
+            served="tailscale serve $attempt"
+            break
+          fi
         done
         if [ -z "$served" ]; then
-          echo "Could not configure tailscale serve. Try it by hand and paste the error:" >&2
-          echo "  sudo tailscale serve --bg 8080" >&2
+          # The one failure worth naming, because it is not an error the user
+          # can fix on the box and the message is a URL to open.
+          if grep -qi "not enabled on your tailnet" "$attempt_log"; then
+            echo "Serve is not enabled on your tailnet yet. That is one click, in the admin console:" >&2
+            grep -o "https://login.tailscale.com[^ ]*" "$attempt_log" | head -1 | sed "s/^/  /" >&2
+            echo "" >&2
+            echo "Open it, then run tama expose again. Signing the machine in was the first" >&2
+            echo "click; this is the second, and it is per tailnet rather than per machine." >&2
+          else
+            echo "Could not configure tailscale serve. What it said:" >&2
+            sed "s/^/  /" "$attempt_log" >&2
+            echo "" >&2
+            echo "Try it by hand to see more:" >&2
+            echo "  sudo tailscale serve --bg 8080" >&2
+          fi
+          rm -f "$attempt_log"
           exit 1
         fi
+        rm -f "$attempt_log"
 
         url=$(tailscale_url)
         if [ -z "$url" ]; then
@@ -396,6 +487,7 @@ tama stop                   stop the containers, volumes survive
 tama status                 what is running
 tama logs [service]         follow logs; defaults to tama
 tama health                 the /health JSON
+tama mcp [NAME]             the whole editor-plugin install, as a line to paste
 tama expose                 put this server on your tailnet, no tunnel, no domain
 tama expose status          how it is currently reachable
 tama ask "question"         ask your notes from the terminal

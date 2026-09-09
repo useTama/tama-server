@@ -15,6 +15,14 @@
 #   TAMA_VAULT_DIR=/home/ubuntu/vault, in .env, then move the data across once.
 #   See docs/deploy-docker.md.
 #
+# A container has no timezone, so "local" means UTC and notes captured after
+# midnight are filed under the previous day. Set your own, in .env:
+#
+#   TZ=Asia/Kolkata
+#
+# It decides note filenames, the captured: stamp, and when the daily digest
+# fires. The startup banner prints the zone and the local time it believes.
+#
 # Do not pre-copy tama.config.docker.json into config/ before the wizard: that
 # template's placeholder adminToken is rejected on load by design. The template
 # is for configuring by hand instead of running the wizard.
@@ -39,6 +47,9 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       TAMA_CONFIG: /etc/tama/tama.config.json
+      # Notes are dated in this zone, and the digest fires by it. Unset means
+      # UTC, which files a note taken at 1am under yesterday.
+      TZ: ${TZ:-UTC}
     volumes:
       - ./config:/etc/tama:ro
       # Defaults to a named volume, which needs no setup and survives a
@@ -59,6 +70,7 @@ services:
       # not outlive the container.
       TAMA_VAULT: /vault
       TAMA_DATA_DIR: /data
+      TZ: ${TZ:-UTC}
     volumes:
       - ./config:/etc/tama
       - ${TAMA_VAULT_DIR:-tama-vault}:/vault
@@ -79,6 +91,8 @@ services:
     profiles: ["settings"]
     build: .
     command: ["bun", "run", "src/tama.ts", "settings", "--config", "/etc/tama/tama.config.json"]
+    environment:
+      TZ: ${TZ:-UTC}
     volumes:
       - ./config:/etc/tama
       - ${TAMA_VAULT_DIR:-tama-vault}:/vault
@@ -125,6 +139,9 @@ services:
       WA_REPLY_BUDGET: "${WA_REPLY_BUDGET:-30}"
       WA_BUDGET_MINUTES: "${WA_BUDGET_MINUTES:-10}"
       WA_CONVERSATION_MINUTES: "${WA_CONVERSATION_MINUTES:-5}"
+      # Only its log timestamps, but a bridge log an hour out from the server's
+      # is unreadable next to it when something has gone wrong.
+      TZ: ${TZ:-UTC}
     volumes:
       # Read-only, and the same directory the server and wizard share. The
       # bridge watches its settings file and reloads changes while running.

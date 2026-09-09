@@ -181,6 +181,18 @@ console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server
 console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
 console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
 console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
+// Printed because getting it wrong is silent. A container has no timezone, so
+// "local" is UTC, and a note captured at 1am IST was filed under the previous
+// day for a month before anyone looked at a filename. The zone decides note
+// names, the captured: stamp, what the model is told today is, and when the
+// digest fires - so the banner states it next to the time it believes, where a
+// wrong one is obvious at a glance.
+{
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+  const local = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  console.log(`${grey("  time   ")} ${zone}, ${local} local${process.env.TZ ? "" : grey(" (TZ unset)")}`);
+}
 if (config.route?.enabled) {
   console.log(`${grey("  route  ")} every ${config.route.everyMinutes}m -> ${config.route.nowNote} ${grey(`(min confidence ${config.route.minConfidence})`)}`);
 }

@@ -18,3 +18,41 @@ test("truecolour needs COLORTERM; everything else falls back to the 256-colour c
   expect(colourLevel(pipe, { FORCE_COLOR: "3" })).toBe(2);
   expect(colourLevel(pipe, { FORCE_COLOR: "1", COLORTERM: "truecolor" })).toBe(1);
 });
+
+test("stripAnsi removes ANSI escape sequences", async () => {
+  const { stripAnsi, red, bold } = await import("../src/ui.ts");
+  expect(stripAnsi(bold(red("Hello world")))).toBe("Hello world");
+  expect(stripAnsi("plain text")).toBe("plain text");
+});
+
+test("divider renders correct length and character", async () => {
+  const { divider, stripAnsi } = await import("../src/ui.ts");
+  const line = divider(30);
+  expect(stripAnsi(line)).toHaveLength(30);
+});
+
+test("navHint formats key navigation instructions", async () => {
+  const { navHint, stripAnsi } = await import("../src/ui.ts");
+  const hint = navHint([
+    { key: "↑/↓", action: "Navigate" },
+    { key: "enter", action: "Confirm" },
+  ]);
+  expect(stripAnsi(hint)).toContain("↑/↓ Navigate");
+  expect(stripAnsi(hint)).toContain("enter Confirm");
+});
+
+test("button renders active and inactive states", async () => {
+  const { button, stripAnsi } = await import("../src/ui.ts");
+  expect(stripAnsi(button("Next", false))).toContain("[Next]");
+  expect(stripAnsi(button("Next", true))).toContain("[Next]");
+});
+
+test("card formats rounded panels enclosing lines", async () => {
+  const { card, stripAnsi } = await import("../src/ui.ts");
+  const panel = card(["Line 1", "Line 2"], "Title", 30);
+  const plain = stripAnsi(panel);
+  expect(plain).toContain("Title");
+  expect(plain).toContain("Line 1");
+  expect(plain).toContain("Line 2");
+});
+

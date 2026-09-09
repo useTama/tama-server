@@ -41,3 +41,70 @@ export const tama = (text = "Tama"): string => bold(red(text));
 export const ok = (text: string): string => `${green("✓")} ${text}`;
 export const warn = (text: string): string => `${amber("⚠")} ${text}`;
 export const fail = (text: string): string => `${red("✗")} ${text}`;
+
+export const dim = (text: string): string => (LEVEL === 0 ? text : `\x1b[2m${text}\x1b[22m`);
+export const inverse = (text: string): string => (LEVEL === 0 ? text : `\x1b[7m${text}\x1b[27m`);
+
+/** Strips ANSI escape codes to measure rendered string width in columns. */
+export function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+}
+
+/** Horizontal divider rule in muted grey or plain ASCII. */
+export function divider(length = 56): string {
+  return LEVEL === 0 ? "-".repeat(length) : grey("─".repeat(length));
+}
+
+/**
+ * Keybindings hint line shown at the bottom of interactive steps
+ * (e.g. `↑/↓ Navigate  ·  enter Confirm`).
+ */
+export function navHint(hints: Array<{ key: string; action: string }>): string {
+  const bullet = LEVEL === 0 ? "·" : grey("·");
+  return hints
+    .map(({ key, action }) => `${LEVEL === 0 ? key : bold(red(key))} ${LEVEL === 0 ? action : grey(action)}`)
+    .join(`  ${bullet}  `);
+}
+
+/**
+ * Renders a button badge, e.g. `[ Next ]` or `[ Done ]`.
+ * When active, it uses red styling so it pops prominently.
+ */
+export function button(label: string, active = false): string {
+  if (LEVEL === 0) return active ? `[${label}]*` : `[${label}]`;
+  return active ? bold(red(`[${label}]`)) : grey(`[${label}]`);
+}
+
+/**
+ * Formats a block of lines inside a rounded card panel.
+ * Uses UTF-8 box drawing characters with rounded corners (or ASCII fallback).
+ */
+export function card(lines: string[], title?: string, width = 56, indent = 0): string {
+  const padLeft = " ".repeat(indent);
+  const minWidth = Math.max(
+    width,
+    title ? stripAnsi(title).length + 8 : 0,
+    ...lines.map((l) => stripAnsi(l).length + 4),
+  );
+
+  if (LEVEL === 0) {
+    const top = padLeft + (title ? `+-- ${title} ${"-".repeat(Math.max(0, minWidth - stripAnsi(title).length - 6))}+` : `+${"-".repeat(minWidth)}+`);
+    const rows = lines.map((l) => {
+      const pad = Math.max(0, minWidth - stripAnsi(l).length - 2);
+      return `${padLeft}| ${l}${" ".repeat(pad)} |`;
+    });
+    const bottom = `${padLeft}+${"-".repeat(minWidth)}+`;
+    return [top, ...rows, bottom].join("\n");
+  }
+
+  const border = grey;
+  const topTitle = title ? `─ ${bold(title)} ` : "─";
+  const topFiller = Math.max(0, minWidth - stripAnsi(topTitle).length);
+  const top = `${padLeft}${border(`╭${topTitle}${"─".repeat(topFiller)}╮`)}`;
+  const rows = lines.map((l) => {
+    const pad = Math.max(0, minWidth - stripAnsi(l).length - 2);
+    return `${padLeft}${border("│")} ${l}${" ".repeat(pad)} ${border("│")}`;
+  });
+  const bottom = `${padLeft}${border(`╰${"─".repeat(minWidth)}╯`)}`;
+  return [top, ...rows, bottom].join("\n");
+}

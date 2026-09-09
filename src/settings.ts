@@ -23,7 +23,8 @@ import type { Audience, Config } from "./config.ts";
 import { listTokens, mintToken, revokeToken } from "./auth.ts";
 import { openDb } from "./db.ts";
 import { ask, choose, endpoint, requireTty, secret, yes } from "./prompt.ts";
-import { tama, grey, bold, ok, warn } from "./ui.ts";
+import { tama, grey, bold, ok, warn, divider, card } from "./ui.ts";
+import { logo } from "./logo.ts";
 
 async function readBridge(path: string): Promise<BridgeSettings | undefined> {
   return readFile(path, "utf8")
@@ -913,7 +914,9 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
   const bridgePath = resolve(dirname(configPath), "whatsapp-bridge.json");
   const dbPath = join(initial.dataDir, "tama.db");
 
-  console.log(`\n${tama("Tama settings")} ${grey(configPath)}`);
+  console.log(logo());
+  console.log(`  ${tama("Tama Settings")}  ·  ${grey(configPath)}`);
+  console.log(`  ${divider(56)}\n`);
   for (;;) {
     // Re-read every pass. Sections write to this file, so a config captured
     // once at startup goes stale the moment one saves - which showed up as

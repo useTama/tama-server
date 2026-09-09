@@ -52,16 +52,28 @@ if (command === "setup") {
     process.exitCode = 1;
   }
 } else if (command === "help" || command === "--help" || command === "-h") {
-  const { tama, grey } = await import("./ui.ts");
-  console.log(`${tama("tama-server")} [--config PATH]       ${grey("run the server")}`);
-  console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure the vault, transcription, Ask, and WhatsApp")}`);
-  console.log(`${tama("tama-server")} settings [--config PATH] ${grey("change WhatsApp numbers, devices, or re-run setup")}`);
-  console.log(`${tama("tama-server")} token NAME [--as AUDIENCE] ${grey("mint a device token for a client")}`);
-  console.log(`${tama("tama-server")} connect [claude-code|claude-desktop] ${grey("the whole editor-plugin install, as a line to paste")}`);
-  console.log(`${tama("tama-server")} session PROJECT [--config PATH] ${grey("record what a work session did; body on stdin")}`);
-  console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("copy existing Markdown into the configured vault")}`);
-  console.log(`${tama("tama-server")} route [--dry-run] [--config PATH] ${grey("file what is waiting in the Inbox, now")}`);
-  console.log(grey("\nColour follows NO_COLOR and is dropped when output is not a terminal."));
+  const { tama, grey, bold, divider } = await import("./ui.ts");
+  const { logo } = await import("./logo.ts");
+  console.log(logo());
+  console.log(`  ${tama("tama-server")} ${grey("— voice notes in a markdown vault you own.")}`);
+  console.log(`  ${divider(56)}\n`);
+  console.log(`  ${bold("USAGE")}:`);
+  console.log(`    tama-server [command] [options]\n`);
+  console.log(`  ${bold("COMMANDS")}:`);
+  console.log(`    ${tama("tama-server")}                     ${grey("run the capture & query server")}`);
+  console.log(`    ${tama("tama-server")} setup               ${grey("configure vault, speech-to-text, Ask, and WhatsApp")}`);
+  console.log(`    ${tama("tama-server")} settings            ${grey("change WhatsApp numbers, devices, or re-run setup")}`);
+  console.log(`    ${tama("tama-server")} token NAME          ${grey("mint a device token for a client")}`);
+  console.log(`    ${tama("tama-server")} connect [client]    ${grey("install line for claude-code / claude-desktop")}`);
+  console.log(`    ${tama("tama-server")} session PROJECT     ${grey("record what a work session did; body on stdin")}`);
+  console.log(`    ${tama("tama-server")} import FOLDER       ${grey("copy existing Markdown into the configured vault")}`);
+  console.log(`    ${tama("tama-server")} route               ${grey("file what is waiting in the Inbox, now")}\n`);
+  console.log(`  ${bold("OPTIONS")}:`);
+  console.log(`    ${grey("--config PATH")}                  ${grey("path to config file (default: tama.config.json)")}`);
+  console.log(`    ${grey("--dry-run")}                      ${grey("preview route changes without writing to vault")}`);
+  console.log(`    ${grey("--as AUDIENCE")}                  ${grey("mint token scoped to a specific audience")}`);
+  console.log(`    ${grey("--help, -h")}                     ${grey("show this help message")}\n`);
+  console.log(`  ${grey("Colour follows NO_COLOR and is dropped when output is not a terminal.")}`);
 } else {
   await import("./index.ts");
 }

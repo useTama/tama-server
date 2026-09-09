@@ -9,7 +9,8 @@ import { scheduleDigest } from "./digest.ts";
 import { scheduleRouting } from "./route.ts";
 import { GrepRetriever } from "./retrieval.ts";
 import { makeLlm, type Llm } from "./llm.ts";
-import { tama, grey, amber, green } from "./ui.ts";
+import { tama, grey, amber, green, bold, divider, card, ok, warn } from "./ui.ts";
+import { logo } from "./logo.ts";
 import { safeNotify } from "./notify.ts";
 import { recordFailure } from "./digest.ts";
 import { sweepExpiredCodes } from "./auth.ts";
@@ -177,32 +178,33 @@ const stopRouting = config.route?.enabled && llm
     )
   : () => {};
 
-console.log(`${tama("tama-server")} ${grey(VERSION)}   http://127.0.0.1:${server.port}`);
-console.log(`${grey("  vault  ")} ${config.vault.path} -> ${config.vault.inbox}/`);
-console.log(`${grey("  stt    ")} ${config.stt.url}${config.stt.model ? grey(` (${config.stt.model})`) : ""}`);
-console.log(`${grey("  notify ")} ${notifier.name}, digest at ${config.notify.digestAt}`);
-// Printed because getting it wrong is silent. A container has no timezone, so
-// "local" is UTC, and a note captured at 1am IST was filed under the previous
-// day for a month before anyone looked at a filename. The zone decides note
-// names, the captured: stamp, what the model is told today is, and when the
-// digest fires - so the banner states it next to the time it believes, where a
-// wrong one is obvious at a glance.
-{
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const now = new Date();
-  const local = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  console.log(`${grey("  time   ")} ${zone}, ${local} local${process.env.TZ ? "" : grey(" (TZ unset)")}`);
-}
+console.log(logo());
+console.log(`  ${tama("tama-server")} ${grey(VERSION)}  ·  ${bold(`http://127.0.0.1:${server.port}`)}`);
+console.log(`  ${divider(56)}\n`);
+
+const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const now = new Date();
+const local = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+const statusLines = [
+  `${bold("Vault:")}     ${config.vault.path} -> ${config.vault.inbox}/`,
+  `${bold("STT:")}       ${config.stt.url}${config.stt.model ? ` (${config.stt.model})` : ""}`,
+  `${bold("Ask:")}       ${llm ? `${llm.name}` : grey("disabled")}`,
+  `${bold("Notify:")}    ${notifier.name}, digest at ${config.notify.digestAt}`,
+  `${bold("Time:")}      ${zone}, ${local} local${process.env.TZ ? "" : grey(" (TZ unset)")}`,
+];
 if (config.route?.enabled) {
-  console.log(`${grey("  route  ")} every ${config.route.everyMinutes}m -> ${config.route.nowNote} ${grey(`(min confidence ${config.route.minConfidence})`)}`);
+  statusLines.push(`${bold("Route:")}     every ${config.route.everyMinutes}m -> ${config.route.nowNote} ${grey(`(min confidence ${config.route.minConfidence})`)}`);
 }
 if (routes.whatsapp) {
   const callback = config.whatsapp!.publicBaseUrl
     ? `${config.whatsapp!.publicBaseUrl}/webhooks/whatsapp`
     : "/webhooks/whatsapp";
-  console.log(`${grey("  whatsapp")} ${callback} (${config.whatsapp!.allowedFrom.length} allowed sender${config.whatsapp!.allowedFrom.length === 1 ? "" : "s"})`);
+  statusLines.push(`${bold("WhatsApp:")}  ${callback} (${config.whatsapp!.allowedFrom.length} allowed sender${config.whatsapp!.allowedFrom.length === 1 ? "" : "s"})`);
 }
-if (config.safety.dryRun) console.log(amber("  DRY RUN - nothing will be written"));
+console.log(card(statusLines, "Server Status", 56, 2));
+if (config.safety.dryRun) console.log(`\n  ${warn("DRY RUN — nothing will be written to the vault")}`);
+console.log(`\n  ${ok("Server listening. Ready for captures and queries.")}\n`);
 
 let stopping = false;
 const shutdown = () => {

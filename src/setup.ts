@@ -8,7 +8,8 @@ import { assertSeparateImportRoots, collectMarkdown, importMarkdownFolder } from
 import { configPathFromArgs, loadConfig } from "./config.ts";
 import { Stt, SPEECH_MODEL, SARVAM_URL, SARVAM_DEFAULT_MODEL, type SttConfig } from "./stt.ts";
 import * as whisper from "./whisper.ts";
-import { tama, red, grey, bold, ok, warn } from "./ui.ts";
+import { tama, red, grey, bold, ok, warn, divider, card } from "./ui.ts";
+import { logo } from "./logo.ts";
 import { ask, choose, endpoint, optionalPublicOrigin, requireTty, secret, yes } from "./prompt.ts";
 
 type AskConfig =
@@ -209,9 +210,11 @@ export async function runSetup(argv: string[] = Bun.argv, scope: SetupScope = {}
   };
   try {
     const partial = !walkStt || !walkAsk || !walkWhatsApp;
+    console.log(logo());
     console.log(partial
-      ? `\n${tama()} ${grey("— your world, your notes folder. Transcription, Ask and WhatsApp have their own sections.")}\n`
-      : `\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
+      ? `  ${tama()} ${grey("— your world, your notes folder. Transcription, Ask and WhatsApp have their own sections.")}`
+      : `  ${tama("Welcome to Tama!")} ${grey("— voice notes in a folder you own.")}`);
+    console.log(`  ${divider(56)}\n`);
     const configPath = configPathFromArgs(argv);
     // ffmpeg is not optional for audio, and finding that out at the first
     // recording instead of here costs a thought. git is what makes a vault a
@@ -667,7 +670,14 @@ export async function runSetup(argv: string[] = Bun.argv, scope: SetupScope = {}
       }
       await writeSettings(bridgePath, bridge);
     }
-    console.log(`\n${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} (source checkout) or ${bold("tama-server")} (installed binary).`);
+    console.log("\n" + card([
+      `${bold("Vault:")}      ${saved.vault.path} -> ${saved.vault.inbox}/`,
+      `${bold("Server:")}     http://127.0.0.1:${port}`,
+      `${bold("STT:")}        ${saved.stt ? saved.stt.provider : "none"}`,
+      `${bold("Ask:")}        ${saved.ask ? (saved.ask.model ?? "enabled") : "disabled"}`,
+      `${bold("WhatsApp:")}   ${saved.whatsapp ? "configured" : "disabled"}`,
+    ], "Configuration", 56, 2));
+    console.log(`\n  ${ok("Configuration saved.")} Start Tama with ${bold("bun run start")} or ${bold("tama-server")}.\n`);
     if (importSource) {
       console.log(grey("Importing Markdown into the Tama vault…"));
       try {

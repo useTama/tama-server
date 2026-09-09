@@ -23,6 +23,13 @@ if (command === "setup") {
     console.error(`Token: ${error instanceof Error ? error.message : "could not mint a token"}`);
     process.exitCode = 1;
   }
+} else if (command === "connect" || command === "mcp") {
+  const { runConnect } = await import("./connect-cli.ts");
+  try { await runConnect(Bun.argv); }
+  catch (error) {
+    console.error(`Connect: ${error instanceof Error ? error.message : "could not prepare a client"}`);
+    process.exitCode = 1;
+  }
 } else if (command === "session") {
   const { runSession } = await import("./session-cli.ts");
   try { await runSession(Bun.argv); }
@@ -50,6 +57,7 @@ if (command === "setup") {
   console.log(`${tama("tama-server")} setup [--config PATH] ${grey("configure the vault, transcription, Ask, and WhatsApp")}`);
   console.log(`${tama("tama-server")} settings [--config PATH] ${grey("change WhatsApp numbers, devices, or re-run setup")}`);
   console.log(`${tama("tama-server")} token NAME [--as AUDIENCE] ${grey("mint a device token for a client")}`);
+  console.log(`${tama("tama-server")} connect [claude-code|claude-desktop] ${grey("the whole editor-plugin install, as a line to paste")}`);
   console.log(`${tama("tama-server")} session PROJECT [--config PATH] ${grey("record what a work session did; body on stdin")}`);
   console.log(`${tama("tama-server")} import FOLDER [--config PATH] ${grey("copy existing Markdown into the configured vault")}`);
   console.log(`${tama("tama-server")} route [--dry-run] [--config PATH] ${grey("file what is waiting in the Inbox, now")}`);

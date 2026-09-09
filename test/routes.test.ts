@@ -880,3 +880,119 @@ test("a transcript with no turns is refused before any model is called", async (
     await f.cleanup();
   }
 });
+
+// ---- #8: MIN_CLIENT is enforced, not just advertised ---------------------
+
+test("a capture with no client header is accepted", async () => {
+  // The safety property. Every deployed shortcut, bridge and curl predates
+  // the header, and refusing them on upgrade would break the one path that is
+  // meant to work with no account and no key.
+  const f = await serverFixture();
+  try {
+    const res = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      body: JSON.stringify({ text: "a thought" }),
+    }));
+    expect(res.status).toBe(200);
+    expect(f.writes()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a client that says it is too old is refused with 426", async () => {
+  const f = await serverFixture();
+  try {
+    const res = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      headers: { "x-tama-client": "tama-ios/0.0.9" },
+      body: JSON.stringify({ text: "a thought" }),
+    }));
+    expect(res.status).toBe(426);
+    const body = await res.json() as { error: string; minClient: string };
+    // The client's author has to be able to tell which client and how old.
+    expect(body.error).toContain("tama-ios 0.0.9");
+    expect(body.minClient).toBe("0.1.0");
+    // And nothing was written.
+    expect(f.writes()).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a current client is accepted, and a garbled version is not a refusal", async () => {
+  const f = await serverFixture();
+  try {
+    for (const header of ["tama-ios/0.1.0", "tama-ios/9.9.9", "0.1.0", "banana", "tama-ios"]) {
+      const res = await f.routes.handle(req("/capture", {
+        method: "POST",
+        token: f.ownerToken,
+        headers: { "x-tama-client": header },
+        body: JSON.stringify({ text: `a thought from ${header}` }),
+      }));
+      expect(res.status).toBe(200);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a refused capture does not poison its idempotency key", async () => {
+  // The ordering hazard, and the reason the gate sits at the dispatch rather
+  // than inside runCapture. runCapture claims the key before doing anything,
+  // so a refusal from in there would answer the client's correct retry with
+  // the same 426 forever - and an upgraded client holding a queued note could
+  // never deliver it.
+  const f = await serverFixture();
+  try {
+    const body = JSON.stringify({ text: "a queued thought" });
+    const old = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      headers: { "x-tama-client": "tama-ios/0.0.9", "idempotency-key": "queued-note-1" },
+      body,
+    }));
+    expect(old.status).toBe(426);
+
+    // The same note, same key, from the updated client.
+    const updated = await f.routes.handle(req("/capture", {
+      method: "POST",
+      token: f.ownerToken,
+      headers: { "x-tama-client": "tama-ios/0.2.0", "idempotency-key": "queued-note-1" },
+      body,
+    }));
+    expect(updated.status).toBe(200);
+    expect(f.writes()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("the version gate is on the write path only", async () => {
+  // A stale client reading its own notes is harmless. A stale one writing
+  // them is what MIN_CLIENT is about, so /ask is deliberately ungated.
+  const f = await serverFixture();
+  try {
+    const res = await f.routes.handle(req("/ask", {
+      method: "POST",
+      token: f.ownerToken,
+      headers: { "x-tama-client": "tama-ios/0.0.1" },
+      body: JSON.stringify({ question: "mic gain" }),
+    }));
+    expect(res.status).toBe(200);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("health still advertises the minimum it now enforces", async () => {
+  const f = await serverFixture();
+  try {
+    const body = await (await f.routes.handle(req("/health"))).json();
+    expect(body.minClient).toBe("0.1.0");
+  } finally {
+    await f.cleanup();
+  }
+});

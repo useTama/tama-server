@@ -25,6 +25,7 @@ import { Stt } from "./stt.ts";
 import { toWav16k, wavSeconds } from "./audio.ts";
 import { resolveCaptureTime } from "./capture-time.ts";
 import { CaptureError } from "./capture-error.ts";
+import { MIN_CLIENT, belowMinimum, describeClient, parseClientVersion } from "./client-version.ts";
 import { mentionedDates, recordDates } from "./dates.ts";
 import { findAsk, recordAsk, recordFeedback } from "./feedback.ts";
 import * as idem from "./idempotency.ts";
@@ -47,8 +48,11 @@ import { renderPairPage, candidateOrigins } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
 export const VERSION = "0.1.0";
-/** Clients older than this are refused rather than left to fail mysteriously. */
-export const MIN_CLIENT = "0.1.0";
+// Re-exported from its own module so /health below and any importer keep the
+// same name. The comment that used to live here claimed clients older than
+// this were refused, which nothing did; client-version.ts is where that claim
+// is now true.
+export { MIN_CLIENT } from "./client-version.ts";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SECONDS = 300;
@@ -476,6 +480,34 @@ const whatsapp = config.whatsapp
     if (!device) return json({ error: "unauthorized" }, 401);
 
     if (url.pathname === "/capture" && req.method === "POST") {
+      /**
+       * The version gate, and the reason it lives here rather than inside
+       * runCapture.
+       *
+       * runCapture claims the idempotency key before it does anything else, so
+       * a refusal issued from in there would poison the key: the client's
+       * correct retry would be answered with the same 426 for as long as the
+       * record lives, and a genuinely upgraded client with a queued note could
+       * never deliver it.
+       *
+       * Being at the HTTP dispatch also leaves the in-process WhatsApp path
+       * ungated, which is right - it builds its own Request and calls
+       * runCapture directly, and its "client" is this same binary. Making the
+       * adapter stamp a version would be the server checking itself.
+       *
+       * /ask is deliberately not gated. A stale client reading its own notes
+       * is harmless; a stale one writing them is what MIN_CLIENT is about.
+       */
+      const client = parseClientVersion(req.headers.get("x-tama-client"));
+      if (client && belowMinimum(client.version)) {
+        console.error(
+          `${orange("capture")} refused ${describeClient(client)}, below the minimum ${MIN_CLIENT} <${device.deviceName}>`,
+        );
+        return json({
+          error: `this client is ${describeClient(client)}, older than the minimum ${MIN_CLIENT} this server supports. update it`,
+          minClient: MIN_CLIENT,
+        }, 426);
+      }
       const key = req.headers.get("idempotency-key");
       return runCapture(req, device, key);
     }

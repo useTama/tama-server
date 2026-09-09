@@ -1,5 +1,6 @@
 {
   "name": "tama-whatsapp-webjs",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Unofficial WhatsApp client for tama-server, built on whatsapp-web.js.",

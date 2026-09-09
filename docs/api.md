@@ -154,6 +154,7 @@ Body is audio in any format ffmpeg can read, or JSON `{"text": "..."}`.
 | `Idempotency-Key` | **Send this.** A retry after a lost response must not create a second note. A device with a flash queue retries as normal behaviour, not as an edge case |
 | `X-Tama-Captured-Age-Ms` | milliseconds since the recording, for devices with **no RTC**. An ESP32 knows how long ago something happened but not what time it is |
 | `X-Tama-Captured-At` | absolute ISO-8601, for clients with a real clock |
+| `X-Tama-Client` | `name/0.2.1`, or a bare `0.2.1`. Compared against the `minClient` on `/health`; a client that says it is older is refused with `426`. **Absent is accepted** - silence is not a claim, and every client predates this header - so sending it is what makes a client eligible to be told it is too old |
 
 Without either time header the server uses its own clock, which is only correct for something
 posting in real time.
@@ -164,7 +165,7 @@ posting in real time.
 |---|---|
 | `2xx` | dequeue |
 | `401` | stop, re-pair. never retry |
-| `413` `415` `422` | drop, tell the user |
+| `413` `415` `422` `426` | drop, tell the user |
 | `502` | drop, tell the user. An upstream answered and refused, so asking again spends the same rejection |
 | `429` `503` other `5xx`, timeout | retry with backoff, **same idempotency key** |
 
@@ -179,6 +180,7 @@ the failure has no vendor to ask, and they are usually the person who can fix it
 | `422` | decoded fine, but no speech came out. `reason: "no-speech-detected"` |
 | `502` | the speech-to-text provider refused: wrong key, wrong model, rejected file |
 | `503` | speech to text is unreachable or timed out. Not started, still loading a model, or a wrong `stt.url` |
+| `426` | the client sent `X-Tama-Client` and it is below `minClient`. Update the client; retrying spends the same refusal. The refusal happens before the idempotency key is claimed, so an updated client can deliver the same queued note under the same key |
 | `500` | the server's own fault: ffmpeg not installed, or the vault unwritable - a full disk, a read-only mount, a directory the server does not own. Retrying spends the same failure, so this is a drop-and-tell-the-user despite being a 5xx |
 
 ## POST /ask

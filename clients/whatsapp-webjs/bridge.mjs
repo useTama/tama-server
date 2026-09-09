@@ -32,6 +32,20 @@ import { stripOurMention } from "./mention.mjs";
 const require = createRequire(import.meta.url);
 const { Client, LocalAuth } = require("whatsapp-web.js");
 
+/**
+ * What this client tells the server it is, on every request.
+ *
+ * tama advertises a `minClient` on /health and now refuses a capture from a
+ * client that says it is older than that. Silence is accepted - the header
+ * postdates every deployed client - so sending it is what makes this bridge
+ * eligible to be refused, which is the point: a version the server can read is
+ * how a breaking change stops being a mystery on somebody's phone.
+ *
+ * Read from package.json rather than written twice. Two copies of a version
+ * number in one client is the pair that drifts.
+ */
+const CLIENT = `tama-whatsapp-webjs/${require("./package.json").version}`;
+
 // Both mirror tama-server's own limits so the rejection is a WhatsApp reply
 // rather than a 413 the user never sees.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -197,7 +211,7 @@ async function post(path, { headers = {}, body, token }) {
         method: "POST",
         // Read per attempt, so a token re-issued in settings takes effect on
         // the next message rather than the next restart.
-        headers: { authorization: `Bearer ${token ?? settings.token}`, ...headers },
+        headers: { authorization: `Bearer ${token ?? settings.token}`, "x-tama-client": CLIENT, ...headers },
         body,
         signal: AbortSignal.timeout(300_000),
       });

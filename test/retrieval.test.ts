@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { GrepRetriever } from "../src/retrieval.ts";
+import { GrepRetriever, foldBody } from "../src/retrieval.ts";
 import type { Retriever } from "../src/retrieval.ts";
 
 let root: string;
@@ -311,6 +311,90 @@ test("a thousands separator in the question does not split the number", async ()
   await note("Car/service.md", "next service is due at 40000 km", null);
   const got = await new GrepRetriever(root).search("what about 40,000 km");
   expect(got.map((c) => c.path)).toContain("Car/service.md");
+});
+
+test("a number split in the NOTE scores the same as the joined form", async () => {
+  // The mirror of the case above, and the half that was still broken: the
+  // query-side fold shipped, the note-side one did not, so whichever side
+  // Whisper happened to split decided whether the discriminating term counted.
+  // Both sides are transcripts, so folding one of them fixes half the cases.
+  await note("Work/split.md", "the p 95 latency on the list endpoint is too high", null);
+  await note("Work/joined.md", "the p95 latency on the list endpoint is too high", null);
+  const got = await new GrepRetriever(root).search("why is p95 latency high");
+
+  const split = got.find((c) => c.path === "Work/split.md");
+  const joined = got.find((c) => c.path === "Work/joined.md");
+  expect(split).toBeDefined();
+  // Equality, not "better than before". Two notes saying the same thing in the
+  // two spellings Whisper produces have to be indistinguishable, and anything
+  // weaker than an equality passes while the asymmetry is merely smaller.
+  expect(split!.score).toBe(joined!.score);
+});
+
+test("a thousands separator in the NOTE does not cost the number", async () => {
+  await note("Car/sep.md", "the tail was 40,000 ms after the fix", null);
+  await note("Car/plain.md", "the tail was 40000 ms after the fix", null);
+  const got = await new GrepRetriever(root).search("what about 40000 ms");
+  const sep = got.find((c) => c.path === "Car/sep.md");
+  const plain = got.find((c) => c.path === "Car/plain.md");
+  expect(sep).toBeDefined();
+  expect(sep!.score).toBe(plain!.score);
+});
+
+test("folding the note adds matches and never removes one", async () => {
+  // The reason the body is searched twice rather than replaced by its folded
+  // form. Folding deletes characters, so the digit-boundary rule starts
+  // applying where it did not, and a note written with a separator loses the
+  // term a bare-number query is looking for - the same failure as above, in
+  // the other direction, costing a note that used to be found.
+  await note("Ops/dump.md", "the dump landed in events_2025_01_15 and it was fine", null);
+  await note("Car/km.md", "next service is due at 40,000 km", null);
+  const r = new GrepRetriever(root);
+
+  // Queried the way it is written, which folding must not break.
+  const byYear = await r.search("which dump for 2025");
+  expect(byYear.map((c) => c.path)).toContain("Ops/dump.md");
+
+  const bare = await r.search("what happens at 40 thousand");
+  expect(bare.map((c) => c.path)).toContain("Car/km.md");
+});
+
+test("foldBody keeps an astral numeral whole", () => {
+  // Asserted on foldBody directly rather than through a search, because
+  // through a search it proves nothing: the note still comes back on its other
+  // words whether the fold worked or not, so the obvious test passes with the
+  // bug in place. Checked that, and it did.
+  //
+  // The bug: \p{N} matches surrogate pairs, so deriving the deleted span from
+  // a fixed offset past the match start lands inside the pair. It deletes the
+  // low surrogate instead of the separator, leaves a lone surrogate in the
+  // text being scanned, and skips the fold it was called to make.
+  const folded = foldBody("the count was \u{1D7DD},5 units")!;
+  expect(folded).not.toBeNull();
+  expect(folded.text).toBe("the count was \u{1D7DD}5 units");
+  expect(folded.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+});
+
+test("foldBody hands back original offsets, so an excerpt still opens on the term", async () => {
+  // The offset map is the only part of this with a silent failure mode: a
+  // wrong map moves the excerpt window rather than the score, so the note
+  // ranks correctly and quotes the wrong sentence.
+  const folded = foldBody("aaaa p 95 bbbb")!;
+  expect(folded.text).toBe("aaaa p95 bbbb");
+  // "p95" begins at 5 in the folded text and "p" begins at 5 in the original.
+  expect(folded.toOriginal(5)).toBe(5);
+  // Everything after the deletion is shifted by one in the folded view.
+  expect(folded.toOriginal(folded.text.indexOf("bbbb"))).toBe("aaaa p 95 bbbb".indexOf("bbbb"));
+  // Nothing to fold is null, which is what makes the second pass free.
+  expect(foldBody("nothing here to fold at all")).toBeNull();
+});
+
+test("the folded excerpt quotes the sentence the term is actually in", async () => {
+  const filler = "x".repeat(400);
+  await note("Work/deep.md", `${filler}\n\nthe p 95 latency spike on the list endpoint\n\n${filler}`, null);
+  const got = await new GrepRetriever(root).search("why is p95 latency high");
+  expect(got[0]?.path).toBe("Work/deep.md");
+  expect(got[0]?.text).toContain("p 95 latency");
 });
 
 test("a numeric term may touch a letter but never another digit", async () => {

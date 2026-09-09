@@ -80,12 +80,83 @@ const DIGITS_ONLY = /^\p{N}+$/u;
  * its most identifying term - "40,000" tokenised to "40" and "000", neither of
  * which matches "40000", and "p 95" tokenised to "95" and a dropped "p".
  *
- * Applied to the query only. The note body cannot be folded the same way
- * because `excerpt` slices it by the offsets `findHits` returns, and deleting a
- * character would move every offset after it. Matching a note that writes
- * "40,000" against a query that writes "40000" needs an offset map or a real
- * index, and belongs with #54.
+ * Applied to the query here, and to a COPY of the note body by `foldBody`
+ * below - both sides, because both sides are transcripts and folding only one
+ * of them fixes half the cases by construction.
  */
+/**
+ * The same two folds applied to a note body, with a way back to the original
+ * offsets.
+ *
+ * ## Why a copy and not a replacement
+ *
+ * The note body is searched TWICE: once as written, once folded, and the hits
+ * are unioned. That is the whole design, and it is what makes this safe.
+ *
+ * Replacing the body with the folded text would fix the case this exists for
+ * and break its mirror image. Folding deletes characters, so `findHits`'
+ * digit-boundary rule starts applying where it did not: a note that writes
+ * `events_2025_01_15` becomes `events_20250115`, and a query for `2025` then
+ * has a digit on its right and stops matching - so the note loses its most
+ * identifying term and comes back on generic words. That is precisely the
+ * failure this function exists to fix, reintroduced in the other direction,
+ * and it costs a note that used to be found. Measured at 8.59 to 4.50 on that
+ * example, and to no match at all for `40 thousand` against `40,000 km`.
+ *
+ * Searching both forms and unioning cannot lose a hit. It can only add one,
+ * because the as-written pass is still there unchanged. The per-term
+ * `positions` set in `scoreNote` already deduplicates, so a term matching both
+ * forms at the same place counts once and the repetition term does not inflate.
+ *
+ * ## Offsets
+ *
+ * Both folds delete characters, so folded-to-original is monotone and
+ * injective: one entry per surviving character. `excerpt` and `bestWindow`
+ * then keep working in original coordinates, which is why a hit found in the
+ * folded text is translated before it is recorded.
+ *
+ * Returns null when nothing folds, which is every note in the fixture and
+ * almost every note in a real vault - so the second pass is skipped entirely
+ * in the common case.
+ */
+export function foldBody(lower: string): { text: string; toOriginal: (p: number) => number } | null {
+  // No precheck. The obvious one - test the alternation before running it -
+  // silently disagrees with the fold itself on this engine: on Bun 1.3.11
+  // `/\p{N}[,_]\p{N}|\b[b-hj-z]\s+\p{N}/iu.test("b\u{1D7DD},5")` is false
+  // while the same pattern without the alternation is true, so a guarded fold
+  // would sometimes not happen. `matchAll` over a body with nothing to fold is
+  // the same single scan the precheck would have been.
+  const matches = [...lower.matchAll(/(\p{N})[,_](?=\p{N})|\b([b-hj-z])(\s+)(?=\p{N})/giu)];
+  if (matches.length === 0) return null;
+
+  const parts: string[] = [];
+  const offsets = new Int32Array(lower.length);
+  let n = 0;
+  let last = 0;
+
+  for (const m of matches) {
+    // The span is derived from the match rather than from `index + 1`, because
+    // `\p{N}` matches astral numerals: for those, the kept leading character
+    // is two UTF-16 units and a fixed +1 lands inside the surrogate pair,
+    // deleting half of it and leaving a lone surrogate in the scanned text.
+    const dropTo = m.index + m[0].length;
+    const dropFrom = dropTo - (m[1] !== undefined ? 1 : m[3]!.length);
+    parts.push(lower.slice(last, dropFrom));
+    for (let i = last; i < dropFrom; i++) offsets[n++] = i;
+    last = dropTo;
+  }
+  parts.push(lower.slice(last));
+  for (let i = last; i < lower.length; i++) offsets[n++] = i;
+
+  const map = offsets.subarray(0, n);
+  return {
+    text: parts.join(""),
+    // Clamped rather than trusted: a position past the end would be a bug
+    // here, and returning the last real offset keeps `excerpt` in range.
+    toOriginal: (pos: number) => map[Math.min(pos, map.length - 1)] ?? pos,
+  };
+}
+
 export function normaliseNumbers(text: string): string {
   return (
     text
@@ -433,6 +504,10 @@ export function scoreNote(
 
   const { body, capturedAt } = splitFrontmatter(raw);
   const lowerBody = body.toLowerCase();
+  // A second view of the same text, with the two transcription folds applied.
+  // Searched in addition to the body as written, never instead of it - see
+  // `foldBody`. Null, and therefore free, for a note with nothing to fold.
+  const folded = foldBody(lowerBody);
   const lowerPath = relPath.toLowerCase();
 
   const hits: Hit[] = [];
@@ -455,6 +530,20 @@ export function scoreNote(
         if (positions.size >= MAX_HITS_PER_TERM) break;
       }
       if (positions.size >= MAX_HITS_PER_TERM) break;
+    }
+    // The folded view, translated back to original offsets. Additive by
+    // construction: the pass above already ran, so this can only find a
+    // position it missed - which is the whole point, and the reason no note
+    // can drop out of results because of it. `positions` is a set, so a term
+    // matching both views at the same place still counts once.
+    if (folded && positions.size < MAX_HITS_PER_TERM) {
+      for (const form of forms) {
+        for (const pos of findHits(folded.text, form, MAX_HITS_PER_TERM)) {
+          positions.add(folded.toOriginal(pos));
+          if (positions.size >= MAX_HITS_PER_TERM) break;
+        }
+        if (positions.size >= MAX_HITS_PER_TERM) break;
+      }
     }
     if (positions.size > 0) {
       bodyDistinct++;

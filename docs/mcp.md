@@ -108,7 +108,9 @@ Claude Code prompts for the server address and a device token, keeps the token
 `sensitive` rather than in shell history, and adds a `/tama:save` command
 beside the five tools. `clients/claude-code` is the plugin.
 
-Mint the token with `tama token claude-code`.
+`tama-server connect claude-code` prints that whole install line with the address
+and a fresh token already in it. On a Docker deployment the command is `tama
+connect`.
 
 ### When the server is loopback-only
 
@@ -141,7 +143,7 @@ Desktop's own one-click install format.
 **On the server**, mint a token:
 
 ```sh
-tama token claude-desktop
+tama-server connect claude-desktop    # `tama connect` on a Docker deployment
 ```
 
 **On your computer**, download the bundle, double-click it, and fill in the two
@@ -181,7 +183,7 @@ the laptop, not on the server** - the server has no key to itself:
 **On the server**, mint a token for this client:
 
 ```sh
-tama token mcp-laptop
+tama-server token mcp-laptop          # `tama token` on a Docker deployment
 ```
 
 It prints once. `--as AUDIENCE` instead if you want it scoped to a view.

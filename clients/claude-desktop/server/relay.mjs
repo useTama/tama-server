@@ -39,7 +39,7 @@ function detailFrom(status, text) {
   // self-hoster reading "HTTP 401" has to go and look that up; a self-hoster
   // reading this does not.
   if (status === 401) {
-    return "Tama refused the device token. Mint a fresh one with `tama token claude-desktop` and paste it into this extension's settings.";
+    return "Tama refused the device token. Mint a fresh one with `tama-server token claude-desktop` and paste it into this extension's settings.";
   }
   if (status === 403) {
     return `Tama accepted the token but refused the request${message ? `: ${message}` : ""}.`;

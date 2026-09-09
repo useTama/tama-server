@@ -131,3 +131,29 @@ test("the bundle keeps its tests out of the archive", async () => {
   expect(ignore).toContain("*.test.mjs");
   expect(ignore).toContain("node_modules");
 });
+
+test("nothing tells a laptop user to run a command they do not have", async () => {
+  // `scripts/install.sh` installs `tama-server`. `tama` is the Docker
+  // wrapper's symlink and exists nowhere else - so every instruction that said
+  // "run `tama token`" was a command-not-found for anybody who installed from
+  // source, which is the path the same docs recommend. The plugin's own token
+  // prompt said it, in the dialog, one field below a description that got it
+  // right.
+  const files = [
+    "clients/claude-code/.claude-plugin/plugin.json",
+    "clients/claude-desktop/manifest.json",
+    "clients/claude-desktop/README.md",
+    "clients/claude-desktop/server/relay.mjs",
+    "docs/mcp.md",
+  ];
+  for (const rel of files) {
+    const text = await Bun.file(join(root, rel)).text();
+    // Bare `tama <subcommand>` with no note about the wrapper. The Docker name
+    // is fine when it is named as such, which is why the pattern looks for it
+    // unqualified rather than banning the word.
+    const offenders = [...text.matchAll(/`tama (token|connect|settings|expose)\b[^`]*`/g)]
+      .map((m) => m[0])
+      .filter((m) => !text.includes(`${m} on a Docker deployment`) && !text.includes("`tama connect`"));
+    expect(offenders, `${rel} names a command a source install does not have`).toEqual([]);
+  }
+});

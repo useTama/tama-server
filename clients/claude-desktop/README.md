@@ -47,7 +47,7 @@ launches a second tama against the same SQLite file and the same vault.
 **On the server**, mint a token:
 
 ```sh
-tama token claude-desktop
+tama-server connect claude-desktop    # `tama connect` on a Docker deployment
 ```
 
 It prints once. Add `--as AUDIENCE` to give Claude a slice of the vault rather
@@ -64,7 +64,7 @@ Then fill in the two fields Claude Desktop shows:
 | Field | What to put |
 |---|---|
 | Tama server address | `http://127.0.0.1:8080` if tama runs on this machine, otherwise the address `tama expose` printed |
-| Device token | what `tama token` just printed |
+| Device token | what `connect` just printed |
 
 The token field is marked `sensitive`, so Claude Desktop masks it and stores it
 in the OS keychain rather than in a config file.
@@ -96,6 +96,6 @@ cd clients/claude-desktop && bun test
 
 They are all about what a failure says. This is the one component whose errors
 are read by someone with no server log in front of them: a refused token has to
-say "mint a fresh one with `tama token claude-desktop`", and an unreachable
+say "mint a fresh one with `tama-server token claude-desktop`", and an unreachable
 address has to name the two traps (Tailscale not running here, `127.0.0.1`
 meaning this machine) before someone files a bug about it.

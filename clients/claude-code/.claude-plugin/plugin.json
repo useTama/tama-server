@@ -1,7 +1,7 @@
 {
   "name": "tama",
   "displayName": "Tama",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Your own Markdown notes, searchable and writable from the terminal.",
   "author": {
     "name": "Tama",
@@ -27,7 +27,7 @@
     "device_token": {
       "type": "string",
       "title": "Device token",
-      "description": "Run `tama token claude-code` on your server and paste what it prints. It is shown once. Add `--as AUDIENCE` there to give Claude a slice of the vault instead of all of it.",
+      "description": "Run `tama-server connect claude-code` where Tama runs and paste what it prints - it fills in this field and the address together. On a Docker deployment the command is `tama connect`. Shown once. Add `--as AUDIENCE` for a read-only slice of the vault, but note that recording a session then refuses.",
       "sensitive": true
     },
     "auto_save": {

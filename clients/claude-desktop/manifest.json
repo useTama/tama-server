@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "tama",
   "display_name": "Tama",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Your own Markdown notes, readable and writable from Claude.",
   "long_description": "Tama keeps voice notes and work summaries as Markdown in a git repo you own. This extension lets Claude search those notes, read one, append to them, and record what a session did - so a decision made today is still answerable in six weeks. It talks to a Tama server you already run; nothing is sent anywhere else.",
   "author": {
@@ -46,7 +46,7 @@
     "device_token": {
       "type": "string",
       "title": "Device token",
-      "description": "Run `tama token claude-desktop` on your server and paste what it prints. It is shown once. Add `--as AUDIENCE` there to give Claude a slice of the vault instead of all of it.",
+      "description": "Run `tama-server connect claude-desktop` where Tama runs and paste what it prints - it gives this field and the address together. On a Docker deployment the command is `tama connect`. Shown once.",
       "sensitive": true,
       "required": true
     }

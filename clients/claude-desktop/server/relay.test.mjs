@@ -51,7 +51,7 @@ test("a refused token says which token and how to replace it", async () => {
   const reply = await relay({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { ...OPTS, fetchImpl: impl });
 
   expect(reply.error.message).toContain("refused the device token");
-  expect(reply.error.message).toContain("tama token claude-desktop");
+  expect(reply.error.message).toContain("tama-server token claude-desktop");
 });
 
 test("an unreachable server names the address and why it might not resolve", async () => {

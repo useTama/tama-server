@@ -1,6 +1,6 @@
 # The fixture vault
 
-Forty-four synthetic notes in `vault/`, frozen. `test/eval/golden.ts` asserts these exact
+Forty-eight synthetic notes in `vault/`, frozen. `test/eval/golden.ts` asserts these exact
 paths, so a rename here breaks thirty tests over there.
 
 It exists so the eval set can be committed, run in CI, and stay true. A golden
@@ -17,6 +17,16 @@ Two properties are load-bearing and easy to destroy by accident:
 - **The unanswerable questions share vocabulary with real notes.** A question
   with no overlap retrieves nothing, and any prompt refuses it correctly by
   accident.
+- **Two pairs exist to hold a weight up from below** (#65), and they are
+  matched on purpose. `Work/shard-rebalance.md` against
+  `Work/platform-misc.md` differ only in arrangement: the distractor carries
+  every term of the `warmer` question, more often than the answer does, and
+  never two inside one excerpt window, so only proximity separates them.
+  `Work/storage-review.md` against `Work/retention-policy.md` differ only in
+  age, matched on coverage, repetition and path so that only recency decides.
+  Editing either pair - a term added, a paragraph shortened, a file renamed
+  into the question's vocabulary - stops it measuring anything. Check by
+  setting `W_PROXIMITY` or `W_RECENCY` to 0: exactly one case must fail.
 
 Nothing here is real. The names, numbers and incidents are invented; the
 writing is imitated from the kind of note this tool receives, which is why some

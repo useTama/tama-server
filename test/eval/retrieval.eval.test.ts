@@ -6,8 +6,22 @@ const VAULT = new URL("../fixtures/vault", import.meta.url).pathname;
 const LIMIT = 8;
 const retriever = new GrepRetriever(VAULT);
 
+/**
+ * The clock the fixture is read against, pinned three days after its newest
+ * note.
+ *
+ * Without this the eval measured a moving target. Recency is a half-life of 90
+ * days against `Date.now()`, and the fixture is frozen in early 2025, so every
+ * note was already several half-lives old and getting older with every day the
+ * suite ran - the weight contributed nothing measurable, no case could
+ * constrain it, and the scores this file asserts on drifted quietly with the
+ * calendar. Pinning it makes recency a live signal again and makes every
+ * number here reproducible next year.
+ */
+const NOW = Date.parse("2025-02-10T09:00:00+05:30");
+
 const paths = async (q: string) =>
-  (await retriever.search(q, LIMIT)).map((c) => c.path);
+  (await retriever.search(q, LIMIT, undefined, NOW)).map((c) => c.path);
 
 /**
  * Recall@8, case by case.
@@ -59,7 +73,7 @@ for (const c of ANSWERABLE.filter((c) => c.top)) {
  * rather than the behaviour.
  */
 test("unanswerable questions score below answerable ones", async () => {
-  const best = async (q: string) => (await retriever.search(q, 1))[0]?.score ?? 0;
+  const best = async (q: string) => (await retriever.search(q, 1, undefined, NOW))[0]?.score ?? 0;
 
   const answerable = await Promise.all(ANSWERABLE.map((c) => best(c.q)));
   const median = answerable.slice().sort((a, b) => a - b)[Math.floor(answerable.length / 2)]!;
@@ -78,5 +92,5 @@ test("the fixture vault is the size the golden set assumes", async () => {
   // Counted off the filesystem, not through the retriever: three of these
   // notes do not contain the word "the".
   const files = await Array.fromAsync(new Bun.Glob("**/*.md").scan(VAULT));
-  expect(files.length).toBe(44);
+  expect(files.length).toBe(48);
 });

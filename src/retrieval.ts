@@ -37,7 +37,14 @@ export interface Retriever {
    * cannot be shown, so a narrowed view would quietly return worse answers
    * rather than fewer, correct ones.
    */
-  search(query: string, limit?: number, view?: View): Promise<Chunk[]>;
+  /**
+   * `now` is the clock, injectable for the same reason `ask()` takes one: the
+   * recency weight is measured against it, and a frozen fixture read with a
+   * live clock scores every note as ancient - so the eval could never
+   * constrain that weight, and what it did measure drifted every day the suite
+   * ran. Left undefined everywhere in production.
+   */
+  search(query: string, limit?: number, view?: View, now?: number): Promise<Chunk[]>;
 }
 
 /**
@@ -182,12 +189,13 @@ const W_COVERAGE = 6;
  * 0.002 is one edited note away from flipping back, and a test that passes by
  * luck is worse than one that fails honestly.
  *
- * Note that 0 also passes everything, so no case in the golden set currently
- * requires proximity at all - the eval constrains this weight from above and
- * not from below. Halving rather than removing is therefore a judgement, not a
- * measurement: proximity still has a real job separating a note that discusses
- * the whole question in one place from one mentioning each term in a different
- * paragraph, and the set simply has no case that exercises it yet.
+ * Zero used to pass everything too, which meant no case required proximity at
+ * all and this weight was pinned from above only - a judgement dressed as a
+ * measurement (#65). The `warmer` case now holds it up from below:
+ * `Work/platform-misc.md` carries every term of that question, more often than
+ * the answer does, and never two of them inside one window. Setting this to 0
+ * makes that case fail and nothing else, so the number is now measured from
+ * both sides. Same for W_RECENCY and the `snapshots` case.
  *
  * Raising W_PATH to 2 closes the same case and was not chosen: 2.5 pushes an
  * unanswerable question above the answerable median, so that lever sits one
@@ -517,12 +525,12 @@ export class GrepRetriever implements Retriever {
     this.maxFiles = positive(opts.maxFiles, DEFAULT_MAX_FILES, "maxFiles");
   }
 
-  async search(query: string, limit = DEFAULT_LIMIT, view?: View): Promise<Chunk[]> {
+  async search(query: string, limit = DEFAULT_LIMIT, view?: View, nowMsIn?: number): Promise<Chunk[]> {
     const terms = tokenise(query);
     if (terms.length === 0) return [];
 
     const n = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_LIMIT;
-    const now = Date.now();
+    const now = Number.isFinite(nowMsIn) ? (nowMsIn as number) : Date.now();
 
     const files: { abs: string; rel: string }[] = [];
     await this.collect(this.vaultRoot, "", files, view);

@@ -145,6 +145,30 @@ export const ANSWERABLE: Golden[] = [
     find: ["Health/sleep.md"], top: "Health/sleep.md", gist: ["2pm", "deep sleep"] },
   { id: "knee", q: "what keeps my knee happy when running",
     find: ["Health/running.md"], gist: ["concrete"] },
+
+  // The two cases that hold a weight up from below. Every other case here
+  // constrains the weights from above - it fails when a signal is too strong -
+  // and W_PROXIMITY and W_RECENCY could both be set to zero with all of them
+  // still green. A weight with pressure from only one side is a weight nobody
+  // can tune, which is what these two are for. Verified by zeroing each: the
+  // matching case fails and the other does not.
+  //
+  // Both distractors are honest. Every term is present for a real reason, so
+  // the case tests arrangement and age rather than whether an artificial note
+  // loses.
+  { id: "warmer", q: "why did the cache warmer start timing out",
+    // Work/platform-misc.md carries every term of this question, more often
+    // than the answer does, and never two within one excerpt window. Only
+    // proximity separates them.
+    find: ["Work/shard-rebalance.md"], top: "Work/shard-rebalance.md",
+    gist: ["shard", "thirty"] },
+  { id: "snapshots", q: "how long are staging database snapshots kept",
+    // Work/retention-policy.md says thirty days and is a month older;
+    // Work/storage-review.md says seven and is three days old. Matched on
+    // coverage, repetition and path so that only age decides, which is the
+    // "confidently stale" failure this whole thing exists to avoid.
+    find: ["Work/storage-review.md"], top: "Work/storage-review.md",
+    gist: ["seven"] },
 ];
 
 /**

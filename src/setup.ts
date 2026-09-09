@@ -78,7 +78,8 @@ export type WhatsAppAnswer = {
 export type SetupAnswers = {
   vaultPath: string;
   inbox: string;
-  stt: SttAnswer;
+  /** Absent when the caller is not asking about transcription; the saved block stands. */
+  stt?: SttAnswer;
   port: number;
   ask: AskConfig;
   whatsapp?: WhatsAppAnswer;
@@ -97,7 +98,7 @@ export async function vaultPlan(path: string): Promise<VaultPlan> {
 export function configFromAnswers(a: SetupAnswers): Record<string, unknown> {
   return {
     vault: { path: a.vaultPath, inbox: a.inbox },
-    stt: a.stt,
+    ...(a.stt ? { stt: a.stt } : {}),
     server: { port: a.port, adminToken: randomBytes(24).toString("hex") },
     notify: { provider: "console", ntfy: { url: "https://ntfy.sh", topic: "" }, digestAt: "08:00" },
     safety: { allowUnbackedVault: false, dryRun: false },
@@ -136,8 +137,21 @@ export function whatsappSenders(value: string): string[] | null {
   return senders.length > 0 && senders.every((item) => /^\d{6,20}$/.test(item)) ? senders : null;
 }
 
-export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
+/**
+ * Which of the wizard's blocks to walk.
+ *
+ * `tama settings` owns transcription and Ask as their own sections, so the
+ * "everything else" entry there would otherwise make you re-answer both -
+ * provider, key, model, language - just to rename your world. A block left out
+ * is not a block reset: the saved one is carried through untouched.
+ */
+export type SetupScope = { stt?: boolean; ask?: boolean; whatsapp?: boolean };
+
+export async function runSetup(argv: string[] = Bun.argv, scope: SetupScope = {}): Promise<void> {
   requireTty("setup");
+  const walkStt = scope.stt !== false;
+  const walkAsk = scope.ask !== false;
+  const walkWhatsApp = scope.whatsapp !== false;
   /**
    * Install check, model, service. Returns whether the server ended up
    * answering; every exit is a soft one, because a saved config plus a manual
@@ -194,7 +208,10 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     return running;
   };
   try {
-    console.log(`\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
+    const partial = !walkStt || !walkAsk || !walkWhatsApp;
+    console.log(partial
+      ? `\n${tama()} ${grey("— your world, your notes folder. Transcription, Ask and WhatsApp have their own sections.")}\n`
+      : `\n${tama()} setup ${grey("— voice notes in a folder you own.")}\n`);
     const configPath = configPathFromArgs(argv);
     // ffmpeg is not optional for audio, and finding that out at the first
     // recording instead of here costs a thought. git is what makes a vault a
@@ -252,307 +269,353 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     const port = current?.server.port ?? 8080;
     if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("server port must be between 1 and 65535");
 
-    // Three answers, two wire formats. "Here" and "elsewhere" differ only in
-    // whether a key is likely, but they are separate lines because "where is
-    // whisper running" is the question the user can actually answer.
-    const sttChoice = await choose("Speech-to-text", [
-      { value: "api", label: "A transcription API (Groq, OpenAI, Sarvam, …)" },
-      { value: "here", label: "Whisper on this machine (private; needs CPU and a model download)" },
-      { value: "remote", label: "Whisper on another machine" },
-    ], current?.stt.provider === "whisper-cpp" ? "here" : "api");
-
-    let stt: SttAnswer;
+    let stt: SttAnswer | undefined;
     let sttKey: string | undefined;
-    if (sttChoice === "api") {
-      const providers = [
-        { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
-        { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
-        { value: "sarvam", label: "Sarvam (Indian languages, code-mixed speech)", url: SARVAM_URL, keys: "https://dashboard.sarvam.ai" },
-      ];
-      const chosen = await choose("Choose your transcription provider", [
-        ...providers,
-        { value: "custom", label: "Custom provider (OpenAI-compatible /audio/transcriptions)" },
-      ], current?.stt.provider === "sarvam" ? "sarvam" : "groq");
-      const preset = providers.find(p => p.value === chosen);
-      console.log(warn("Your recordings will be uploaded to this provider."));
-      if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
-      const baseUrl = preset?.url ?? await endpoint("Provider address", "");
-      sttKey = current?.stt.url === baseUrl ? current.stt.apiKey : undefined;
-      sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key") || sttKey;
-      while (!sttKey) {
-        console.log(warn("A hosted transcription provider needs an API key."));
-        if (!(await yes("Enter an API key now?", true))) {
-          console.log(grey("Setup cancelled; configuration was not changed."));
-          return;
+    if (walkStt) {
+      // Three answers, two wire formats. "Here" and "elsewhere" differ only in
+      // whether a key is likely, but they are separate lines because "where is
+      // whisper running" is the question the user can actually answer.
+      const sttChoice = await choose("Speech-to-text", [
+        { value: "api", label: "A transcription API (Groq, OpenAI, Sarvam, …)" },
+        { value: "here", label: "Whisper on this machine (private; needs CPU and a model download)" },
+        { value: "remote", label: "Whisper on another machine" },
+        // The answer that was missing, and the one somebody setting this up to
+        // read notes in an editor actually wants. Without it, all three
+        // choices demanded either a key or a whisper endpoint, and the first -
+        // which is the default - abandons the whole wizard when there is no
+        // key. So a person who came to search their own notes could not finish
+        // setup at all, in a project whose README says capture needs no
+        // account.
+        { value: "later", label: "Not yet — text notes and the editor plugin, no voice" },
+      ], current?.stt.provider === "whisper-cpp" ? "here" : "api");
+
+      if (sttChoice === "later") {
+        console.log(grey("Skipping transcription. Everything that is not voice still works:"));
+        console.log(grey("  text captures, search, the editor plugin, and recording a session."));
+        console.log(grey("  Sending a voice note will fail until you set this up, and /health says so."));
+        console.log(grey(`  Come back to it with ${bold("tama-server settings")} whenever.`));
+        // config.ts's own default, left deliberately unreachable rather than
+        // absent: /health then reports stt false and a voice capture fails
+        // naming the endpoint it tried, instead of failing with no config to
+        // point at.
+        stt = { provider: "whisper-cpp", url: "http://127.0.0.1:8081" };
+      } else if (sttChoice === "api") {
+        const providers = [
+          { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
+          { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
+          { value: "sarvam", label: "Sarvam (Indian languages, code-mixed speech)", url: SARVAM_URL, keys: "https://dashboard.sarvam.ai" },
+        ];
+        const chosen = await choose("Choose your transcription provider", [
+          ...providers,
+          { value: "custom", label: "Custom provider (OpenAI-compatible /audio/transcriptions)" },
+        ], current?.stt.provider === "sarvam" ? "sarvam" : "groq");
+        const preset = providers.find(p => p.value === chosen);
+        console.log(warn("Your recordings will be uploaded to this provider."));
+        if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
+        const baseUrl = preset?.url ?? await endpoint("Provider address", "");
+        sttKey = current?.stt.url === baseUrl ? current.stt.apiKey : undefined;
+        sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key") || sttKey;
+        while (!sttKey) {
+          console.log(warn("A hosted transcription provider needs an API key."));
+          if (!(await yes("Enter an API key now?", true))) {
+            // Fall back rather than abandon. Throwing away every answer given
+            // so far because one optional feature has no key is the wrong
+            // trade: the vault, the admin token and everything else were
+            // already decided, and voice is the only thing this costs.
+            console.log(grey("Carrying on without transcription. Text notes, search and the editor"));
+            console.log(grey("plugin all work; voice does not until you add a key in settings."));
+            stt = { provider: "whisper-cpp", url: "http://127.0.0.1:8081" };
+            sttKey = undefined;
+            break;
+          }
+          sttKey = await secret("API key");
         }
-        sttKey = await secret("API key");
-      }
-      if (chosen === "sarvam") {
-        // Sarvam publishes no model listing to shop from, and has two models
-        // worth offering, so this menu is the documented set, not a discovery call.
-        const model = await choose("Choose a Sarvam model", [
-          { value: "saaras:v3", label: "saaras:v3 (default)" },
-          { value: "saaras:v4", label: "saaras:v4 (newer)" },
-        ], current?.stt.model ?? SARVAM_DEFAULT_MODEL);
-        // Sarvam takes a spoken-language hint that whisper infers for itself.
-        const language = await choose("Spoken language", [
-          { value: "unknown", label: "Detect automatically" },
-          { value: "en-IN", label: "English (India)" },
-          { value: "hi-IN", label: "Hindi" },
-          { value: "bn-IN", label: "Bengali" },
-          { value: "ta-IN", label: "Tamil" },
-          { value: "te-IN", label: "Telugu" },
-          { value: "mr-IN", label: "Marathi" },
-          { value: "kn-IN", label: "Kannada" },
-        ], current?.stt.language ?? "unknown");
-        stt = { provider: "sarvam", url: baseUrl, model, language };
-        // No unauthenticated listing route exists here, so this is reachability
-        // only. A wrong key first shows up on the first capture, not now.
-        console.log(await new Stt({ ...stt, apiKey: sttKey }).health()
-          ? ok(`Sarvam reachable ${grey("(the API key is not verified until the first capture)")}.`)
-          : warn("Could not reach Sarvam. Check the address and your network."));
+        if (chosen === "sarvam") {
+          // Sarvam publishes no model listing to shop from, and has two models
+          // worth offering, so this menu is the documented set, not a discovery call.
+          const model = await choose("Choose a Sarvam model", [
+            { value: "saaras:v3", label: "saaras:v3 (default)" },
+            { value: "saaras:v4", label: "saaras:v4 (newer)" },
+          ], current?.stt.model ?? SARVAM_DEFAULT_MODEL);
+          // Sarvam takes a spoken-language hint that whisper infers for itself.
+          const language = await choose("Spoken language", [
+            { value: "unknown", label: "Detect automatically" },
+            { value: "en-IN", label: "English (India)" },
+            { value: "hi-IN", label: "Hindi" },
+            { value: "bn-IN", label: "Bengali" },
+            { value: "ta-IN", label: "Tamil" },
+            { value: "te-IN", label: "Telugu" },
+            { value: "mr-IN", label: "Marathi" },
+            { value: "kn-IN", label: "Kannada" },
+          ], current?.stt.language ?? "unknown");
+          stt = { provider: "sarvam", url: baseUrl, model, language };
+          // No unauthenticated listing route exists here, so this is reachability
+          // only. A wrong key first shows up on the first capture, not now.
+          console.log(await new Stt({ ...stt, apiKey: sttKey }).health()
+            ? ok(`Sarvam reachable ${grey("(the API key is not verified until the first capture)")}.`)
+            : warn("Could not reach Sarvam. Check the address and your network."));
+        } else {
+          console.log(grey("Loading available models…"));
+          let speech: string[] = [];
+          let verified = false;
+          // Only the network call is guarded. Cancelling out of the menu below has
+          // to stay a cancellation, not get reported as an unreachable provider.
+          try {
+            speech = (await listModels(baseUrl, sttKey)).filter(m => SPEECH_MODEL.test(m)).slice(0, 12);
+            verified = true;
+          } catch {
+            console.log(warn("Could not list models. Check the address and API key; you can still enter a model name."));
+          }
+          if (verified && speech.length === 0) console.log(warn("No transcription models in this account's listing. Enter one by name below."));
+          let model = speech.length > 0
+            ? await choose("Choose a transcription model", [
+                ...speech.map(m => ({ value: m, label: m })),
+                { value: "__manual__", label: "Enter a model name myself" },
+              ], speech[0]!)
+            : "";
+          if (!model || model === "__manual__") {
+            do { model = await ask("Model name", current?.stt.model ?? "whisper-large-v3"); } while (!model);
+          }
+          stt = { provider: "openai-compatible", url: baseUrl, model };
+          // Listing models proves the address and the key. Whether this particular
+          // model accepts audio is only knowable by sending some, which setup does
+          // not do: a transcription request costs money and needs a recording.
+          console.log(verified
+            ? ok(`Provider reachable and the API key works ${grey("(audio transcription not yet tested)")}.`)
+            : warn("Could not verify the provider or the key. Setup can be saved, but transcription is not verified."));
+        }
       } else {
-        console.log(grey("Loading available models…"));
-        let speech: string[] = [];
-        let verified = false;
-        // Only the network call is guarded. Cancelling out of the menu below has
-        // to stay a cancellation, not get reported as an unreachable provider.
-        try {
-          speech = (await listModels(baseUrl, sttKey)).filter(m => SPEECH_MODEL.test(m)).slice(0, 12);
-          verified = true;
-        } catch {
-          console.log(warn("Could not list models. Check the address and API key; you can still enter a model name."));
+        console.log(grey(sttChoice === "here"
+          ? "Start whisper-server on this machine, then enter its address below."
+          : "Point Tama at a whisper.cpp server you run elsewhere."));
+        const url = await endpoint("Transcription server address", current?.stt.url ?? "http://127.0.0.1:8081");
+        sttKey = current?.stt.url === url ? current.stt.apiKey : undefined;
+        if (sttChoice === "remote" || sttKey) {
+          sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
         }
-        if (verified && speech.length === 0) console.log(warn("No transcription models in this account's listing. Enter one by name below."));
-        let model = speech.length > 0
-          ? await choose("Choose a transcription model", [
-              ...speech.map(m => ({ value: m, label: m })),
-              { value: "__manual__", label: "Enter a model name myself" },
-            ], speech[0]!)
-          : "";
-        if (!model || model === "__manual__") {
-          do { model = await ask("Model name", current?.stt.model ?? "whisper-large-v3"); } while (!model);
+        const local: SttAnswer = { provider: "whisper-cpp", url };
+        stt = local;
+        const probe = () => new Stt({ ...local, apiKey: sttKey }).health();
+        let up = await probe();
+        // Nothing answering on this machine is the normal first run, not a
+        // mistake. Offer to do the three manual steps the README used to hand
+        // over: get the binary, get a model, keep it running.
+        if (!up && sttChoice === "here" && await yes("Nothing is listening there yet. Set up Whisper on this machine now?", true)) {
+          up = await bootstrapWhisper(url, probe);
         }
-        stt = { provider: "openai-compatible", url: baseUrl, model };
-        // Listing models proves the address and the key. Whether this particular
-        // model accepts audio is only knowable by sending some, which setup does
-        // not do: a transcription request costs money and needs a recording.
-        console.log(verified
-          ? ok(`Provider reachable and the API key works ${grey("(audio transcription not yet tested)")}.`)
-          : warn("Could not verify the provider or the key. Setup can be saved, but transcription is not verified."));
+        console.log(up
+          ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
+          : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
       }
-    } else {
-      console.log(grey(sttChoice === "here"
-        ? "Start whisper-server on this machine, then enter its address below."
-        : "Point Tama at a whisper.cpp server you run elsewhere."));
-      const url = await endpoint("Transcription server address", current?.stt.url ?? "http://127.0.0.1:8081");
-      sttKey = current?.stt.url === url ? current.stt.apiKey : undefined;
-      if (sttChoice === "remote" || sttKey) {
-        sttKey = await secret(sttKey ? "API key (Enter to keep saved key)" : "API key — optional") || sttKey;
-      }
-      stt = { provider: "whisper-cpp", url };
-      const probe = () => new Stt({ ...stt, apiKey: sttKey }).health();
-      let up = await probe();
-      // Nothing answering on this machine is the normal first run, not a
-      // mistake. Offer to do the three manual steps the README used to hand
-      // over: get the binary, get a model, keep it running.
-      if (!up && sttChoice === "here" && await yes("Nothing is listening there yet. Set up Whisper on this machine now?", true)) {
-        up = await bootstrapWhisper(url, probe);
-      }
-      console.log(up
-        ? ok(`Transcription server reachable ${grey("(audio transcription not yet tested)")}.`)
-        : warn("Could not verify the transcription server. Start it or check the address/key before recording."));
     }
-    const askChoice = await choose("How would you like to ask questions about your notes?", [
-      { value: "none", label: "Skip for now" },
-      { value: "local", label: "Use a model running on your server" },
-      { value: "cloud", label: "Use an API provider" },
-    ], "none");
     let askConfig: AskConfig;
     let askKey: string | undefined;
-    if (askChoice === "local") {
-      askConfig = { provider: "openai-compatible", baseUrl: await endpoint("Local model server address", "http://127.0.0.1:11434/v1"), model: "", maxChunks: 8 };
-    } else if (askChoice === "cloud") {
-      const presets = [
-        { value: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", keys: "https://openrouter.ai/settings/keys" },
-        { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
-        { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
-        { value: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com", keys: "https://platform.deepseek.com/api_keys" },
-        { value: "together", label: "Together AI", url: "https://api.together.ai/v1", keys: "https://api.together.ai/settings/api-keys" },
-      ];
-      const provider = await choose("Choose your provider", [
-        ...presets,
-        { value: "custom", label: "Custom provider (OpenAI-compatible API)" },
-      ], "openrouter");
-      const preset = presets.find(p => p.value === provider);
-      console.log(warn("Your questions and relevant note excerpts will be sent to this provider."));
-      if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
-      askConfig = {
-        provider: "openai-compatible",
-        baseUrl: preset?.url ?? await endpoint("Provider address", ""),
-        model: "",
-        maxChunks: 8,
-      };
-    }
-    if (askConfig) {
-      askKey = current?.ask?.baseUrl === askConfig.baseUrl ? current.ask.apiKey : undefined;
-      if (askChoice === "cloud" || await yes("Does this model server require an API key?", !!askKey)) {
-        askKey = await secret(askKey ? "API key (skip to keep saved key)" : "API key") || askKey;
+    let askChoice = "unchanged";
+    if (walkAsk) {
+      askChoice = await choose("How would you like to ask questions about your notes?", [
+        { value: "none", label: "Skip for now" },
+        { value: "local", label: "Use a model running on your server" },
+        { value: "cloud", label: "Use an API provider" },
+      ], "none");
+      if (askChoice === "local") {
+        askConfig = { provider: "openai-compatible", baseUrl: await endpoint("Local model server address", "http://127.0.0.1:11434/v1"), model: "", maxChunks: 8 };
+      } else if (askChoice === "cloud") {
+        const presets = [
+          { value: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", keys: "https://openrouter.ai/settings/keys" },
+          { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1", keys: "https://platform.openai.com/api-keys" },
+          { value: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", keys: "https://console.groq.com/keys" },
+          { value: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com", keys: "https://platform.deepseek.com/api_keys" },
+          { value: "together", label: "Together AI", url: "https://api.together.ai/v1", keys: "https://api.together.ai/settings/api-keys" },
+        ];
+        const provider = await choose("Choose your provider", [
+          ...presets,
+          { value: "custom", label: "Custom provider (OpenAI-compatible API)" },
+        ], "openrouter");
+        const preset = presets.find(p => p.value === provider);
+        console.log(warn("Your questions and relevant note excerpts will be sent to this provider."));
+        if (preset) console.log(`${grey("Get your API key:")} ${preset.keys}`);
+        askConfig = {
+          provider: "openai-compatible",
+          baseUrl: preset?.url ?? await endpoint("Provider address", ""),
+          model: "",
+          maxChunks: 8,
+        };
       }
-      while (askChoice === "cloud" && !askKey) {
-        console.log(warn("An API key is required for this setup. A public model list does not verify account access."));
-        if (!(await yes("Enter an API key now?", true))) {
-          console.log(grey("Setup cancelled; configuration was not changed."));
-          return;
+      if (askConfig) {
+        askKey = current?.ask?.baseUrl === askConfig.baseUrl ? current.ask.apiKey : undefined;
+        if (askChoice === "cloud" || await yes("Does this model server require an API key?", !!askKey)) {
+          askKey = await secret(askKey ? "API key (skip to keep saved key)" : "API key") || askKey;
         }
-        askKey = await secret("API key");
-      }
-      console.log(grey("Loading available models…"));
-      let models: string[] = [];
-      try {
-        models = await listModels(askConfig.baseUrl, askKey);
-        console.log(`${bold(String(models.length))} models listed. ${grey("API-key validity and model access have not been verified yet.")}`);
-      } catch { console.log(warn("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below.")); }
-      if (models.length > 0) {
-        const filter = models.length > 12 ? await ask("Filter model names (for example llama or claude; Enter for all)", "") : "";
-        const matches = models.filter(m => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 12);
-        askConfig.model = await choose("Choose a model", [...matches.map(m => ({ value: m, label: m })), { value: "__manual__", label: "Enter a model name myself" }], matches[0] ?? "__manual__");
-      }
-      if (!askConfig.model || askConfig.model === "__manual__") {
-        do { askConfig.model = await ask("Model name", current?.ask?.model ?? ""); } while (!askConfig.model);
-      }
-      if (await yes("Test this model with a short greeting? (cloud providers may charge)", true)) {
+        while (askChoice === "cloud" && !askKey) {
+          console.log(warn("An API key is required for this setup. A public model list does not verify account access."));
+          if (!(await yes("Enter an API key now?", true))) {
+            console.log(grey("Setup cancelled; configuration was not changed."));
+            return;
+          }
+          askKey = await secret("API key");
+        }
+        console.log(grey("Loading available models…"));
+        let models: string[] = [];
         try {
-          const response = await fetch(`${askConfig.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", ...(askKey ? { authorization: `Bearer ${askKey}` } : {}) }, body: JSON.stringify({ model: askConfig.model, messages: [{ role: "user", content: "Reply with hello." }], max_tokens: 16 }), signal: AbortSignal.timeout(60000) });
-          const body = await response.json() as { choices?: { message?: { content?: string } }[] };
-          if (!response.ok || !body.choices?.[0]?.message?.content) throw new Error();
-          console.log(ok("Model replied successfully."));
-        } catch { console.log(warn("Model test failed. Setup can be saved, but Ask is not verified.")); }
+          models = await listModels(askConfig.baseUrl, askKey);
+          console.log(`${bold(String(models.length))} models listed. ${grey("API-key validity and model access have not been verified yet.")}`);
+        } catch { console.log(warn("Could not list models. Check the address, API key, and whether the server is running. You can still enter a model and test it below.")); }
+        if (models.length > 0) {
+          const filter = models.length > 12 ? await ask("Filter model names (for example llama or claude; Enter for all)", "") : "";
+          const matches = models.filter(m => m.toLowerCase().includes(filter.toLowerCase())).slice(0, 12);
+          askConfig.model = await choose("Choose a model", [...matches.map(m => ({ value: m, label: m })), { value: "__manual__", label: "Enter a model name myself" }], matches[0] ?? "__manual__");
+        }
+        if (!askConfig.model || askConfig.model === "__manual__") {
+          do { askConfig.model = await ask("Model name", current?.ask?.model ?? ""); } while (!askConfig.model);
+        }
+        if (await yes("Test this model with a short greeting? (cloud providers may charge)", true)) {
+          try {
+            const response = await fetch(`${askConfig.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", ...(askKey ? { authorization: `Bearer ${askKey}` } : {}) }, body: JSON.stringify({ model: askConfig.model, messages: [{ role: "user", content: "Reply with hello." }], max_tokens: 16 }), signal: AbortSignal.timeout(60000) });
+            const body = await response.json() as { choices?: { message?: { content?: string } }[] };
+            if (!response.ok || !body.choices?.[0]?.message?.content) throw new Error();
+            console.log(ok("Model replied successfully."));
+          } catch { console.log(warn("Model test failed. Setup can be saved, but Ask is not verified.")); }
+        }
       }
     }
 
     const bridgePath = resolve(dirname(configPath), "whatsapp-bridge.json");
-    const currentBridge = await readFile(bridgePath, "utf8")
-      .then(text => JSON.parse(text) as BridgeSettings)
-      .catch(() => undefined);
-
-    let whatsappChoice = await choose("WhatsApp", [
-      { value: "none", label: "Skip / disable WhatsApp" },
-      { value: "bridge", label: "Link your own WhatsApp number (no Meta app; unofficial)" },
-      { value: "cloud", label: "Connect a WhatsApp Cloud API number (official; needs a domain)" },
-    ], current?.whatsapp ? "cloud" : currentBridge ? "bridge" : "none");
-
     let bridge: BridgeSettings | undefined;
-    if (whatsappChoice === "bridge") {
-      // The Cloud API path asks for five values from a Meta dashboard. This one
-      // asks for nothing you have to go and find, so the only thing worth
-      // spending the user's attention on is the trade they are making.
-      console.log(`\n${bold("Linking your own number")}`);
-      console.log(grey("  Tama logs into WhatsApp Web as your account, the way the desktop app does."));
-      console.log(grey("  No Meta app, no second number, no domain: the connection is outbound."));
-      console.log(warn("  Unofficial. This is against WhatsApp's terms and the account can be banned."));
-      console.log(grey("  A voice note becomes a note. Text from a number you allow is a question."));
-      if (!(await yes("Set that up?", true))) {
-        console.log(grey("Skipping WhatsApp. Nothing else is affected."));
-        whatsappChoice = "none";
-      } else {
-        let allowedFrom: string[] | null = null;
-        do {
-          const raw = await ask(
-            "Numbers allowed to message it, comma-separated (Enter for only your own self-chat)",
-            currentBridge?.allowedFrom.join(",") ?? "",
-          );
-          allowedFrom = raw.trim() ? whatsappSenders(raw) : [];
-          if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
-        } while (!allowedFrom);
-        // The token is minted after the config is saved, because minting needs
-        // the data directory that the config settles.
-        bridge = bridgeSettings("", allowedFrom);
-      }
-    }
     let whatsappConfig: WhatsAppAnswer | undefined;
     let whatsappAccessToken: string | undefined;
     let whatsappAppSecret: string | undefined;
     let whatsappVerifyToken: string | undefined;
-    if (whatsappChoice === "cloud") {
-      // Meta's half cannot be automated away — it is a dashboard, a business
-      // verification and a number registration. What the wizard can do is name
-      // every value it is about to ask for and where that value is found,
-      // rather than dropping the user at a prompt for a "phone number ID".
-      console.log(`\n${bold("First, on Meta's side")} ${grey("— https://developers.facebook.com/apps")}`);
-      console.log(grey("  1. Create a business app, then add the WhatsApp product to it."));
-      console.log(grey("  2. Connect a WhatsApp Business Account and register a dedicated number."));
-      console.log(warn("     That number's WhatsApp moves to the Cloud API. Do not use a number carrying personal chats."));
-      console.log(grey("  3. WhatsApp → API Setup: copy the phone number ID (digits, not the visible number)."));
-      console.log(grey("  4. Business settings → System users: create a token with whatsapp_business_messaging."));
-      console.log(grey("  5. App settings → Basic: copy the app secret."));
-      console.log(grey("Tama generates the webhook verify token itself, and prints the callback URL to paste back."));
-      if (!(await yes("Have those ready?", true))) {
-        console.log(grey("Skipping WhatsApp. Re-run setup when the Meta app is ready; nothing else is affected."));
-        whatsappChoice = "none";
+    if (walkWhatsApp) {
+      const currentBridge = await readFile(bridgePath, "utf8")
+        .then(text => JSON.parse(text) as BridgeSettings)
+        .catch(() => undefined);
+
+      let whatsappChoice = await choose("WhatsApp", [
+        { value: "none", label: "Skip / disable WhatsApp" },
+        { value: "bridge", label: "Link your own WhatsApp number (no Meta app; unofficial)" },
+        { value: "cloud", label: "Connect a WhatsApp Cloud API number (official; needs a domain)" },
+      ], current?.whatsapp ? "cloud" : currentBridge ? "bridge" : "none");
+
+      if (whatsappChoice === "bridge") {
+        // The Cloud API path asks for five values from a Meta dashboard. This one
+        // asks for nothing you have to go and find, so the only thing worth
+        // spending the user's attention on is the trade they are making.
+        console.log(`\n${bold("Linking your own number")}`);
+        console.log(grey("  Tama logs into WhatsApp Web as your account, the way the desktop app does."));
+        console.log(grey("  No Meta app, no second number, no domain: the connection is outbound."));
+        console.log(warn("  Unofficial. This is against WhatsApp's terms and the account can be banned."));
+        console.log(grey("  A voice note becomes a note. Text from a number you allow is a question."));
+        if (!(await yes("Set that up?", true))) {
+          console.log(grey("Skipping WhatsApp. Nothing else is affected."));
+          whatsappChoice = "none";
+        } else {
+          let allowedFrom: string[] | null = null;
+          do {
+            const raw = await ask(
+              "Numbers allowed to message it, comma-separated (Enter for only your own self-chat)",
+              currentBridge?.allowedFrom.join(",") ?? "",
+            );
+            allowedFrom = raw.trim() ? whatsappSenders(raw) : [];
+            if (!allowedFrom) console.log(warn("Use international numbers, digits only (a leading + is accepted)."));
+          } while (!allowedFrom);
+          // The token is minted after the config is saved, because minting needs
+          // the data directory that the config settles.
+          bridge = bridgeSettings("", allowedFrom);
+        }
       }
-    }
-    if (whatsappChoice === "cloud") {
-      let phoneNumberId = "";
-      do {
-        phoneNumberId = await ask("Meta phone number ID (not the visible phone number)", current?.whatsapp?.phoneNumberId ?? "");
-        if (!/^\d+$/.test(phoneNumberId)) console.log(warn("The Meta phone number ID contains digits only."));
-      } while (!/^\d+$/.test(phoneNumberId));
-
-      let allowedFrom: string[] | null = null;
-      do {
-        const rawSenders = await ask(
-          "Allowed sender numbers, comma-separated (country code + number)",
-          current?.whatsapp?.allowedFrom.join(",") ?? "",
-        );
-        allowedFrom = whatsappSenders(rawSenders);
-        if (!allowedFrom) console.log(warn("Enter at least one international number using digits only (a leading + is accepted)."));
-      } while (!allowedFrom);
-
-      const publicBaseUrl = await optionalPublicOrigin(current?.whatsapp?.publicBaseUrl);
-      whatsappAccessToken = await secret(
-        current?.whatsapp?.accessToken
-          ? "Meta access token (Enter to keep saved token)"
-          : "Meta system-user access token",
-      ) || current?.whatsapp?.accessToken;
-      while (!whatsappAccessToken) {
-        console.log(warn("WhatsApp needs an access token with whatsapp_business_messaging permission."));
-        whatsappAccessToken = await secret("Meta system-user access token");
+      if (whatsappChoice === "cloud") {
+        // Meta's half cannot be automated away — it is a dashboard, a business
+        // verification and a number registration. What the wizard can do is name
+        // every value it is about to ask for and where that value is found,
+        // rather than dropping the user at a prompt for a "phone number ID".
+        console.log(`\n${bold("First, on Meta's side")} ${grey("— https://developers.facebook.com/apps")}`);
+        console.log(grey("  1. Create a business app, then add the WhatsApp product to it."));
+        console.log(grey("  2. Connect a WhatsApp Business Account and register a dedicated number."));
+        console.log(warn("     That number's WhatsApp moves to the Cloud API. Do not use a number carrying personal chats."));
+        console.log(grey("  3. WhatsApp → API Setup: copy the phone number ID (digits, not the visible number)."));
+        console.log(grey("  4. Business settings → System users: create a token with whatsapp_business_messaging."));
+        console.log(grey("  5. App settings → Basic: copy the app secret."));
+        console.log(grey("Tama generates the webhook verify token itself, and prints the callback URL to paste back."));
+        if (!(await yes("Have those ready?", true))) {
+          console.log(grey("Skipping WhatsApp. Re-run setup when the Meta app is ready; nothing else is affected."));
+          whatsappChoice = "none";
+        }
       }
+      if (whatsappChoice === "cloud") {
+        let phoneNumberId = "";
+        do {
+          phoneNumberId = await ask("Meta phone number ID (not the visible phone number)", current?.whatsapp?.phoneNumberId ?? "");
+          if (!/^\d+$/.test(phoneNumberId)) console.log(warn("The Meta phone number ID contains digits only."));
+        } while (!/^\d+$/.test(phoneNumberId));
 
-      whatsappAppSecret = await secret(
-        current?.whatsapp?.appSecret
-          ? "Meta app secret (Enter to keep saved secret)"
-          : "Meta app secret (App Settings → Basic)",
-      ) || current?.whatsapp?.appSecret;
-      while (!whatsappAppSecret) {
-        console.log(warn("The Meta app secret is required to authenticate webhook POSTs."));
-        whatsappAppSecret = await secret("Meta app secret");
+        let allowedFrom: string[] | null = null;
+        do {
+          const rawSenders = await ask(
+            "Allowed sender numbers, comma-separated (country code + number)",
+            current?.whatsapp?.allowedFrom.join(",") ?? "",
+          );
+          allowedFrom = whatsappSenders(rawSenders);
+          if (!allowedFrom) console.log(warn("Enter at least one international number using digits only (a leading + is accepted)."));
+        } while (!allowedFrom);
+
+        const publicBaseUrl = await optionalPublicOrigin(current?.whatsapp?.publicBaseUrl);
+        whatsappAccessToken = await secret(
+          current?.whatsapp?.accessToken
+            ? "Meta access token (Enter to keep saved token)"
+            : "Meta system-user access token",
+        ) || current?.whatsapp?.accessToken;
+        while (!whatsappAccessToken) {
+          console.log(warn("WhatsApp needs an access token with whatsapp_business_messaging permission."));
+          whatsappAccessToken = await secret("Meta system-user access token");
+        }
+
+        whatsappAppSecret = await secret(
+          current?.whatsapp?.appSecret
+            ? "Meta app secret (Enter to keep saved secret)"
+            : "Meta app secret (App Settings → Basic)",
+        ) || current?.whatsapp?.appSecret;
+        while (!whatsappAppSecret) {
+          console.log(warn("The Meta app secret is required to authenticate webhook POSTs."));
+          whatsappAppSecret = await secret("Meta app secret");
+        }
+
+        // Tama owns this shared secret, and prints it after saving so the admin
+        // can paste the same value into Meta's webhook configuration.
+        whatsappVerifyToken = current?.whatsapp?.verifyToken ?? randomBytes(32).toString("hex");
+        const graphApiVersion = current?.whatsapp?.graphApiVersion ?? "v23.0";
+        whatsappConfig = { phoneNumberId, allowedFrom, graphApiVersion, publicBaseUrl };
+
+        try {
+          const response = await fetch(`https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}?fields=display_phone_number,verified_name`, {
+            headers: { authorization: `Bearer ${whatsappAccessToken}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          console.log(response.ok
+            ? ok("WhatsApp phone number and access token verified.")
+            : warn(`Could not verify the WhatsApp token/number (HTTP ${response.status}). Setup can still be saved.`));
+        } catch {
+          console.log(warn("Could not reach Meta to verify the WhatsApp token/number. Setup can still be saved."));
+        }
+        if (walkAsk ? !askConfig : !current?.ask) console.log(warn("Ask is disabled, so WhatsApp voice capture will work but text questions will not be answered yet."));
       }
-
-      // Tama owns this shared secret, and prints it after saving so the admin
-      // can paste the same value into Meta's webhook configuration.
-      whatsappVerifyToken = current?.whatsapp?.verifyToken ?? randomBytes(32).toString("hex");
-      const graphApiVersion = current?.whatsapp?.graphApiVersion ?? "v23.0";
-      whatsappConfig = { phoneNumberId, allowedFrom, graphApiVersion, publicBaseUrl };
-
-      try {
-        const response = await fetch(`https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}?fields=display_phone_number,verified_name`, {
-          headers: { authorization: `Bearer ${whatsappAccessToken}` },
-          signal: AbortSignal.timeout(8000),
-        });
-        console.log(response.ok
-          ? ok("WhatsApp phone number and access token verified.")
-          : warn(`Could not verify the WhatsApp token/number (HTTP ${response.status}). Setup can still be saved.`));
-      } catch {
-        console.log(warn("Could not reach Meta to verify the WhatsApp token/number. Setup can still be saved."));
-      }
-      if (!askConfig) console.log(warn("Ask is disabled, so WhatsApp voice capture will work but text questions will not be answered yet."));
     }
 
     const config = configFromAnswers({ vaultPath, inbox: "Inbox", stt, port, ask: askConfig, whatsapp: whatsappConfig });
-    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  import:")} ${importSource ? `${importNoteCount} Markdown notes from a read-only source` : "none"}\n${grey("  stt:   ")} ${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}\n${grey("  ask:   ")} ${askChoice}\n${grey("  whatsapp:")} ${whatsappConfig ? `${whatsappConfig.phoneNumberId} (${whatsappConfig.allowedFrom.length} allowed)` : bridge ? `your own number, unofficial bridge (${bridge.allowedFrom.length} allowed + self-chat)` : "disabled"}\n${grey("  config:")} ${configPath}`);
-    if (existsSync(configPath) && !(await yes("Replace the existing config?"))) {
+    // A block this run never asked about reads "unchanged", not "disabled": the
+    // saved one is about to be carried through, and calling that a summary of
+    // nothing is how a partial run looks like it wiped something.
+    const sttSummary = stt ? `${stt.provider === "whisper-cpp" ? "whisper.cpp" : stt.model} ${grey(`at ${stt.url}`)}` : grey("unchanged");
+    const whatsappSummary = !walkWhatsApp
+      ? grey("unchanged")
+      : whatsappConfig
+        ? `${whatsappConfig.phoneNumberId} (${whatsappConfig.allowedFrom.length} allowed)`
+        : bridge
+          ? `your own number, unofficial bridge (${bridge.allowedFrom.length} allowed + self-chat)`
+          : "disabled";
+    console.log(`\n${bold("Summary")}\n${grey("  vault: ")} ${vaultPath} ${grey(`(${selectedVaultPlan === "create" ? "new git vault" : "existing git vault"})`)}\n${grey("  import:")} ${importSource ? `${importNoteCount} Markdown notes from a read-only source` : "none"}\n${grey("  stt:   ")} ${sttSummary}\n${grey("  ask:   ")} ${askChoice}\n${grey("  whatsapp:")} ${whatsappSummary}\n${grey("  config:")} ${configPath}`);
+    // "Replace" is the truth for a full re-run and a lie for a scoped one: the
+    // blocks this run skipped are being carried through, not overwritten.
+    if (existsSync(configPath) && !(await yes(partial ? "Save these changes?" : "Replace the existing config?"))) {
       console.log(grey("Setup cancelled; no changes were made."));
       return;
     }
@@ -565,8 +628,10 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     if (selectedVaultPlan === "create") await Vault.initialize(vaultPath);
     await mkdir(dirname(configPath), { recursive: true });
     const saved: any = { ...existing, ...config, server: { ...existing?.server, port, adminToken: current?.server.adminToken ?? (config.server as any).adminToken }, notify: existing?.notify ?? config.notify, safety: existing?.safety ?? config.safety, dataDir: existing?.dataDir ?? config.dataDir, vault: { path: vaultPath, inbox: current?.vault.inbox ?? "Inbox" } };
-    if (!askConfig) delete saved.ask;
-    if (!whatsappConfig) delete saved.whatsapp;
+    // Only a run that asked may remove. Deleting a block this run skipped would
+    // turn "rename my world" into "and Ask is off now".
+    if (walkAsk && !askConfig) delete saved.ask;
+    if (walkWhatsApp && !whatsappConfig) delete saved.whatsapp;
     saved.world = { ...existing?.world, name: worldName };
     for (const [section, key] of [["stt", sttKey], ["ask", askKey]] as const) {
       if (!key) continue;
@@ -624,7 +689,7 @@ export async function runSetup(argv: string[] = Bun.argv): Promise<void> {
     }
     if (askConfig?.apiKeyEnv) console.log(warn(`Before using Ask, set ${askConfig.apiKeyEnv} in the environment that starts Tama.`));
     const admin = (saved.server as { adminToken: string }).adminToken;
-    console.log(`\n${bold("Pair your first device")}${grey(` — start the server, then open this on this machine:`)}`);
+    console.log(`\n${bold(partial ? "Pair another device" : "Pair your first device")}${grey(` — start the server, then open this on this machine:`)}`);
     console.log(`  ${bold(`http://localhost:${port}/pair?token=${admin}`)}`);
     console.log(grey("  A QR code a phone can scan. Keep that link to yourself; it mints pairing codes."));
     console.log(grey(`  Scripting it instead: curl -X POST localhost:${port}/pair/code -H "Authorization: Bearer ${admin}"`));

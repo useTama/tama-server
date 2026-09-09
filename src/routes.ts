@@ -44,7 +44,7 @@ import { summariseSession } from "./session-summary.ts";
 import { appendSession } from "./session.ts";
 import { handleMcp, MCP_TOOL_NAMES } from "./mcp.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
-import { renderPairPage, candidateOrigins } from "./pair-page.ts";
+import { renderPairPage, candidateOrigins, forwardedProtocol } from "./pair-page.ts";
 import { tama, red, grey, green, orange, amber } from "./ui.ts";
 
 export const VERSION = "0.1.0";
@@ -446,7 +446,17 @@ const whatsapp = config.whatsapp
         expiresAt,
         origins: candidateOrigins({
           host: req.headers.get("host"),
-          protocol: url.protocol,
+          // The proxy's scheme, not this socket's. `tailscale serve` and Caddy
+          // both terminate TLS and forward plain http to 127.0.0.1, so
+          // `url.protocol` here is "http:" while the name in the Host header
+          // only answers https. The QR then encodes an address that cannot
+          // work, and a phone scanning it fails with nothing to read.
+          //
+          // Trusted because it is only ever read on this route, and only to
+          // choose a scheme to PRINT. A forged header makes a pairing page
+          // offer a URL the forger already controls, which is not a capability
+          // they gained by forging it.
+          protocol: forwardedProtocol(req) ?? url.protocol,
           port: config.server.port,
         }),
         version: VERSION,

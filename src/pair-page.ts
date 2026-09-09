@@ -34,6 +34,33 @@ const isLoopback = (host: string): boolean =>
  * address that is guaranteed not to work from the phone. So the machine's own
  * LAN addresses lead, and loopback stays last as a same-machine test.
  */
+/**
+ * The scheme the client actually used, when something terminated TLS in front.
+ *
+ * `tailscale serve` and Caddy both accept https on a public name and forward
+ * plain http to 127.0.0.1, so the request object here says "http:" for a
+ * connection that was https end to end. Only the proxy knows, and it says so
+ * in a header.
+ *
+ * `Forwarded` is the standardised one and `X-Forwarded-Proto` is the one
+ * everything actually sends, so both are read. The first value wins: a chain
+ * of proxies appends, and the leftmost is the one the client spoke.
+ */
+export function forwardedProtocol(req: Request): string | undefined {
+  const xfp = req.headers.get("x-forwarded-proto");
+  if (xfp) {
+    const first = xfp.split(",")[0]?.trim().toLowerCase();
+    if (first === "https" || first === "http") return `${first}:`;
+  }
+  // RFC 7239: `Forwarded: for=...;proto=https, for=...`
+  const forwarded = req.headers.get("forwarded");
+  if (forwarded) {
+    const m = /proto\s*=\s*"?(https?)"?/i.exec(forwarded.split(",")[0] ?? "");
+    if (m) return `${m[1]!.toLowerCase()}:`;
+  }
+  return undefined;
+}
+
 export function candidateOrigins(opts: {
   host?: string | null;
   protocol?: string;

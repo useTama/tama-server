@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { candidateOrigins, pairPayload, renderPairPage, PAIR_PAYLOAD_VERSION } from "../src/pair-page.ts";
+import { candidateOrigins, pairPayload, renderPairPage, PAIR_PAYLOAD_VERSION, forwardedProtocol } from "../src/pair-page.ts";
 
 const nics = {
   lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
@@ -118,4 +118,47 @@ test("an address is escaped rather than able to close a tag", () => {
 
 test("the page still renders if the expiry timestamp is unparseable", () => {
   expect(page({ expiresAt: "soon" })).toContain("soon");
+});
+
+test("the scheme comes from the proxy when something terminated TLS in front", () => {
+  // The failure this exists to stop: `tailscale serve` and Caddy both accept
+  // https on a public name and forward plain http to 127.0.0.1, so the request
+  // object says "http:" for a connection that was https the whole way. The QR
+  // then encodes http://name.ts.net, the name only answers https, and a phone
+  // scanning it gets nothing to read.
+  const req = (headers: Record<string, string>) =>
+    new Request("http://127.0.0.1:8080/pair", { headers });
+
+  expect(forwardedProtocol(req({ "x-forwarded-proto": "https" }))).toBe("https:");
+  expect(forwardedProtocol(req({ "x-forwarded-proto": "http" }))).toBe("http:");
+  // A chain of proxies appends, and the leftmost is what the client spoke.
+  expect(forwardedProtocol(req({ "x-forwarded-proto": "https, http" }))).toBe("https:");
+  expect(forwardedProtocol(req({ "X-Forwarded-Proto": "HTTPS" }))).toBe("https:");
+  // RFC 7239, which is the standardised spelling even though nothing sends it.
+  expect(forwardedProtocol(req({ forwarded: 'for=203.0.113.1;proto=https' }))).toBe("https:");
+  expect(forwardedProtocol(req({ forwarded: 'proto="https";for=203.0.113.1' }))).toBe("https:");
+  // Nothing in front: undefined, so the caller keeps the socket's own scheme
+  // rather than being handed a guess.
+  expect(forwardedProtocol(req({}))).toBeUndefined();
+  expect(forwardedProtocol(req({ "x-forwarded-proto": "gopher" }))).toBeUndefined();
+  expect(forwardedProtocol(req({ forwarded: "for=203.0.113.1" }))).toBeUndefined();
+});
+
+test("a tailnet address is offered as https, not as the http it arrived on", () => {
+  // End to end through the thing that builds the QR's list.
+  const origins = candidateOrigins({
+    host: "tama-server.tail9d3e86.ts.net",
+    protocol: "https:",
+    port: 8080,
+    interfaces: {},
+  });
+  expect(origins[0]).toBe("https://tama-server.tail9d3e86.ts.net");
+  // And the bug it replaces, so the difference is visible in one place.
+  const broken = candidateOrigins({
+    host: "tama-server.tail9d3e86.ts.net",
+    protocol: "http:",
+    port: 8080,
+    interfaces: {},
+  });
+  expect(broken[0]).toBe("http://tama-server.tail9d3e86.ts.net");
 });

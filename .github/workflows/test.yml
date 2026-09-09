@@ -37,3 +37,33 @@ jobs:
       # plugin.json as an unsupported manifest version, and the plugin's own
       # shape is asserted in test/clients.test.ts.
       - run: bunx --bun @anthropic-ai/mcpb@latest validate clients/claude-desktop/manifest.json
+
+      # The judge-free half of the answer eval: whether the model cited a path
+      # it was never shown. A fabricated filename is a fabricated source, and a
+      # model willing to invent one will invent the fact underneath it, so this
+      # is the sharpest cheap signal there is - and it used to sit behind a paid
+      # key alongside the faithfulness checks, which is why it never ran (#61).
+      #
+      # Off until someone sets the repository variable TAMA_EVAL_LOCAL_MODEL.
+      # Installing a model server puts a third-party download in the path of
+      # every push, so their outage becomes our red build - the same bad signal
+      # that a paid key was rejected for. Setting the variable is the entire
+      # switch; nothing here needs editing to turn it on.
+      - name: a local model, if one is configured
+        if: vars.TAMA_EVAL_LOCAL_MODEL != ''
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          # Bounded: a hang here would burn the job's whole timeout on a
+          # service that is never coming up.
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          ollama pull "${{ vars.TAMA_EVAL_LOCAL_MODEL }}"
+
+      - name: citations and refusals, against that model
+        if: vars.TAMA_EVAL_LOCAL_MODEL != ''
+        env:
+          TAMA_EVAL_LOCAL_MODEL: ${{ vars.TAMA_EVAL_LOCAL_MODEL }}
+        run: bun test test/eval/answer.eval.test.ts

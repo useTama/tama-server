@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "tama",
   "display_name": "Tama",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Your own Markdown notes, readable and writable from Claude.",
   "long_description": "Tama keeps voice notes and work summaries as Markdown in a git repo you own. This extension lets Claude search those notes, read one, append to them, and record what a session did - so a decision made today is still answerable in six weeks. It talks to a Tama server you already run; nothing is sent anywhere else.",
   "author": {

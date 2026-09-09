@@ -101,6 +101,22 @@ test("the marketplace entry and the plugin agree on name and source", async () =
   expect(existsSync(join(root, entry.source, ".claude-plugin/plugin.json"))).toBe(true);
 });
 
+test("the plugin does not declare the hooks file that is loaded for it", async () => {
+  // A shipped bug, and `claude plugin validate` passes on it: the conventional
+  // hooks/hooks.json is loaded automatically, so naming it in `hooks` as well
+  // makes it a duplicate and the WHOLE plugin fails to load - MCP server,
+  // command and hook together. It shipped in 0.2.0 and only an actual
+  // `claude plugin list` showed it, which is why this is asserted here rather
+  // than trusted to the validator.
+  const plugin = await readJson("clients/claude-code/.claude-plugin/plugin.json");
+  const standard = "hooks/hooks.json";
+  expect(existsSync(join(root, "clients/claude-code", standard))).toBe(true);
+  const declared = ([] as string[]).concat(plugin.hooks ?? []);
+  for (const d of declared) {
+    expect(d.replace(/^\.\//, "")).not.toBe(standard);
+  }
+});
+
 test("the plugin points its MCP server at the configured address, not a hardcoded one", async () => {
   const mcp = await readJson("clients/claude-code/.mcp.json");
   const server = mcp.mcpServers?.tama;

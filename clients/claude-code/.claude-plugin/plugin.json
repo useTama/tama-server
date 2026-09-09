@@ -1,7 +1,7 @@
 {
   "name": "tama",
   "displayName": "Tama",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Your own Markdown notes, searchable and writable from the terminal.",
   "author": {
     "name": "Tama",
@@ -36,6 +36,5 @@
       "description": "When a session ends, send its transcript to your Tama server, which summarises it and files an entry in the project's log - or files nothing, which is the usual outcome. Off by default: it costs one model call per session on your own key, and your prompts and Claude's replies leave this machine for your server.",
       "default": false
     }
-  },
-  "hooks": "./hooks/hooks.json"
+  }
 }

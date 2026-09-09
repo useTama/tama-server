@@ -103,7 +103,20 @@ export const ANSWERABLE: Golden[] = [
   { id: "lid", q: "what is the problem with whatsapp lid addressing",
     find: ["Projects/tama/whatsapp-lid.md"], gist: ["allowlist", "c.us"] },
   { id: "embeddings", q: "what did i decide about embeddings",
-    find: ["Projects/tama/decisions.md"], gist: ["grep"] },
+    find: ["Projects/tama/decisions.md"], top: "Projects/tama/decisions.md",
+    // Ranks THIRD today, behind the attention paper and the max-tokens note,
+    // by 0.27 and 0.19. Recorded as a gap rather than left unasserted: the
+    // case previously claimed recall only, so the note that holds the answer
+    // sitting below two notes that merely share its vocabulary was invisible.
+    //
+    // It is the shape a ranking change is most likely to make worse - a
+    // question of the form "what did I decide about X" against a decisions
+    // file whose entry for X is one line among many - so an inversion here
+    // should be a red test, not a silent regression. test.failing means
+    // fixing retrieval turns this green instead of needing somebody to
+    // remember to uncomment it.
+    knownGap: "the decisions note mentions embeddings once, in a line about choosing grep instead, while a paper titled for attention and a note about token caps both use the word more often",
+    gist: ["grep"] },
   { id: "mcp", q: "how many mcp tools are there and does it use oauth",
     find: ["Projects/tama/mcp.md"], gist: ["five", "no oauth"] },
   { id: "hermes-drop", q: "why did hermes drop four thousand messages",

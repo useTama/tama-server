@@ -148,7 +148,9 @@ test("one piece failing fails the capture, rather than saving half a thought", a
     return i === 2
       ? new Response("rate limited", { status: 429 })
       : new Response(JSON.stringify({ transcript: "ok" }), { headers: { "content-type": "application/json" } });
-  }) as typeof fetch;
+    // Through `unknown`: Bun's fetch type carries `preconnect`, which a stub
+    // that only answers requests has no reason to implement.
+  }) as unknown as typeof fetch;
 
   await expect(
     new Stt({ provider: "sarvam", url: "https://api.sarvam.ai", apiKey: "k" }).transcribe(tone(70)),

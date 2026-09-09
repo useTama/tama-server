@@ -46,9 +46,17 @@
     "  Ollama: { provider: openai-compatible, baseUrl: http://127.0.0.1:11434/v1, model: qwen2.5:7b }",
     "  OpenRouter: { provider: openai-compatible, baseUrl: https://openrouter.ai/api/v1, model: openrouter/free, apiKeyEnv: OPENROUTER_API_KEY }"
   ],
+  "//ask.limits": [
+    "maxChunks: excerpts retrieved per answer, 1-25 (default 8, clamped above 25).",
+    "            Each is capped near 400 characters, so this is the input bill.",
+    "maxTokens:  output cap per answer (default 2048). A gateway prices a request",
+    "            by this before generating, so omitting it inherits the model's own",
+    "            maximum and can be refused as unaffordable."
+  ],
   "ask": {
     "provider": "anthropic",
     "model": "claude-sonnet-5",
-    "maxChunks": 8
+    "maxChunks": 8,
+    "maxTokens": 2048
   }
 }

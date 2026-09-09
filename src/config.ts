@@ -274,6 +274,48 @@ function parseAudience(name: string, raw: any, views: Record<string, View>): Aud
   return audience;
 }
 
+/**
+ * The ceiling on retrieved chunks, matching the one `src/mcp.ts` has always
+ * clamped its own tool argument to. Twenty-five excerpts is already more
+ * material than a question needs.
+ */
+export const MAX_ASK_CHUNKS = 25;
+
+/**
+ * Chunks per answer, clamped rather than refused.
+ *
+ * Its sibling `askMaxTokens` throws and this deliberately does not. Nothing
+ * bounded this at all - the line was `Number(raw.ask.maxChunks ?? 8)`, which
+ * took 500 without comment, and at roughly 400 characters an excerpt that is
+ * ~200KB of retrieved input on every question. The output cap next door had a
+ * validator; the input side had nothing, which is the half of #22 that was
+ * still open.
+ *
+ * Clamped because a config that loads today has to keep loading: throwing
+ * would turn a working install into one that will not boot on the next
+ * restart, to prevent a bill rather than a wrong answer. Loud on stderr,
+ * because silently ignoring a number somebody typed on purpose is how they
+ * conclude the setting does nothing.
+ */
+function askMaxChunks(value: unknown): number {
+  const asked = Math.floor(Number(value));
+  if (!Number.isFinite(asked) || asked < 1) {
+    console.error(
+      `config: ask.maxChunks must be a positive whole number, got ${JSON.stringify(value)}. Using 8.`,
+    );
+    return 8;
+  }
+  if (asked > MAX_ASK_CHUNKS) {
+    console.error(
+      `config: ask.maxChunks ${asked} is above the ceiling of ${MAX_ASK_CHUNKS}, so ${MAX_ASK_CHUNKS} is being used. ` +
+        `Each excerpt is capped at about 400 characters, so ${asked} of them is roughly ` +
+        `${Math.round((asked * 400) / 1000)}KB of input on every question.`,
+    );
+    return MAX_ASK_CHUNKS;
+  }
+  return asked;
+}
+
 function askMaxTokens(value: unknown): number {
   const tokens = Number(value);
   if (!Number.isInteger(tokens) || tokens < 1) {
@@ -346,7 +388,7 @@ export function loadConfig(path = defaultConfigPath()): Config {
       model: String(raw.ask.model),
       apiKey: credential(raw.ask, "apiKey", provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"),
       baseUrl: raw.ask.baseUrl,
-      maxChunks: Number(raw.ask.maxChunks ?? 8),
+      maxChunks: askMaxChunks(raw.ask.maxChunks ?? 8),
       ...(raw.ask.maxTokens === undefined ? {} : { maxTokens: askMaxTokens(raw.ask.maxTokens) }),
     };
   }

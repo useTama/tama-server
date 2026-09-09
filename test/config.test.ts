@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, resolveSpeaker } from "../src/config.ts";
+import { loadConfig, resolveSpeaker, MAX_ASK_CHUNKS } from "../src/config.ts";
 
 let dir: string;
 
@@ -359,4 +359,32 @@ test("a whatsapp block holding only publicBaseUrl is refused", async () => {
     whatsapp: { publicBaseUrl: "https://tama.tail1234.ts.net" },
   });
   expect(() => loadConfig(path)).toThrow(/phoneNumberId is required/);
+});
+
+test("ask.maxChunks is clamped, not obeyed and not refused", async () => {
+  // The input side of #22. The line was `Number(raw.ask.maxChunks ?? 8)`, so
+  // 500 was accepted without comment - roughly 200KB of retrieved input on
+  // every question, at ~400 characters an excerpt. Its sibling ask.maxTokens
+  // had a validator; this had nothing.
+  const ask = (maxChunks: unknown) => config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret" },
+    ask: { provider: "openai-compatible", baseUrl: "http://x/v1", model: "m", apiKey: "k", maxChunks },
+  });
+
+  expect(loadConfig(await ask(4)).ask?.maxChunks).toBe(4);
+  expect(loadConfig(await ask(25)).ask?.maxChunks).toBe(25);
+  // Clamped rather than thrown, because a config that loads today has to keep
+  // loading: refusing it would turn a working install into one that will not
+  // boot on the next restart, to prevent a bill rather than a wrong answer.
+  expect(loadConfig(await ask(500)).ask?.maxChunks).toBe(MAX_ASK_CHUNKS);
+  // And nonsense falls back rather than reaching the retriever as NaN.
+  expect(loadConfig(await ask("banana")).ask?.maxChunks).toBe(8);
+  expect(loadConfig(await ask(0)).ask?.maxChunks).toBe(8);
+  expect(loadConfig(await ask(-3)).ask?.maxChunks).toBe(8);
+  // A fraction is floored rather than passed through to a slice length.
+  expect(loadConfig(await ask(3.7)).ask?.maxChunks).toBe(3);
+  // Absent stays the documented default.
+  const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
+  expect(loadConfig(bare).ask).toBeUndefined();
 });

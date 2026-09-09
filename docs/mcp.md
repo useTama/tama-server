@@ -104,13 +104,21 @@ claude plugin marketplace add useTama/tama-server
 claude plugin install tama@usetama
 ```
 
-Claude Code prompts for the server address and a device token, keeps the token
-`sensitive` rather than in shell history, and adds a `/tama:save` command
-beside the five tools. `clients/claude-code` is the plugin.
+Claude Code prompts for the server address and a device token, and adds a
+`/tama:save` command beside the five tools. `clients/claude-code` is the
+plugin.
 
-`tama-server connect claude-code` prints that whole install line with the address
-and a fresh token already in it. On a Docker deployment the command is `tama
-connect`.
+`tama-server connect claude-code` prints that whole install line with the
+address and a fresh token already in it, which is one paste instead of four
+steps. On a Docker deployment the command is `tama connect`.
+
+**The token, honestly.** The plugin declares the field `sensitive`, so Claude
+Code masks it and keeps it out of a settings file in the clear. That is worth
+having and it is not the same as secret: a pasted install line puts the token
+in your shell history like any other command. If that matters where you are
+working, take the two values from `connect` and type them into
+`/plugin configure` instead, or clear the line afterwards. Either way it is
+revocable under Devices in settings, which is the property to rely on.
 
 ### When the server is loopback-only
 
@@ -175,10 +183,35 @@ The bundle owns no vault, no database and no logic - it forwards JSON-RPC to
 the route below. Section 2's reason for not shipping a stdio server stands; the
 bundle is a pipe to the daemon, not a second one.
 
-## 5b. Connecting Claude Code, Cursor, or anything else over HTTP
+## 5b. Connecting anything else over HTTP
 
-The server binds `127.0.0.1:8080`, so a laptop needs a tunnel. **Run this on
-the laptop, not on the server** - the server has no key to itself:
+Cursor, a script, another editor - anything that speaks MCP over HTTP.
+
+**If tama runs on the machine the client runs on**, which is the ordinary case,
+the address is `http://127.0.0.1:8080` and there is nothing else to arrange.
+`tama-server connect` prints a token; point the client at that address with
+`Authorization: Bearer <token>` and you are done.
+
+**If tama runs somewhere else**, that machine has to be reachable from this
+one. The Docker port publish binds loopback (`docker-compose.yml`), so a
+remote install needs one of the three below - and note that this is a property
+of the deployment rather than of the protocol. The process itself passes no
+hostname to `Bun.serve`.
+
+| | Cost | Reaches |
+|---|---|---|
+| `scripts/tama-tunnel install USER@HOST` | an ssh key that works unattended | this one machine |
+| `tama expose` (Docker deployments) | a Tailscale account, a device sign-in click, and a second console click to enable Serve | every device on your tailnet, including a phone |
+| A domain with TLS | a domain, DNS, a certificate to renew | anything, including the WhatsApp Cloud API |
+
+The tailnet route is the one worth knowing the shape of before you start,
+because the third step is easy to miss: signing the machine in is per machine,
+enabling Serve is **per tailnet**, and `tailscale serve` reacts to Serve being
+off by printing a URL and then waiting for it to be visited. `tama expose`
+reports that rather than hanging on it.
+
+**Run the tunnel on the client machine, not on the server** - the server has no
+key to itself:
 
 **On the server**, mint a token for this client:
 

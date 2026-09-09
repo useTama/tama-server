@@ -1,5 +1,15 @@
 # Deploy tama-server with Docker
 
+**Who this is for.** Somebody who wants voice notes over WhatsApp, or capture
+that keeps working with their laptop shut. Both need a host that is always on,
+which is what this document sets up.
+
+**If you want your notes searchable from your editor, you do not need any of
+this.** Run tama on the machine you work on and the address is
+`http://127.0.0.1:8080` - no server, no domain, no tunnel, no VPN. That path is
+in the README under *Start here*, and it is four commands. This guide is the
+other branch.
+
 A complete walkthrough for putting Tama on a Linux server (Ubuntu 22.04/24.04, tested on an
 EC2 instance) using the Dockerfiles in this repo. Two containers: `tama` (the server) and
 `whisper` (whisper.cpp's HTTP server). Notes live in a Docker volume that is a git repo.
@@ -357,11 +367,13 @@ It installs Tailscale if needed, signs the machine in, serves port 8080, writes
 
 | Then this works | Previously |
 |---|---|
-| MCP from your editor | an SSH tunnel in a terminal you must not close |
+| MCP from a client on **another** machine | an SSH tunnel in a terminal you must not close |
 | Pairing a phone off-LAN | impossible |
 | `publicBaseUrl` | unset |
 
-One caveat on the first row: `tama expose` reaches a client running on a
+Two caveats on the first row. A client on **this** machine never needed an
+address at all - `127.0.0.1:8080` was always the answer, and the row used to
+read as though MCP required one. And `tama expose` reaches a client running on a
 machine of yours. It cannot reach a Claude **custom connector**, which is
 dialled from Anthropic's servers - use the `.mcpb` bundle in
 `clients/claude-desktop`, which runs locally and therefore can. See

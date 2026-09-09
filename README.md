@@ -7,40 +7,83 @@ Talk into a small device, and a markdown note appears in a folder you own.
 Self-hosted, open source, zero recurring cost. Speech-to-text runs locally, and there is no
 language model in the capture path, so capture needs no account, no key and no bill.
 
-## Install
+## Start here
+
+Two different things get called "running tama", and only one of them needs a server.
+
+| You want | You need | Read |
+|---|---|---|
+| Your notes searchable and writable from your editor | nothing but the machine you are on | below |
+| Voice notes over WhatsApp, or capture while your laptop is shut | an always-on host with an address | [Deploy with Docker](docs/deploy-docker.md) |
+
+The first is short, and it is short because of how the clients work: the editor
+plugin and the desktop bundle both run on **your** machine and dial out from it.
+So when tama runs on that same machine the address is `http://127.0.0.1:8080`,
+and there is no server, no domain, no tunnel and no VPN anywhere in it.
+
+### Notes in your editor
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/useTama/tama-server/main/scripts/install.sh | sh
 tama-server setup
 ```
 
-The installer builds from source — it needs `git` and [bun](https://bun.sh) — and puts the
-binary in `~/.local/bin`. Set `PREFIX` to put it somewhere else. Audio capture also needs
-`ffmpeg`; setup says so if it is missing.
+The installer builds from source — it needs `git` and [bun](https://bun.sh) — and puts
+`tama-server` in `~/.local/bin`. Set `PREFIX` to put it elsewhere; if that directory is not on
+your `PATH` it prints the line to add.
 
-## First-time setup
+Two answers in the wizard matter on this path, and both have an option that asks for nothing:
 
-`tama-server setup` creates a new empty git-tracked vault (or uses an existing git-backed
-vault) and a private configuration file. Its **Existing notes** step can import an Obsidian
-vault or any Markdown folder directly into the new Tama vault.
+- **Speech-to-text** → *Not yet — text notes and the editor plugin, no voice.* Nothing here
+  transcribes anything, so there is nothing to configure. Voice capture fails until you set it
+  up and `/health` says so; everything else works.
+- **Ask** → *Skip for now.* `/ask` answers 501 and nothing else changes. `tama-server settings`
+  turns it on later.
 
-For transcription, choose whisper.cpp on this machine, whisper.cpp on another machine, or a
-hosted API — Groq and OpenAI, whose speech models setup lists for you, or Sarvam for Indian
-languages and code-mixed speech. If you pick this machine
-and nothing is listening yet, setup offers to download a model and install a per-user service
-so Whisper starts with you — no root, and it tells you the command to undo it.
+Then start it and leave it running:
 
-For `/ask`: keep it disabled, use any local OpenAI-compatible model server, or select a cloud
-API. Setup accepts hidden API keys and saves them in separate owner-readable files (not
-encrypted) beside the config. Environment-variable references remain supported for manual
-deployments. The wizard checks connectivity, lists chat models when supported, and offers a
-short model test.
+```sh
+tama-server
+```
 
-The same wizard can optionally connect a WhatsApp Cloud API number. It collects the phone-number
-ID and sender allowlist, hides the Meta credentials, saves each secret in its own owner-readable
-file, verifies the number/token when Meta is reachable, and prints the callback URL and generated
-webhook verify token to paste into Meta. It finishes by printing the commands that pair your first
-device.
+In another terminal, ask it for a client install:
+
+```sh
+tama-server connect claude-code        # or: claude-desktop
+```
+
+That mints a device token named for the client, works out the address the client should dial,
+and prints the finished command with both already in it. Run what it prints on the machine you
+work on — which here is this one.
+
+Then ask a session something only your notes would know.
+
+**What that leaves out.** No voice, because voice needs speech-to-text; and no prose answers,
+because those need a language model. What it gives you is your notes — searchable, readable and
+writable from the editor, as Markdown in a git repo you own, with no account anywhere. Add
+either of the other two whenever you want them.
+
+## Voice, and the rest
+
+Transcription can be whisper.cpp on this machine, whisper.cpp elsewhere, or a hosted API —
+Groq and OpenAI, whose speech models setup lists for you, or Sarvam for Indian languages and
+code-mixed speech. Audio capture also needs `ffmpeg`; setup says so if it is missing. Pick
+this machine and setup offers to download a model and install a per-user service so Whisper
+starts with you — no root, and it prints the command to undo it.
+
+For `/ask`: keep it off, use any local OpenAI-compatible model server, or a cloud API. Setup
+takes hidden API keys and saves them in separate owner-readable files beside the config.
+Environment-variable references still work for manual deployments. It checks connectivity,
+lists chat models where the provider supports it, and offers a short model test.
+
+The same wizard can connect a WhatsApp Cloud API number. It collects the phone-number ID and
+sender allowlist, hides the Meta credentials, saves each secret in its own owner-readable file,
+verifies the number and token when Meta is reachable, and prints the callback URL and generated
+webhook verify token to paste into Meta. **That path needs a public HTTPS address**, which is
+what the Docker guide is for.
+
+`tama-server setup` creates a new empty git-tracked vault, or uses an existing git-backed one.
+Its **Existing notes** step imports an Obsidian vault or any Markdown folder directly.
 
 Re-run `tama-server setup` to change configuration. It changes vault contents only when you
 explicitly select the import option.
@@ -150,17 +193,21 @@ Optional, and the only place a model enters. With no `ask` block configured `/as
 
 | Option | Cost | Privacy | Quality |
 |---|---|---|---|
-| **Ollama** (default) | free | nothing leaves the machine | weakest |
+| **Ollama**, or any local server | free | nothing leaves the machine | weakest |
 | Gemini free tier | free | ⚠️ Google trains on your prompts, and the retrieved notes *are* the prompt | good |
 | Anthropic, or any paid tier | per token | not trained on | best |
 
-Ollama is the default on purpose. A tool that promises your notes stay put should not ship
-pointing at a vendor that learns from them.
+The wizard's own default is **off** — a second brain should not require a model to be useful,
+and search does not need one. When you do want one, Ollama is the recommendation rather than
+the default: a tool that promises your notes stay put should not steer you towards a vendor
+that learns from them.
 
 Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 
 ## Docs
 
+- **[Your notes in an editor](docs/mcp.md)** — the MCP surface, and the two clients that use it
+- **[Deploy with Docker](docs/deploy-docker.md)** — an always-on host, for WhatsApp or capture with the laptop shut
 - **[Architecture](ARCHITECTURE.md)** — the two paths, the vault adapter, and the seven vault invariants
 - **[API reference](docs/api.md)** — every route, header and status code
 - **[Import existing notes](docs/import.md)** — local and private-SSH migration, with no upload
@@ -169,7 +216,7 @@ Retrieval is grep, not embeddings. No index to build, corrupt, or rebuild.
 ## Test
 
 ```sh
-bun test          # 106 tests
+bun test          # 599 tests, no port bound, no config written
 bun run typecheck
 ```
 

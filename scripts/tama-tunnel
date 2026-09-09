@@ -1,0 +1,155 @@
+#!/bin/sh
+# Keep a loopback-only tama reachable from a Mac, without remembering anything.
+#
+# This is a stopgap and it says so. `tama expose` on the server is the real
+# answer: it puts the daemon on a tailnet with a stable HTTPS address, which
+# fixes every device rather than one Mac, and needs no tunnel at all. Use this
+# when you cannot do that yet.
+#
+# The problem it solves is not typing the ssh command. It is that the tunnel
+# dies - on reboot, on sleep, on changing wifi - and when it does, every client
+# goes back to "connection refused" and the vault appears to be empty rather
+# than unreachable. That is the worst shape a failure can take, so the fix has
+# to be something that restarts itself rather than something you notice.
+#
+#   scripts/tama-tunnel install ubuntu@1.2.3.4
+#   scripts/tama-tunnel status
+#   scripts/tama-tunnel uninstall
+#
+set -eu
+
+LABEL=sh.tama.tunnel
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG_DIR="$HOME/Library/Logs"
+
+usage() {
+  cat <<USAGE
+tama-tunnel install USER@HOST [LOCAL_PORT] [REMOTE_PORT]
+                          keep a tunnel up at login and after failure
+tama-tunnel status        whether the agent is loaded and tama answers
+tama-tunnel stop          stop it for now, keep it installed
+tama-tunnel start         start it again
+tama-tunnel uninstall     remove it entirely
+
+Defaults: LOCAL_PORT 8080, REMOTE_PORT 8080.
+USAGE
+}
+
+require_macos() {
+  [ "$(uname -s)" = "Darwin" ] || {
+    echo "tama-tunnel: this uses launchd, so it is macOS only." >&2
+    echo "  On Linux, a systemd --user unit with Restart=always is the same idea." >&2
+    exit 2
+  }
+}
+
+# `launchctl bootstrap` is the current verb and `load` the deprecated one, and
+# which exists depends on the macOS version. Try the new one and fall back
+# rather than guessing from a version number.
+boot_in() {
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || return 1
+}
+
+boot_out() {
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload -w "$PLIST" 2>/dev/null || true
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift || true
+
+case $cmd in
+  install)
+    require_macos
+    target=${1:-}
+    [ -n "$target" ] || { usage >&2; exit 2; }
+    local_port=${2:-8080}
+    remote_port=${3:-8080}
+
+    # Checked before anything is installed, because a key that needs a
+    # passphrase works from a terminal with an agent and fails from launchd,
+    # which has none - and the failure is a tunnel that restarts forever
+    # without ever connecting.
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$target" true 2>/dev/null; then
+      echo "tama-tunnel: cannot ssh to $target without a prompt." >&2
+      echo "  launchd has no terminal and no ssh-agent, so the key has to work" >&2
+      echo "  unattended. Add it to the keychain:" >&2
+      echo "    ssh-add --apple-use-keychain ~/.ssh/id_ed25519" >&2
+      echo "  and put 'UseKeychain yes' under this host in ~/.ssh/config." >&2
+      exit 1
+    fi
+
+    mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
+    [ -f "$PLIST" ] && boot_out
+
+    ssh_bin=$(command -v ssh)
+    cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$ssh_bin</string>
+    <!-- No command, no pty: this is a tunnel, not a login. -->
+    <string>-N</string>
+    <string>-T</string>
+    <!-- Exit rather than sit there with no forward, so KeepAlive can retry.
+         Without it a refused forward leaves a live ssh holding nothing. -->
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <!-- Notice a dead link instead of holding a socket that goes nowhere,
+         which is what a laptop sleeping does to it. -->
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-L</string><string>$local_port:localhost:$remote_port</string>
+    <string>$target</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <!-- Without a throttle, a taken local port turns KeepAlive into a hot loop
+       that respawns ssh as fast as it can exit. -->
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/$LABEL.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/$LABEL.log</string>
+</dict>
+</plist>
+PLIST
+
+    boot_in || { echo "tama-tunnel: launchctl refused $PLIST" >&2; exit 1; }
+    echo "Installed. localhost:$local_port -> $target:$remote_port, at login and after failure."
+    echo "  log: $LOG_DIR/$LABEL.log"
+    echo ""
+    echo "This is the stopgap. \`tama expose\` on the server is the real fix:"
+    echo "  a stable HTTPS address on your tailnet, no tunnel, every device."
+    ;;
+
+  status)
+    require_macos
+    if launchctl list "$LABEL" >/dev/null 2>&1; then
+      echo "agent:  loaded"
+    else
+      echo "agent:  not loaded$([ -f "$PLIST" ] && echo " (installed but stopped)" || echo " (not installed)")"
+    fi
+    port=$(sed -n 's/.*<string>\([0-9]*\):localhost:[0-9]*<\/string>.*/\1/p' "$PLIST" 2>/dev/null | head -1)
+    port=${port:-8080}
+    code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" 2>/dev/null || echo 000)
+    if [ "$code" = "200" ]; then
+      echo "tama:   answering on 127.0.0.1:$port"
+    else
+      echo "tama:   not answering on 127.0.0.1:$port (curl said $code)"
+      [ -f "$LOG_DIR/$LABEL.log" ] && { echo "  last lines of the log:"; tail -3 "$LOG_DIR/$LABEL.log" | sed 's/^/    /'; }
+    fi
+    ;;
+
+  stop)    require_macos; boot_out; echo "Stopped. Still installed; \`tama-tunnel start\` brings it back." ;;
+  start)   require_macos; boot_in && echo "Started." || { echo "tama-tunnel: nothing installed to start." >&2; exit 1; } ;;
+  uninstall)
+    require_macos
+    boot_out
+    rm -f "$PLIST"
+    echo "Removed. The daemon on the server is untouched."
+    ;;
+  help|--help|-h) usage ;;
+  *) echo "tama-tunnel: unknown command '$cmd'" >&2; usage >&2; exit 2 ;;
+esac

@@ -110,6 +110,29 @@ beside the five tools. `clients/claude-code` is the plugin.
 
 Mint the token with `tama token claude-code`.
 
+### When the server is loopback-only
+
+Both clients dial from your own machine, which is what lets them reach a
+private address - and also means the server has to be reachable from there.
+`tama expose` on the server is the answer: a stable HTTPS address on your
+tailnet, no tunnel, every device including a phone.
+
+Until that is set up, an SSH tunnel works and `scripts/tama-tunnel` keeps it
+up:
+
+```sh
+scripts/tama-tunnel install ubuntu@YOUR_SERVER
+scripts/tama-tunnel status
+```
+
+That is a stopgap and it is worth being clear why it exists. The problem is not
+typing the ssh command; it is that a hand-run tunnel dies on reboot, on sleep,
+on changing wifi - and when it does, every client reports a connection refused
+and the vault reads as **empty rather than unreachable**. A note that is not
+there looks the same as a note that was never written. So the fix has to
+restart itself rather than rely on somebody noticing: launchd brings it back
+about two seconds after it dies, measured by killing it.
+
 ### The desktop app
 
 One file, two fields. `clients/claude-desktop` is an `.mcpb` bundle: Claude

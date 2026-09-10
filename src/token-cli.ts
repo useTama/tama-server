@@ -113,7 +113,7 @@ export async function runToken(argv: string[] = Bun.argv): Promise<void> {
     const { id, token } = mintToken(db, name, scope);
     console.log(ok(`Token for ${bold(name)}${audience ? ` as audience ${audience}` : ""}. Shown once.`));
     console.log(`\n  ${bold(token)}\n`);
-    console.log(grey(`  id ${id}, revoke it under Devices in tama-server settings`));
+    console.log(grey(`  id ${id}, revoke it under Credentials in tama-server settings`));
 
     // Resolved through the same code the server will use, so this describes the
     // token that now exists rather than the flags that were typed at it.

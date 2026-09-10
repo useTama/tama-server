@@ -202,7 +202,7 @@ test("refreshing rotates both halves and the old refresh token dies", async () =
     const rotated = rotateRefresh(d, refresh, ACCESS_TTL_MS)!;
     expect(rotated.id).toBe(minted.id);
     expect(verifyToken(d, rotated.accessToken)?.deviceName).toBe("Claude");
-    // The row is the connection for its whole life, so the id in Devices does
+    // The row is the connection for its whole life, so the id in Credentials does
     // not change under the owner when a connector refreshes.
     expect(rotated.refreshToken).not.toBe(refresh);
     expect(rotateRefresh(d, refresh, ACCESS_TTL_MS)).toBeNull();

@@ -43,7 +43,7 @@ export type TokenScope = {
   expiresAt?: string;
   /** RFC 8707 audience. NULL on a device token means "not audience-bound". */
   resource?: string;
-  /** Which connector holds this, so Devices can tell them apart. */
+  /** Which connector holds this, so Credentials can tell them apart. */
   clientId?: string;
   /** The paired refresh token, hashed. Rotated in place on each use. */
   refreshHash?: string;
@@ -151,7 +151,7 @@ export function verifyToken(db: Database, token: string, resource?: string): Ver
  * Rotate an access token and its refresh token together, in place.
  *
  * One row per connection for its whole life, so `revokeToken` on the id the
- * owner sees in Devices kills the access token and the refresh family in one
+ * owner sees in Credentials kills the access token and the refresh family in one
  * statement - there is no second table holding a credential that outlives it.
  *
  * Returns null for a refresh token that is unknown, already rotated, or belongs

@@ -32,7 +32,7 @@
  * An access token is 32 random bytes, stored as a SHA-256 hash in `tokens`,
  * exactly like a device token. That one decision carries everything else for
  * free: an OAuth grant has a Grant, so views and capabilities apply; it appears
- * in the Devices list; `revokeToken` kills it; and the bearer check at the top
+ * in the Credentials list; `revokeToken` kills it; and the bearer check at the top
  * of routes.ts needs no second branch.
  *
  * No JWTs. The spec mandates audience validation, not a format, and a token

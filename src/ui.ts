@@ -157,7 +157,7 @@ export function card(lines: string[], title?: string, width = 56, indent = 0): s
  * Most strings this file styles are ours. A few are not: an OAuth token's
  * device name comes from the client's own metadata document, so it is written
  * by whoever is asking for access and then printed into the owner's terminal -
- * in the Devices list, directly above the prompt where they type an id to
+ * in the Credentials list, directly above the prompt where they type an id to
  * revoke one.
  *
  * A terminal is not a text box. Left alone, an escape sequence in that name can

@@ -127,7 +127,7 @@ export async function runConnect(argv: string[] = Bun.argv): Promise<void> {
       console.log("");
     }
 
-    console.log(grey(`Revoke it as ${id} under Devices in ${tama("tama-server")} settings.`));
+    console.log(grey(`Revoke it as ${id} under Credentials in ${tama("tama-server")} settings.`));
     console.log(grey("Pasting the line above puts the token in your shell history, which is the"));
     console.log(grey("cost of it being one paste. Clear that line, or mint a fresh token, if the"));
     console.log(grey("history is somewhere you would rather it were not."));

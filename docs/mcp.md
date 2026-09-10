@@ -98,7 +98,7 @@ POST /oauth/revoke                             RFC 7009
 
 An access token is 32 random bytes hashed into the same `tokens` table as a
 device token, so it carries a Grant, obeys views and capabilities, appears in
-Devices and dies to the same revocation. It expires in an hour and refreshes by
+Credentials and dies to the same revocation. It expires in an hour and refreshes by
 rotating both halves in place, so the row is the connection for its whole life
 and revoking the id the owner sees kills the refresh family with it.
 
@@ -171,7 +171,7 @@ having and it is not the same as secret: a pasted install line puts the token
 in your shell history like any other command. If that matters where you are
 working, take the two values from `connect` and type them into
 `/plugin configure` instead, or clear the line afterwards. Either way it is
-revocable under Devices in settings, which is the property to rely on.
+revocable under Credentials in settings, which is the property to rely on.
 
 ### When the server is loopback-only
 

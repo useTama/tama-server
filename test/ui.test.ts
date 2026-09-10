@@ -77,7 +77,7 @@ test("card never draws wider than the layout, and every border lines up", async 
 });
 
 test("displayName makes another party's text safe to print above a prompt", () => {
-  // The Devices list prints a token's name and its id, and the owner reads that
+  // The Credentials list prints a token's name and its id, and the owner reads that
   // id and types it at a revoke prompt. For an OAuth grant the name comes from
   // the client's own metadata document, so it is written by whoever is asking
   // for access.

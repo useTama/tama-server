@@ -277,11 +277,11 @@ export function openDb(path: string): Database {
   //
   // The OAuth columns are on `tokens` rather than in a table of their own
   // because an OAuth grant IS a device token with an expiry and a client label.
-  // That is what makes it appear in Devices, obey its Grant, and die to the
+  // That is what makes it appear in Credentials, obey its Grant, and die to the
   // same revokeToken as everything else, with no second code path.
   //   expires_at   NULL for a device token, which never expires.
   //   resource     the RFC 8707 audience; NULL means "not audience-bound".
-  //   client_id    which connector holds it, for the Devices list.
+  //   client_id    which connector holds it, for the Credentials list.
   //   refresh_hash the current refresh token, rotated in place on use.
   for (const name of ["caps", "read_view", "write_view", "expires_at", "resource", "client_id", "refresh_hash"]) {
     if (!columns.some((c) => c.name === name)) {

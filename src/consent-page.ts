@@ -95,7 +95,7 @@ export function renderConsent(v: ConsentView): string {
 ${v.error ? `<div class="err">${escapeHtml(v.error)}</div>` : ""}
 <h1><span class="who">${escapeHtml(v.clientName)}</span> is asking to reach your notes</h1>
 <p class="muted small">It will be sent back to <span class="code">${escapeHtml(v.redirectHost)}</span>.
-Tick only what it needs. You can revoke this at any time under Devices in <span class="code">tama settings</span>.</p>
+Tick only what it needs. You can revoke this at any time under Credentials in <span class="code">tama settings</span>.</p>
 
 <form method="post" action="/oauth/authorize">
   <input type="hidden" name="request" value="${escapeHtml(v.requestId)}">

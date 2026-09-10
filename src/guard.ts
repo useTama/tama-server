@@ -173,7 +173,12 @@ export const NOTHING_SOLID = "I do not have anything solid on that";
 const WRITE_CLAIMS: RegExp[] = [
   // English, first person, completed.
   /\bi(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|filed|logged|noted|recorded|written|updated|appended|created|set)\b/i,
-  /\b(?:added|saved|filed|logged|noted|recorded|appended|updated)\s+(?:it|that|this|them)\s+to\b/i,
+  // Anchored, because unanchored this was not first-person at all and so
+  // contradicted the note above: "you added it to the list" matched, and a
+  // correct recall answer was replaced with a refusal. Sentence-initial is the
+  // standalone-confirmation form ("added it to your notes"); the alternative
+  // anchor is an explicit "I".
+  /(?:^|[.!?]\s+|\bi(?:'ve| have)?\s+)(?:added|saved|filed|logged|noted|recorded|appended|updated)\s+(?:it|that|this|them)\s+to\b/i,
   /\b(?:done|added|saved|filed|logged|noted)\s*[,.]?\s*(?:it(?:'s| is)\s+(?:in|on)\b|to\s+your\b)/i,
   // Sentence-initial only, which is the standalone-confirmation form. Matching
   // "reminder set" anywhere caught "your notes say the reminder is set for

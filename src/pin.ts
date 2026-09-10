@@ -101,6 +101,21 @@ export const PIN_MAX_NOTES = 8;
 const ROLE_ORDER: PinRole[] = ["conventions", "state"];
 
 /**
+ * The longest prefix of `text` that fits in `maxBytes` of UTF-8.
+ *
+ * Encode, cut, decode. The cut can land inside a multi-byte sequence, and a
+ * non-fatal TextDecoder turns that trailing fragment into one replacement
+ * character rather than throwing, so the fragment is removed afterwards. One
+ * lost glyph at a truncation boundary is the same trade `readNote` already
+ * makes, and the alternative is counting code points by hand.
+ */
+function cutToBytes(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maxBytes) return text;
+  return new TextDecoder("utf-8").decode(bytes.subarray(0, maxBytes)).replace(/�+$/, "");
+}
+
+/**
  * Read the pinned notes, in role order, within budget.
  *
  * Every skip is announced through `onNotice` rather than swallowed. A pin that
@@ -122,7 +137,11 @@ export async function loadPinnedNotes(
 
   const notice = (message: string) => onNotice?.(message);
   const out: PinnedNote[] = [];
-  const seen = new Set<string>();
+  // Path to the role it was first CONSIDERED under, which is not the same as
+  // the role it was pinned under: a path can be considered and then skipped for
+  // being missing, hidden or empty. Reading the role back out of `out` instead
+  // crashed on exactly that case, and a throw here fails the whole question.
+  const seen = new Map<string, PinRole>();
   let spent = 0;
 
   for (const role of ROLE_ORDER) {
@@ -134,11 +153,12 @@ export async function loadPinnedNotes(
       // would double its cost and let the same text arrive under two different
       // framings, one of which says it is durable structure and one of which
       // says it is live state.
-      if (seen.has(relPath)) {
-        notice(`pin ${relPath} is listed more than once, so it is pinned as ${out.find((p) => p.path === relPath)!.role}`);
+      const first = seen.get(relPath);
+      if (first !== undefined) {
+        notice(`pin ${relPath} is listed more than once, so only the ${first} entry is used`);
         continue;
       }
-      seen.add(relPath);
+      seen.set(relPath, role);
 
       if (out.length >= PIN_MAX_NOTES) {
         notice(`pin ${relPath} skipped: already at the ceiling of ${PIN_MAX_NOTES} pinned notes`);
@@ -182,13 +202,17 @@ export async function loadPinnedNotes(
         continue;
       }
 
-      // Cut on a character boundary by slicing the decoded text rather than the
-      // buffer. `readNote` already capped the bytes; this only applies when the
-      // running total, not this one note, is what ran out.
+      // Cut to a byte budget, which is not the same as a character count. The
+      // first version sliced the decoded string by `remaining`, so a
+      // Devanagari or CJK note kept `remaining` CHARACTERS, up to three times
+      // the bytes it was allowed, and the total overran the documented cap.
+      //
+      // `readNote` already capped this note on its own; this only fires when
+      // the running total is what ran out.
       let text = read.text;
       let truncated = read.truncated;
       if (read.bytes > remaining) {
-        text = text.slice(0, remaining);
+        text = cutToBytes(text, remaining);
         truncated = true;
       }
       spent += Buffer.byteLength(text, "utf8");

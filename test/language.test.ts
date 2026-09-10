@@ -83,3 +83,22 @@ test("the hint names the language and disowns the earlier turns", () => {
   expect(languageLine("hinglish")).toContain("code-mixed Hinglish");
   expect(languageLine(undefined)).toBeUndefined();
 });
+
+// These three were in HINDI_MARKERS and are ordinary English nouns, so one hit
+// being the threshold meant a plain English question came back in Hinglish.
+test("English nouns that look like Hindi words are not markers", () => {
+  for (const message of [
+    "did i write anything about the yoga mat",
+    "what hue did i pick for the logo",
+    "notes on the koi pond",
+  ]) {
+    expect(detectLanguage(message)).toBe("english");
+  }
+});
+
+test("dropping those three does not cost the real Hinglish cases", () => {
+  // In practice neither "koi" nor "mat" turns up without another marker beside
+  // it, which is what made them safe to lose.
+  expect(detectLanguage("koi baat nahi")).toBe("hinglish");
+  expect(detectLanguage("mat karo yaar")).toBe("hinglish");
+});

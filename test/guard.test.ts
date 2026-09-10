@@ -151,3 +151,41 @@ test("the replacement names the limit and hands the action back", () => {
   // Chat surface rule: a short reply does not end on a full stop.
   expect(CANNOT_WRITE.endsWith(".")).toBe(false);
 });
+
+// The pattern was not first-person at all, contradicting the note above
+// WRITE_CLAIMS, so a correct recall answer was replaced with a refusal.
+test("reporting that the owner added something is not a claimed write", () => {
+  for (const answer of [
+    "you added it to the list",
+    "you saved that to the inbox",
+    "you logged it to the tracker",
+    "you noted them to the backlog last week",
+  ]) {
+    expect(claimedWrite(answer)).toBe(false);
+  }
+});
+
+test("the standalone confirmation form is still caught", () => {
+  for (const answer of [
+    "added it to your notes",
+    "I added it to the list",
+    "Done. Added it to your backlog",
+  ]) {
+    expect(claimedWrite(answer)).toBe(true);
+  }
+});
+
+// A conventions pin exists to name other notes, so answering "which of these
+// is canonical" means repeating names that are in the text but are not the
+// path of anything retrieved. The strip used to gut exactly that answer.
+test("a path named inside a note it was shown is not an invented citation", () => {
+  const guideText = "Now.md is the source of truth. Morning-Brief.md is overwritten daily.";
+  const allowed = ["CLAUDE.md", ...citedPaths(guideText)];
+
+  const { answer, stripped } = stripUnsupportedCitations(
+    "Morning-Brief.md is the disposable one, Now.md is the source of truth", allowed,
+  );
+
+  expect(answer).toBe("Morning-Brief.md is the disposable one, Now.md is the source of truth");
+  expect(stripped).toEqual([]);
+});

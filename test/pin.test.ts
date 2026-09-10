@@ -173,3 +173,51 @@ test("a pin is fenced, and fenced differently from an excerpt", async () => {
   // matched excerpt cannot apply "the guide outranks recency".
   expect(rendered).not.toContain("BEGIN NOTE");
 });
+
+// This threw, and a throw here fails the whole question. `seen` recorded the
+// path before the missing/hidden/empty checks, then the notice read the role
+// back out of `out`, where a skipped pin never landed.
+test("a duplicate whose first mention was skipped does not throw", async () => {
+  const { said, notice } = notices();
+  const pins = await loadPinnedNotes(
+    reader({}), { conventions: ["Now.md"], state: ["Now.md"] }, undefined, notice,
+  );
+
+  expect(pins).toEqual([]);
+  expect(said).toContain("pin Now.md is not in the vault yet");
+  expect(said).toContain("pin Now.md is listed more than once, so only the conventions entry is used");
+});
+
+test("a duplicate hidden by the view does not throw either", async () => {
+  const pins = await loadPinnedNotes(
+    reader({ "Secret.md": "x" }),
+    { conventions: ["Secret.md"], state: ["Secret.md"] },
+    { include: ["Public/**"] },
+  );
+  expect(pins).toEqual([]);
+});
+
+// `remaining` is a byte count and was applied as a character count, so a
+// Devanagari or CJK pin kept up to three times the bytes it was allowed.
+test("the byte budget is counted in bytes, not characters", async () => {
+  const ascii = "x".repeat(PIN_MAX_BYTES);
+  // Three bytes per character in UTF-8.
+  const devanagari = "क".repeat(PIN_MAX_BYTES);
+
+  const pins = await loadPinnedNotes(
+    reader({ "first.md": ascii, "second.md": devanagari }),
+    { conventions: ["first.md", "second.md"] },
+  );
+
+  const total = pins.reduce((n, p) => n + Buffer.byteLength(p.text, "utf8"), 0);
+  expect(total).toBeLessThanOrEqual(PIN_MAX_TOTAL_BYTES);
+});
+
+test("cutting a multi-byte pin does not leave half a character", async () => {
+  const pins = await loadPinnedNotes(
+    reader({ "a.md": "x".repeat(PIN_MAX_TOTAL_BYTES - 1), "b.md": "क".repeat(100) }),
+    { conventions: ["a.md", "b.md"] },
+  );
+  const last = pins.at(-1)!;
+  expect(last.text).not.toContain("�");
+});

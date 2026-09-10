@@ -914,6 +914,17 @@ export async function* ask(opts: {
     allowed: [
       ...chunks.map((c) => c.path),
       ...pins.map((p) => p.path),
+      // Paths named INSIDE what it was shown, not only the paths OF what it
+      // was shown. A conventions pin exists to say which note is canonical and
+      // which is disposable, so it names other notes in its own text, and
+      // answering "which of these is the real one" means repeating those
+      // names. Without this the strip gutted exactly the answer pinning was
+      // built for: "Morning-Brief.md is the disposable one" came back as "is
+      // the disposable one". A path the model read in note text is one it
+      // learned rather than constructed, which is the distinction being
+      // enforced here.
+      ...chunks.flatMap((c) => citedPaths(c.text)),
+      ...pins.flatMap((p) => citedPaths(p.text)),
       // Paths the thread was already shown. A follow-up answered from history
       // rather than from this turn's retrieval is citing something real, and
       // comparing against this turn alone would strip it. A fabricated path

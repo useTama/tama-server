@@ -684,8 +684,20 @@ async function testAudience(config: Config, names: string[]): Promise<void> {
   const retriever = new GrepRetriever(config.vault.path);
   const chunks = await retriever.search(question, config.ask?.maxChunks ?? 8, view);
 
+  // Pinned notes are part of what an audience receives on every question, so a
+  // preview that leaves them out under-reports the very thing this exists to
+  // show. Loaded through the same function and the same view the real request
+  // uses, so a pin this view hides is missing here for the same reason.
+  const { Vault } = await import("./vault.ts");
+  const { loadPinnedNotes } = await import("./pin.ts");
+  const vault = new Vault(config.vault.path, config.vault.inbox, true, true);
+  const pins = await loadPinnedNotes(vault, config.ask?.pin, view, (m) => console.log(grey(`  ${m}`)));
+
   console.log(`\n${bold("What it can read for that question")}`);
-  if (chunks.length === 0) console.log(grey("  nothing. Its reply comes from the voice alone."));
+  if (chunks.length === 0 && pins.length === 0) {
+    console.log(grey("  nothing. Its reply comes from the voice alone."));
+  }
+  for (const p of pins) console.log(`  ${p.path} ${grey(`(pinned, ${p.role})`)}`);
   for (const c of chunks) console.log(`  ${c.path}`);
 
   if (!config.ask) {
@@ -713,6 +725,7 @@ async function testAudience(config: Config, names: string[]): Promise<void> {
       onNoMatch: audience.onNoMatch,
       note: audience.note,
     },
+    pins,
   });
   console.log(`\n${bold(`what "${name}" would receive`)}`);
   console.log(result.answer);

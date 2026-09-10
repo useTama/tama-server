@@ -42,6 +42,15 @@
  * transliterations and all excluded, because each of them appears in ordinary
  * English and would make every English sentence read as Hinglish.
  *
+ * "mat", "hue" and "koi" were in here and are the same mistake, caught later:
+ * each is an ordinary English noun, so "did i write anything about the yoga
+ * mat", "what hue did i pick for the logo" and "notes on the koi pond" were all
+ * answered in Hinglish. Losing them costs real detection, because both "koi"
+ * and "mat" are common Hindi words. It is the right trade anyway: a wrong hint
+ * overrides MIRROR and returns the whole reply in the wrong language, while a
+ * missed one leaves MIRROR to do what it already does well, and in practice
+ * neither word appears without another marker beside it.
+ *
  * One hit is the threshold on purpose. A single "bhai" in an otherwise English
  * sentence IS code-mixing, and answering it in English would be exactly the
  * flattening `MIRROR` forbids.
@@ -50,7 +59,7 @@ const HINDI_MARKERS = new Set([
   // to be, to do, to happen
   "hai", "hain", "hoga", "hogi", "honge", "hona", "tha", "thi", "thé",
   "kar", "karna", "karke", "karo", "karta", "karti", "karte", "kiya",
-  "diya", "liya", "dena", "lena", "hua", "hui", "hue", "gaya", "gayi", "gaye",
+  "diya", "liya", "dena", "lena", "hua", "hui", "gaya", "gayi", "gaye",
   "raha", "rahi", "rahe", "chahiye", "chaiye",
   // question words
   "kya", "kyun", "kyu", "kyunki", "kaise", "kaisa", "kaisi", "kahan", "kaha",
@@ -63,11 +72,11 @@ const HINDI_MARKERS = new Set([
   "uske", "iske", "unke", "inke", "usko", "isko", "unko", "inko",
   "kis", "kisi", "kisko", "kiska", "alawa", "alawaa",
   // negation and affirmation
-  "nahi", "nahin", "mat", "haan", "bilkul",
+  "nahi", "nahin", "haan", "bilkul",
   // postpositions and connectives that do not collide
   "mein", "aur", "bhi", "toh", "phir", "lekin", "magar", "kaash", "warna",
   // common adverbs, quantifiers, discourse
-  "abhi", "bas", "sab", "kuch", "koi", "thoda", "bahut", "zyada", "jyada",
+  "abhi", "bas", "sab", "kuch", "thoda", "bahut", "zyada", "jyada",
   "matlab", "yaar", "bhai", "achha", "acha", "accha", "theek", "thik", "sahi",
   "badhiya", "wala", "wale", "wali", "jaise", "waise", "itna", "pade", "bache",
   "dekh", "bol", "chal", "samajh", "bata", "batao", "hoga",

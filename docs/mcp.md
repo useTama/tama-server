@@ -76,7 +76,19 @@ Authorization: Bearer <device token>
 The spec's OAuth 2.1 mandate applies to servers "accessible over the internet"
 or "intended for public use". A personal daemon on a loopback port with a
 static token is explicitly sufficient, and Home Assistant does the same with
-long-lived tokens. Adding OAuth here would be ceremony that protects nothing.
+long-lived tokens. Adding OAuth there would be ceremony that protects nothing.
+
+**That premise is now conditional.** `tama expose --public` puts the server on
+the public internet, where it is exactly the case the mandate is about. Two
+things hold the line in the meantime: a wrong bearer token is throttled per
+caller, and `/health` tells a stranger only that the server is up. Neither is a
+substitute for OAuth, which is #75 — this says what is true today rather than
+implying the loopback argument still covers every deployment.
+
+One consequence worth knowing if you put your own proxy in front instead of
+using `--public`: the throttle keys on the caller's address, so it needs
+`server.trustProxy` set, or every request arrives wearing the proxy's address
+and ten wrong tokens from anybody lock out everybody. `--public` sets it.
 
 **A token can be scoped**, in two directions that are deliberately separate:
 what it may *do*, and where it may read and write.
@@ -186,12 +198,25 @@ than a config file. Node is not a prerequisite - Claude Desktop ships its own.
 
 ### Why not a custom connector
 
-Because a custom connector cannot reach this server. **A remote connector is
-dialled from Anthropic's servers, not from your computer**, so a vault on a
-tailnet, a LAN or `127.0.0.1` is unreachable from there whatever the URL says.
-Making one work means a domain, TLS, and OAuth 2.1 with dynamic client
-registration - all of it in order to put one person's notes on the public
-internet.
+**A remote connector is dialled from Anthropic's servers, not from your
+computer.** So a vault on a tailnet, a LAN or `127.0.0.1` is unreachable from
+there whatever the URL says. That used to be the end of the argument.
+
+Half of it has since moved. `tama expose --public DOMAIN` gives the server a
+real hostname with TLS, and a connector can now *reach* it. What it still
+cannot do is authenticate: hosted connectors want OAuth 2.1 with dynamic client
+registration, and this speaks a static bearer token. That is the remaining half
+and it is tracked as #75.
+
+So the honest state is: reachability solved, authentication not. Until #75
+lands, the `.mcpb` bundle is still the answer for Claude Desktop, and it is a
+better one for anyone whose server does not need to be public — it runs
+locally over stdio, so it reaches whatever you can reach.
+
+Nothing here makes a public host the recommended shape. It is opt-in, it asks
+before it acts, and the tailnet remains the default for the same reason as
+before: a server holding one person's notes should not need port 443 open to
+the internet so that an editor plugin can work.
 
 An `.mcpb` runs locally over stdio, so it reaches whatever you can reach, and
 `tama expose` is enough. This is also the answer to the note in

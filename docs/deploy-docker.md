@@ -396,24 +396,35 @@ addressable by anyone who is not you.
 
 ### When you do want a public host
 
-Only one thing actually requires it: the **official WhatsApp Cloud API**, because
-Meta posts to you from their servers and they are not on your tailnet. If you
-want that, the bundled Caddy is the path.
+You want it when something that is **not a machine of yours** has to dial in.
+Two things are: the official WhatsApp Cloud API, because Meta posts to you from
+their servers, and a hosted MCP connector — ChatGPT's, or Claude's custom
+connectors — which are dialled from the vendor's servers and can no more reach
+a tailnet than Meta can.
 
 Prerequisites: a domain, an A record pointing at the server's public IP, and
 ports 80 and 443 open in the security group.
 
 ```sh
-cd ~/tama
-echo "TAMA_DOMAIN=tama.example.com" >> .env
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
-docker compose logs -f caddy      # watch the certificate get issued
-curl -s https://tama.example.com/health | jq
+tama expose --public tama.example.com
 ```
 
-Certificate failures are almost always DNS not yet propagated or port 80 closed.
-Use the same two-file `-f` invocation for every later compose command, or Caddy
-is stopped as an orphan.
+It checks what it can, states what is about to become true, and asks. Then it
+writes `.env`, brings Caddy up, waits for the certificate, and only reports
+success once TLS actually terminates for that name. `tama expose --off` undoes
+all of it.
+
+The two lines it writes to `.env` are `TAMA_DOMAIN` and `COMPOSE_FILE`, and the
+second is why you no longer have to remember the two-file `-f` invocation on
+every later command: Compose reads it from the project directory, so `tama
+restart`, `tama logs caddy`, `tama status` and a `docker compose` typed by hand
+all include Caddy from then on. Before this, forgetting it stopped Caddy as an
+orphan — which took the public site down and no `tama` command brought it back.
+
+Certificate failures are almost always DNS not yet propagated or port 80 closed
+inbound. Let's Encrypt has to reach port 80 from outside, so a security group
+that allows only 443 fails here. `tama logs caddy` is the log to read, and
+`tama expose status` re-checks and prints the certificate's expiry.
 
 **If a proxy already holds 80/443** - another container, or nginx on the host -
 do not start the bundled Caddy. Add a vhost to the existing one pointing at

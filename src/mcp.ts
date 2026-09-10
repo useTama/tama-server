@@ -33,8 +33,9 @@ import { resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { Retriever } from "./retrieval.ts";
 import type { Vault } from "./vault.ts";
-import { visible, type View } from "./views.ts";
-import { appendSession } from "./session.ts";
+import { visible } from "./views.ts";
+import { may, writeRefusal, type Grant } from "./grants.ts";
+import { appendSession, sessionPath } from "./session.ts";
 
 /** Everything a tool needs, passed in so this file owns no state. */
 export type McpDeps = {
@@ -51,11 +52,15 @@ export type McpDeps = {
 /**
  * Who is calling, resolved from the bearer token by the caller.
  *
- * `view` and `mayWrite` come from the token's audience, so a scoped MCP token
- * gives an agent a slice of the vault: mint one with `view: work` and the agent
- * in a client repo cannot search your job applications.
+ * The grant carries what this token may do and where, so a scoped MCP token
+ * gives an agent a slice of the vault: mint one with `--read-view work` and the
+ * agent in a client repo cannot search your job applications.
+ *
+ * `read` and `write` are separate views on purpose. The shape worth having is
+ * an agent that reads a slice and files its session logs back into a corner of
+ * it, and that was unexpressible while writing meant "has no audience".
  */
-export type McpCaller = { deviceName: string; audience?: string; view?: View; mayWrite: boolean };
+export type McpCaller = { deviceName: string; audience?: string; grant: Grant };
 
 const MAX_NOTE_BYTES = 256 * 1024;
 
@@ -87,7 +92,7 @@ async function confinedNote(relPath: string, caller: McpCaller, deps: McpDeps): 
   ) {
     throw new Error(`no note at ${relPath}`);
   }
-  if (!visible(clean, caller.view)) throw new Error(`no note at ${relPath}`);
+  if (!visible(clean, caller.grant.read)) throw new Error(`no note at ${relPath}`);
 
   const root = await realpath(deps.vaultRoot);
   const abs = resolve(root, clean);
@@ -120,7 +125,7 @@ const TOOLS: Tool[] = [
       const query = String(args.query ?? "").trim();
       if (!query) return { text: "query is required", isError: true };
       const limit = Number.isInteger(args.limit) ? Math.min(25, Math.max(1, args.limit)) : deps.maxChunks;
-      const chunks = await deps.retriever.search(query, limit, caller.view);
+      const chunks = await deps.retriever.search(query, limit, caller.grant.read);
       if (chunks.length === 0) {
         return { text: `Nothing in the notes matches "${query}". Do not invent an answer from this.` };
       }
@@ -176,10 +181,17 @@ const TOOLS: Tool[] = [
       required: ["path", "text"],
     },
     async run(args, caller, deps) {
-      if (!caller.mayWrite) return { text: "This token may read the notes but not write to them.", isError: true };
+      if (!may(caller.grant, "write")) return { text: `${writeRefusal(caller.grant, "")}.`, isError: true };
       const relPath = String(args.path ?? "").trim();
       const text = String(args.text ?? "");
       if (!relPath || !text.trim()) return { text: "path and text are both required", isError: true };
+      // Says where it could have written instead. Unlike read_note's single
+      // flat message, naming the write view discloses nothing about the vault -
+      // it describes this token's own permission - and a model that is told the
+      // allowed prefix retries correctly rather than giving up.
+      if (!visible(relPath, caller.grant.write)) {
+        return { text: `${writeRefusal(caller.grant, relPath)}.`, isError: true };
+      }
       try {
         const result = await deps.vault.appendMarkdown(relPath, text);
         deps.onWrite?.();
@@ -209,11 +221,26 @@ const TOOLS: Tool[] = [
       required: ["project"],
     },
     async run(args, caller, deps) {
-      if (!caller.mayWrite) return { text: "This token may read the notes but not write to them.", isError: true };
+      if (!may(caller.grant, "write")) return { text: `${writeRefusal(caller.grant, "")}.`, isError: true };
       const list = (v: unknown) => (Array.isArray(v) ? v.map((i) => String(i)) : undefined);
+      const project = String(args.project ?? "");
+      // This tool picks its own filename, so the write view is checked against
+      // the path it is about to choose. Checking after the fact would report on
+      // a write it had already allowed.
+      if (project.trim()) {
+        let intended: string;
+        try {
+          intended = sessionPath(project);
+        } catch (e) {
+          return { text: e instanceof Error ? e.message : "could not record the session", isError: true };
+        }
+        if (!visible(intended, caller.grant.write)) {
+          return { text: `${writeRefusal(caller.grant, intended)}.`, isError: true };
+        }
+      }
       try {
         const result = await appendSession(deps.vault, {
-          project: String(args.project ?? ""),
+          project,
           summary: String(args.summary ?? ""),
           shipped: list(args.shipped),
           learned: list(args.learned),
@@ -241,14 +268,14 @@ const TOOLS: Tool[] = [
         .all(since) as Array<{ captured_at: string; note_path: string; words: number }>;
 
       const lines: string[] = [];
-      const visibleCaptures = captures.filter((c) => visible(c.note_path, caller.view));
+      const visibleCaptures = captures.filter((c) => visible(c.note_path, caller.grant.read));
       lines.push(`# Recent captures (last 7 days): ${visibleCaptures.length}`);
       for (const c of visibleCaptures) {
         lines.push(`- ${c.captured_at.slice(0, 16).replace("T", " ")} ${c.note_path} (${c.words} words)`);
       }
 
       // The tail of each project log, which is where session entries land.
-      const logs = await deps.retriever.search("session project log", 25, caller.view).catch(() => []);
+      const logs = await deps.retriever.search("session project log", 25, caller.grant.read).catch(() => []);
       const sessionLogs = logs.filter((c) => c.path.endsWith("/sessions.md"));
       if (sessionLogs.length > 0) {
         lines.push("", "# Project logs");

@@ -26,6 +26,7 @@ import { CAPABILITIES, serialiseCaps, type Capability } from "./grants.ts";
 import { CONSENT_HEADERS, renderConsent } from "./consent-page.ts";
 import {
   ACCESS_TTL_MS,
+  ASSERTION_TYPE,
   authorizationServerMetadata,
   cimdAllowed,
   DEFAULT_CIMD_ORIGINS,
@@ -38,6 +39,7 @@ import {
   redeemCode,
   redirectAllowed,
   usableScopes,
+  verifyClientAssertion,
 } from "./oauth.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { grey, orange } from "./ui.ts";
@@ -302,6 +304,38 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
     if (String(form.get("redirect_uri") ?? "") !== redeemed.redirectUri) {
       return oauthError("invalid_grant", "redirect_uri does not match the one the code was issued for");
     }
+    /**
+     * A client that authenticates, checked rather than waved through.
+     *
+     * Optional: `none` is still advertised and still accepted, and PKCE is what
+     * actually protects the code either way. But a client that goes to the
+     * trouble of signing an assertion is asserting an identity, and accepting
+     * an unverified one would make the whole method decorative - worse than not
+     * offering it, because the metadata would be claiming something untrue.
+     */
+    const assertion = String(form.get("client_assertion") ?? "");
+    if (assertion) {
+      if (String(form.get("client_assertion_type") ?? "") !== ASSERTION_TYPE) {
+        return oauthError("invalid_client", "unsupported client_assertion_type");
+      }
+      const client = cimdAllowed(redeemed.clientId, cimdOrigins(config))
+        ? await fetchCimd(redeemed.clientId, deps.fetchImpl ?? fetch)
+        : null;
+      const verdict = await verifyClientAssertion(
+        assertion,
+        redeemed.clientId,
+        // Either identifier a client may address the assertion to: RFC 7523
+        // allows the token endpoint URL, and OAuth 2.1 prefers the issuer.
+        [issuer, `${issuer}/oauth/token`],
+        client?.jwksUri,
+        deps.fetchImpl ?? fetch,
+      );
+      if (!verdict.ok) {
+        console.error(`${orange("oauth")} client assertion refused for ${redeemed.clientName}: ${verdict.reason}`);
+        return oauthError("invalid_client", verdict.reason, 401);
+      }
+    }
+
     if (!pkceMatches(String(form.get("code_verifier") ?? ""), redeemed.codeChallenge)) {
       return oauthError("invalid_grant", "the PKCE verifier does not match");
     }

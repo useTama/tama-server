@@ -308,7 +308,7 @@ export function cimdAllowed(clientId: string, origins: string[]): boolean {
 export async function fetchCimd(
   clientId: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ name: string; redirectUris: string[] } | null> {
+): Promise<{ name: string; redirectUris: string[]; jwksUri?: string } | null> {
   try {
     const res = await fetchImpl(clientId, {
       redirect: "error",
@@ -317,12 +317,25 @@ export async function fetchCimd(
     });
     if (!res.ok) return null;
     const text = (await res.text()).slice(0, 64 * 1024);
-    const doc = JSON.parse(text) as { client_name?: string; client_id?: string; redirect_uris?: unknown };
+    const doc = JSON.parse(text) as { client_name?: string; client_id?: string; redirect_uris?: unknown; jwks_uri?: unknown };
     // The document must claim the identity it was fetched from, or one document
     // could vouch for a client_id it does not own.
     if (doc.client_id && doc.client_id !== clientId) return null;
     const uris = Array.isArray(doc.redirect_uris) ? doc.redirect_uris.filter((u): u is string => typeof u === "string") : [];
-    return { name: typeof doc.client_name === "string" ? doc.client_name.slice(0, 120) : clientId, redirectUris: uris };
+    // Same origin as the document itself. A client_id that could name any JWKS
+    // URL would let one client present another's keys, and it is also the fetch
+    // an attacker would most like to choose for us.
+    let jwksUri: string | undefined;
+    if (typeof doc.jwks_uri === "string") {
+      try {
+        if (new URL(doc.jwks_uri).origin === new URL(clientId).origin) jwksUri = doc.jwks_uri;
+      } catch { /* not a URL; no keys */ }
+    }
+    return {
+      name: typeof doc.client_name === "string" ? doc.client_name.slice(0, 120) : clientId,
+      redirectUris: uris,
+      ...(jwksUri ? { jwksUri } : {}),
+    };
   } catch {
     return null;
   }
@@ -388,7 +401,22 @@ export function authorizationServerMetadata(issuer: string): Record<string, unkn
     // the metadata document path is selected only when the server advertises
     // support AND accepts an unauthenticated token request.
     client_id_metadata_document_supported: true,
-    token_endpoint_auth_methods_supported: ["none"],
+    /**
+     * `none` and `private_key_jwt`, and the second one is not optional in
+     * practice.
+     *
+     * A client compares its own `token_endpoint_auth_method` against this list
+     * before it calls the token endpoint. ChatGPT's client metadata document
+     * declares `private_key_jwt`, so a server advertising only `none` offers it
+     * no way to authenticate as it intends - and it stops. Observed exactly
+     * that: full discovery, a successful consent, a code issued, and then no
+     * request to the token endpoint at all.
+     *
+     * Advertising it and not checking it would be worse than not advertising
+     * it, so the assertion is verified against the client's own JWKS.
+     */
+    token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+    token_endpoint_auth_signing_alg_values_supported: ["RS256"],
     // RFC 9207. Earns ChatGPT's stable redirect URI instead of a per-connector
     // one, which is the difference between an allowlist entry and a wildcard.
     authorization_response_iss_parameter_supported: true,
@@ -408,3 +436,127 @@ export function bearerChallenge(issuer: string, error?: string, description?: st
   if (description) parts.push(`error_description="${description.replace(/"/g, "'")}"`);
   return parts.join(", ");
 }
+
+// ---- private_key_jwt ------------------------------------------------------
+
+/**
+ * Client authentication by signed assertion (RFC 7523), for clients that will
+ * not use the token endpoint any other way.
+ *
+ * ChatGPT's client metadata document declares
+ * `token_endpoint_auth_method: private_key_jwt`, and a client compares that
+ * against the server's `token_endpoint_auth_methods_supported` BEFORE calling
+ * the token endpoint. Offering only `none` is therefore not a lenient default -
+ * it is a refusal, and the client's half of the exchange simply never happens.
+ *
+ * What this does not change: PKCE is still what protects the code, and a client
+ * that authenticates with `none` is still accepted. This adds an identity check
+ * for clients that insist on proving one, it does not make proof mandatory.
+ */
+
+const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+function base64UrlToBytes(s: string): Uint8Array<ArrayBuffer> {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+  const binary = atob(padded);
+  const out = new Uint8Array(new ArrayBuffer(binary.length)) as Uint8Array<ArrayBuffer>;
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+const decodeSegment = (s: string): any => JSON.parse(new TextDecoder().decode(base64UrlToBytes(s)));
+
+/** The client's public keys, from the JWKS its own metadata document names. */
+async function fetchJwks(uri: string, fetchImpl: typeof fetch): Promise<any[]> {
+  const res = await fetchImpl(uri, {
+    redirect: "error",
+    signal: AbortSignal.timeout(5000),
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) return [];
+  const doc = JSON.parse((await res.text()).slice(0, 256 * 1024)) as { keys?: unknown };
+  return Array.isArray(doc.keys) ? doc.keys : [];
+}
+
+/**
+ * Verify a client assertion, or say why not.
+ *
+ * Every check here is one an attacker would otherwise skip:
+ *
+ *   alg    pinned to RS256, so `none` cannot be asserted into acceptance
+ *   iss/sub must both be the client_id - RFC 7523 §3, and it is what ties the
+ *          assertion to the identity whose keys we are about to trust
+ *   aud    must name this server, or an assertion minted for somebody else's
+ *          token endpoint could be replayed at ours
+ *   exp    must be in the future and not absurdly far, so one capture is not
+ *          reusable forever
+ */
+export async function verifyClientAssertion(
+  assertion: string,
+  clientId: string,
+  audiences: string[],
+  jwksUri: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!jwksUri) return { ok: false, reason: "that client publishes no jwks_uri, so an assertion cannot be checked" };
+
+  const parts = assertion.split(".");
+  if (parts.length !== 3) return { ok: false, reason: "client_assertion is not a JWT" };
+  const [headerB64, payloadB64, signatureB64] = parts as [string, string, string];
+
+  let header: any;
+  let payload: any;
+  try {
+    header = decodeSegment(headerB64);
+    payload = decodeSegment(payloadB64);
+  } catch {
+    return { ok: false, reason: "client_assertion is not decodable" };
+  }
+
+  if (header?.alg !== "RS256") return { ok: false, reason: `unsupported assertion alg ${header?.alg}` };
+  if (payload?.iss !== clientId || payload?.sub !== clientId) {
+    return { ok: false, reason: "assertion iss and sub must both be the client_id" };
+  }
+  const aud = Array.isArray(payload?.aud) ? payload.aud : [payload?.aud];
+  if (!aud.some((a: unknown) => typeof a === "string" && audiences.includes(a))) {
+    return { ok: false, reason: "assertion aud does not name this server" };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload?.exp !== "number" || payload.exp <= now) return { ok: false, reason: "assertion has expired" };
+  if (payload.exp - now > 600) return { ok: false, reason: "assertion lifetime is too long" };
+
+  let keys: any[];
+  try {
+    keys = await fetchJwks(jwksUri, fetchImpl);
+  } catch {
+    return { ok: false, reason: "could not fetch the client's JWKS" };
+  }
+  // By kid when the header names one, otherwise try every RSA key: a client
+  // that omits kid is unusual but not wrong, and rotating keys is the reason
+  // more than one is published.
+  const candidates = keys.filter(
+    (k) => k?.kty === "RSA" && (!header.kid || k.kid === header.kid),
+  );
+  if (candidates.length === 0) return { ok: false, reason: "no matching key in the client's JWKS" };
+
+  const data = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+  const signature = base64UrlToBytes(signatureB64);
+  for (const jwk of candidates) {
+    try {
+      const key = await crypto.subtle.importKey(
+        "jwk",
+        { kty: "RSA", n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"],
+      );
+      if (await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, data)) return { ok: true };
+    } catch {
+      // A key that will not import is not a verification failure for the
+      // others; keep trying the rest of the set.
+    }
+  }
+  return { ok: false, reason: "assertion signature did not verify" };
+}
+
+export { ASSERTION_TYPE };

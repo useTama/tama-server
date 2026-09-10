@@ -253,7 +253,12 @@ test("the two metadata documents say what a client needs to select the right pat
   const as = authorizationServerMetadata(ISSUER);
   // Both of these, or a client silently falls back to dynamic registration.
   expect(as.client_id_metadata_document_supported).toBe(true);
-  expect(as.token_endpoint_auth_methods_supported).toEqual(["none"]);
+  // `none` AND private_key_jwt. A client compares its own declared method
+  // against this list before it calls the token endpoint, so a server offering
+  // only `none` is a refusal to any client that signs its requests - ChatGPT
+  // declares private_key_jwt, and stopped here without ever asking for a token.
+  expect(as.token_endpoint_auth_methods_supported).toEqual(["none", "private_key_jwt"]);
+  expect(as.token_endpoint_auth_signing_alg_values_supported).toEqual(["RS256"]);
   // S256 only: `plain` is the downgrade OAuth 2.1 removed.
   expect(as.code_challenge_methods_supported).toEqual(["S256"]);
   expect(as.issuer).toBe(ISSUER);
@@ -319,4 +324,62 @@ test("a metadata document must claim the identity it was fetched from", async ()
 
   const garbage = await fetchCimd(url, (async () => new Response("{{{", { status: 200 })) as unknown as typeof fetch);
   expect(garbage).toBeNull();
+});
+
+test("a client assertion is verified against the client's own keys", async () => {
+  // private_key_jwt exists because a client compares its own
+  // token_endpoint_auth_method against the server's advertised list BEFORE
+  // calling the token endpoint. ChatGPT declares private_key_jwt, so a server
+  // offering only `none` is refused silently - no token request ever arrives.
+  //
+  // Advertising it without checking it would be worse than not offering it, so
+  // these are the checks that make the claim true.
+  const { verifyClientAssertion } = await import("../src/oauth.ts");
+
+  const pair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const CLIENT = "https://client.example/oauth/client.json";
+  const ISSUER = "https://tama.example.com";
+  const JWKS = "https://client.example/oauth/jwks.json";
+
+  const b64u = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const enc = (o: unknown) => b64u(new TextEncoder().encode(JSON.stringify(o)));
+  async function sign(payload: Record<string, unknown>, header: Record<string, unknown> = { alg: "RS256", kid: "k1" }) {
+    const body = `${enc(header)}.${enc(payload)}`;
+    const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(body));
+    return `${body}.${b64u(new Uint8Array(sig))}`;
+  }
+  const soon = Math.floor(Date.now() / 1000) + 120;
+  const jwksFetch = (async () => new Response(JSON.stringify({ keys: [{ ...jwk, kid: "k1" }] }))) as unknown as typeof fetch;
+  const ok = (a: string) => verifyClientAssertion(a, CLIENT, [ISSUER, `${ISSUER}/oauth/token`], JWKS, jwksFetch);
+
+  // The good case, both audience spellings.
+  expect((await ok(await sign({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: soon }))).ok).toBe(true);
+  expect((await ok(await sign({ iss: CLIENT, sub: CLIENT, aud: [`${ISSUER}/oauth/token`], exp: soon }))).ok).toBe(true);
+
+  // Signed by the right key but claiming to be somebody else.
+  expect((await ok(await sign({ iss: "https://evil.example/c.json", sub: CLIENT, aud: ISSUER, exp: soon }))).ok).toBe(false);
+
+  // Minted for a different server, replayed at ours.
+  expect((await ok(await sign({ iss: CLIENT, sub: CLIENT, aud: "https://other.example", exp: soon }))).ok).toBe(false);
+
+  // Expired, and absurdly long-lived.
+  expect((await ok(await sign({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: Math.floor(Date.now() / 1000) - 5 }))).ok).toBe(false);
+  expect((await ok(await sign({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: soon + 86400 }))).ok).toBe(false);
+
+  // alg=none, which is the whole reason the algorithm is pinned.
+  const unsigned = `${enc({ alg: "none" })}.${enc({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: soon })}.`;
+  expect((await ok(unsigned)).ok).toBe(false);
+
+  // A tampered payload under a valid signature.
+  const good = await sign({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: soon });
+  const [h, , s] = good.split(".");
+  expect((await ok(`${h}.${enc({ iss: CLIENT, sub: CLIENT, aud: ISSUER, exp: soon + 60 })}.${s}`)).ok).toBe(false);
+
+  // No published keys means no way to check, which is a refusal not a pass.
+  expect((await verifyClientAssertion(good, CLIENT, [ISSUER], undefined, jwksFetch)).ok).toBe(false);
 });

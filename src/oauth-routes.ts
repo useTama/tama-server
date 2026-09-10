@@ -37,6 +37,7 @@ import {
   protectedResourceMetadata,
   readRequest,
   redeemCode,
+  requestState,
   redirectAllowed,
   usableScopes,
   verifyClientAssertion,
@@ -221,10 +222,28 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
     const form = await req.formData().catch(() => null);
     if (!form) return oauthError("invalid_request", "expected a form submission");
 
-    const parked = readRequest(db, String(form.get("request") ?? ""));
+    const requestId = String(form.get("request") ?? "");
+    const parked = readRequest(db, requestId);
     if (!parked) {
-      return new Response("That authorisation request has expired or was already used. Start again from the client.", {
-        status: 400,
+      // Three different situations, and the most common one is success. A
+      // browser that resubmits the consent form - after a back navigation, or
+      // because the client's callback bounced it - lands here with a request
+      // whose approval already went through and whose code has already been
+      // delivered. Telling that person their request "expired" sends them to
+      // debug a server that did exactly what it was asked.
+      const state = requestState(db, requestId);
+      const message = state === "consumed"
+        ? "That approval already went through, and the code was sent back to the client. "
+          + "Nothing here failed. If the client is still not connected, the problem is on its side - "
+          + "start a fresh connection from it rather than reloading this page."
+        : state === "expired"
+          ? "That authorisation request has expired. They last ten minutes, measured from when the "
+            + "client opened this page. Start again from the client."
+          : "That authorisation request is not one this server issued. Start again from the client.";
+      return new Response(`${message}\n`, {
+        // 410 for the consumed case: it existed, it worked, and it is gone.
+        // 400 for the rest, which are requests this server cannot act on.
+        status: state === "consumed" ? 410 : 400,
         headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       });
     }

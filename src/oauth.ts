@@ -560,3 +560,24 @@ export async function verifyClientAssertion(
 }
 
 export { ASSERTION_TYPE };
+
+/**
+ * Why a parked request is not usable, so the page can say something true.
+ *
+ * `readRequest` returns null for three different situations and the consent
+ * page reported them with one sentence: "expired or was already used". That
+ * sentence is technically accurate and actively misleading, because the most
+ * common cause is the *successful* case - the browser resubmitting a form whose
+ * approval already went through. Every attempt therefore ended on a page that
+ * read like a rejection, which is exactly the wrong thing to tell somebody
+ * debugging a connector that has in fact been approved.
+ */
+export function requestState(db: Database, id: string): "missing" | "consumed" | "expired" | "live" {
+  const row = db.query("SELECT created_at, consumed_at FROM oauth_requests WHERE id = ?").get(id) as
+    | { created_at: string; consumed_at: string | null }
+    | null;
+  if (!row) return "missing";
+  if (row.consumed_at) return "consumed";
+  if (Date.now() - Date.parse(row.created_at) > REQUEST_TTL_MS) return "expired";
+  return "live";
+}

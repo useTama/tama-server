@@ -358,3 +358,42 @@ test("an unknown well-known document is absent, not protected", async () => {
     await f.cleanup();
   }
 });
+
+test("a resubmitted consent says the approval worked, not that it failed", async () => {
+  // The most common way to land on this page is success: the browser resubmits
+  // the form after a back navigation, or after the client's callback bounced it
+  // back. Reporting "expired or already used" sent every attempt to debug a
+  // server that had already done exactly what it was asked - and it did, for
+  // hours.
+  const f = await fixture();
+  try {
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const q = new URLSearchParams({
+      response_type: "code", client_id: "https://claude.ai/oauth/client-metadata",
+      redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: "S256", scope: "read",
+    });
+    const html = await (await f.routes.handle(get(`/oauth/authorize?${q}`))).text();
+    const requestId = html.match(/name="request" value="([^"]+)"/)![1]!;
+
+    // First submission works.
+    const first = await f.routes.handle(form("/oauth/authorize", { request: requestId, admin: ADMIN, decision: "allow", scope: "read" }));
+    expect(first.status).toBe(302);
+    expect(new URL(first.headers.get("location")!).searchParams.get("code")).toBeTruthy();
+
+    // Resubmitting the identical form is the case that used to read as a failure.
+    const again = await f.routes.handle(form("/oauth/authorize", { request: requestId, admin: ADMIN, decision: "allow", scope: "read" }));
+    expect(again.status).toBe(410);
+    const text = await again.text();
+    expect(text).toContain("already went through");
+    expect(text).toContain("Nothing here failed");
+    expect(text).not.toContain("expired");
+
+    // A request this server never issued is a different answer again.
+    const unknown = await f.routes.handle(form("/oauth/authorize", { request: "0".repeat(32), admin: ADMIN, decision: "allow", scope: "read" }));
+    expect(unknown.status).toBe(400);
+    expect(await unknown.text()).toContain("not one this server issued");
+  } finally {
+    await f.cleanup();
+  }
+});

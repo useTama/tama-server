@@ -41,6 +41,7 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `capture-time.ts` | when the user actually spoke, from client headers within sanity bounds |
 | `vault.ts` | **every** read and write, and all seven invariants below |
 | `retrieval.ts` | grep over the vault, ranked, behind a `Retriever` interface |
+| `pin.ts` | notes chosen by path rather than found by score, bounded and view-checked |
 | `llm.ts` | two adapters behind one streaming interface |
 | `ask.ts` | retrieve, frame as data, stream |
 | `digest.ts` | counts and failures, daily. Needs no model, a digest is arithmetic |
@@ -141,3 +142,39 @@ rebuild, and no staleness problem when a new note lands.
 It genuinely works at a few hundred notes, and it sits behind a `Retriever` interface so
 moving to FTS5 or vectors later is a one-file change. Worth doing when a real question comes
 back wrong, not before.
+
+## Some notes are chosen, not matched
+
+Retrieval is scoring, and scoring can only return what a question's words touch. That leaves a
+whole class of question unanswerable: not "what did I decide about the mic gain", which is a
+word-overlap problem, but "which of these two notes is the real one", which is a question about
+how the vault is arranged rather than about what any note says.
+
+A file describing that arrangement is unfindable by grep, and not for want of tuning. It shares
+almost no vocabulary with any question asked of it, coverage is the heaviest ranking signal, and
+scoring it would spend one of `ask.maxChunks` slots. It would also drop out of results exactly
+as the vault filled with contradictions, which is when it is needed.
+
+So `ask.pin` names notes by path and `pin.ts` reads them on every question, in two roles:
+`conventions` for durable structure and `state` for what is live now. The conventions role is
+the only thing that overrides "prefer the newer note", which is what stops a regenerated daily
+file being read as authority on the present.
+
+Three properties make this safe rather than a hole:
+
+1. **A pin is data.** It is fenced in the user message like an excerpt, never given system
+   authority. Pinning a file into every request makes it the most valuable file in the vault to
+   an attacker, so the version that reads it into the system prompt is the version that hands
+   that attacker every question. A pin establishes facts about how the vault is arranged; it
+   cannot reach the ground rules.
+2. **A pin obeys the view.** Each path is checked with `visible()` before it is read, so a
+   scoped audience is never handed a guide naming files its view hides. A filename alone
+   discloses, which is why `NO_CITE_RULES` exists.
+3. **A pin is bounded and loud.** 8 notes, 32KB each, 64KB total, read through `Vault.readNote`
+   so containment stays in the adapter that owns it. Anything skipped, missing or cut is logged
+   once per process, because a pin that silently does nothing is worse than no pin: the owner
+   reasons about every answer as though the file were being read.
+
+Not cached. The only cache breakpoint is the Anthropic adapter's `system` parameter, and
+property 1 forbids putting a pin there, so the volatility split between the two roles buys
+framing rather than a discount.

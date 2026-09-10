@@ -38,6 +38,7 @@ import { recordCapture, recordFailure, buildDigest, renderDigest } from "./diges
 import type { Retriever } from "./retrieval.ts";
 import { DEFAULT_MAX_OUTPUT_TOKENS, spendLabel, type Llm } from "./llm.ts";
 import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
+import { loadPinnedNotes } from "./pin.ts";
 import { resolveView, visible, type View } from "./views.ts";
 import { may, resolveGrant, writeRefusal, type Grant } from "./grants.ts";
 import { AuthThrottle } from "./auth-throttle.ts";
@@ -103,6 +104,24 @@ const json = (b: unknown, s = 200, extraHeaders: Record<string, string> = {}) =>
   new Response(JSON.stringify(b, null, 2) + "\n", {
     status: s,
     headers: { "content-type": "application/json", ...extraHeaders },
+  });
+
+/**
+ * The pinned notes for one request, with each complaint said once.
+ *
+ * `loadPinnedNotes` reports every skip, which is right: a pin that silently
+ * does nothing is the failure the whole feature exists to avoid. But a pin
+ * naming a note that is not there yet would then print on every single
+ * question, and a line that appears a hundred times a day is one nobody reads.
+ * So the text is the dedupe key, per process, which keeps the first occurrence
+ * loud and the rest quiet. A restart says everything again.
+ */
+const pinNoticed = new Set<string>();
+const pinnedFor = (view: View | undefined) =>
+  loadPinnedNotes(vault, config.ask?.pin, view, (message) => {
+    if (pinNoticed.has(message)) return;
+    pinNoticed.add(message);
+    console.error(`${orange("ask")} ${grey(message)}`);
   });
 
 // ---------------------------------------------------------------- capture
@@ -411,6 +430,9 @@ const whatsapp = config.whatsapp
           history: asMessages(memory.turns),
           summary: memory.summary,
           searchQuery: search,
+          // No view on this path: the Cloud API bridge answers as the owner in
+          // a one-to-one chat, so there is nothing to scope the pins against.
+          pins: await pinnedFor(undefined),
         });
         const ms = Math.round(performance.now() - started);
 
@@ -1006,6 +1028,10 @@ const whatsapp = config.whatsapp
         );
       }
 
+      // Once for both branches below, and against this request's view so a
+      // scoped audience is never handed a pin its view would have hidden.
+      const pins = await pinnedFor(profile.view);
+
       // Captured for the stream's closure, which cannot see `device`.
       const audienceOfDevice = device.audience;
       if (b.stream) {
@@ -1016,7 +1042,7 @@ const whatsapp = config.whatsapp
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
                 // The streaming half reported nothing, so an answer streamed to
                 // a client spent money the log never mentioned - and the buffered
@@ -1055,7 +1081,7 @@ const whatsapp = config.whatsapp
       let answer = "";
       let usage: import("./llm.ts").LlmUsage | undefined;
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") {
           answer = ev.answer;

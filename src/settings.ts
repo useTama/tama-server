@@ -7,9 +7,11 @@
  * eight unrelated questions, and it certainly should not mean hand-editing
  * .env or curling a pairing endpoint.
  *
- * Sections here own the files they change. Anything that would rewrite
- * tama.config.json hands off to the wizard instead, which already reads the
- * existing config as its defaults, rather than growing a second writer for it.
+ * Sections here own the files they change, and they patch rather than rewrite:
+ * a key this version does not know about has to survive an edit to the two it
+ * does. What no section does is make a vault — the folder, its git repository,
+ * the import — so that one row hands off to the wizard, which already reads the
+ * saved config as its defaults rather than being a second writer for it.
  */
 
 import { readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";

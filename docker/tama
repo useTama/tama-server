@@ -36,6 +36,112 @@ cd "$TAMA_DIR"
 # common way to break a working install, so the wrapper always passes it.
 compose() { docker compose --profile whatsapp-webjs "$@"; }
 
+# ---- public deployment ----------------------------------------------------
+#
+# The overlay is not a flag this script passes; it is two lines in `.env`.
+#
+# COMPOSE_FILE is read by Compose itself from the project directory, and this
+# script cds to the repo root before anything else, so writing it there makes
+# `compose()`, `wizard()` AND a `docker compose` typed by hand out of the docs
+# all load the Caddy file. None of those three call sites change.
+#
+# The alternative - teaching compose() a conditional `-f` - needs the same edit
+# in wizard(), re-derives the answer on every invocation, and still leaves a
+# hand-typed command broken. It is more code that does less.
+#
+# The two keys are written together and removed together, always. Compose
+# aborts every command with "required variable TAMA_DOMAIN is missing a value"
+# if COMPOSE_FILE names the overlay while TAMA_DOMAIN is absent, so either line
+# on its own is a box where `tama logs` and `tama status` no longer run.
+COMPOSE_OVERLAY="docker-compose.yml:docker-compose.caddy.yml"
+
+# The domain this deployment is public at, or empty.
+public_domain() {
+  [ -f .env ] || return 0
+  sed -n 's/^TAMA_DOMAIN=//p' .env | tail -1
+  return 0
+}
+
+# A hostname a public CA could actually issue for.
+#
+# Rejects a bare IPv4 and the reserved suffixes, because both produce a Caddy
+# site address that will never get a certificate - and the failure arrives
+# minutes later as an ACME error rather than here as a typo.
+valid_domain() {
+  case $1 in
+    # The last two catch a hyphen at the edge of an inner label - "trail-.com",
+    # ".-lead" - which the leading/trailing patterns alone let through.
+    *[!a-zA-Z0-9.-]*|-*|*-|.*|*.|*..*|*-.*|*.-*|"") return 1 ;;
+    *.local|*.internal|*.lan|*.localdomain|localhost) return 1 ;;
+  esac
+  # A bare IPv4: every label numeric.
+  case $1 in
+    *[!0-9.]*) ;;
+    *) return 1 ;;
+  esac
+  # At least one dot, so a single label cannot be a public name.
+  case $1 in *.*) return 0 ;; *) return 1 ;; esac
+}
+
+# An HTTP status, or 000 when the connection did not happen.
+#
+# `curl ... || echo 000` is the obvious spelling and it is wrong: on a refused
+# connection curl writes its own 000 through -w AND exits non-zero, so the
+# fallback appends and the caller sees 000000. Capture, then default.
+http_code() {
+  code=$(curl -s -o /dev/null -m "${2:-5}" -w '%{http_code}' "$1" 2>/dev/null || true)
+  printf '%s' "${code:-000}"
+  return 0
+}
+
+# Does TLS terminate correctly for this domain, asked from this machine?
+#
+# --resolve, not a plain request to the domain. This command runs ON the server,
+# and a cloud instance cannot reach its own public address through the gateway
+# in front of it - a plain curl returns 000 on a deployment that is working
+# perfectly, which would make the command report failure at the moment of
+# success. Pinning the name to loopback tests the certificate, the SNI match and
+# the proxy to tama, which is everything this script is responsible for. Whether
+# the internet can reach port 443 is the security group's business and is
+# checked separately, best-effort.
+cert_code() {
+  code=$(curl -s -o /dev/null -m "${2:-8}" --resolve "$1:443:127.0.0.1" \
+    -w '%{http_code}' "https://$1/health" 2>/dev/null || true)
+  printf '%s' "${code:-000}"
+  return 0
+}
+
+# Read one value from the SERVER block only.
+#
+# config_value falls through to the whatsapp block, which is right when asking
+# "where is this server" and wrong when asking "did --off clear the key": on a
+# Cloud API deployment the fallback would answer with Meta's callback origin and
+# --off would look like it had not worked.
+config_value_server() {
+  sudo python3 -c "
+import json,sys
+try:
+    c=json.load(open('config/tama.config.json'))
+except Exception:
+    sys.exit(0)
+print((c.get('server') or {}).get('$1') or '')
+" 2>/dev/null || true
+}
+
+# Remove a key from the server block. set_config_value can only write one, and
+# writing "" is not the same as absent: config_value would fall through to the
+# whatsapp block and report an address --off has just taken down.
+unset_config_value() {
+  sudo python3 -c "
+import json
+p='config/tama.config.json'
+c=json.load(open(p))
+(c.get('server') or {}).pop('$1', None)
+open(p,'w').write(json.dumps(c,indent=2)+'\n')
+" 2>/dev/null || echo "config: could not clear $1"
+  return 0
+}
+
 # Where the vault is on this host, or empty when it is still a Docker volume.
 # Read from .env rather than the config, because the config's path is a
 # container path and this runs outside.
@@ -239,6 +345,9 @@ case $command in
   # wants strangers to reach it.
   expose)
     mode=${1:-tailscale}
+    # Shift, so a DOMAIN argument is $1 inside the branch. Without this
+    # `--public tama.example.com` reads its own flag name as the domain.
+    [ $# -gt 0 ] && shift
     case $mode in
       status)
         if command -v tailscale >/dev/null 2>&1; then
@@ -248,23 +357,244 @@ case $command in
         else
           echo "tailnet: tailscale not installed"
         fi
-        base=$(config_value publicBaseUrl)
-        echo "config:  publicBaseUrl ${base:-unset}"
+
+        domain=$(public_domain)
+        if [ -n "$domain" ]; then
+          # The overlay named but not present is what a bad checkout or an old
+          # tag looks like, and it is otherwise undiagnosable: every compose
+          # command fails and none of them says why.
+          if [ ! -f docker-compose.caddy.yml ]; then
+            echo "public:  $domain, but docker-compose.caddy.yml is MISSING from this checkout"
+          else
+            code=$(cert_code "$domain")
+            case $code in
+              200) echo "public:  https://$domain (certificate valid, serving)" ;;
+              000) echo "public:  $domain configured, but nothing answered on 443 here (is caddy running? tama logs caddy)" ;;
+              *)   echo "public:  $domain, TLS works and the server answered $code" ;;
+            esac
+            # The only check that would notice a renewal that quietly stopped -
+            # a box switched off for six weeks, or port 80 closed by a later
+            # security-group edit. openssl is optional, as preflight.sh treats it.
+            if command -v openssl >/dev/null 2>&1; then
+              until_when=$(printf '' | openssl s_client -connect 127.0.0.1:443 -servername "$domain" 2>/dev/null \
+                | openssl x509 -noout -enddate 2>/dev/null | sed -n 's/^notAfter=//p')
+              [ -n "$until_when" ] && echo "cert:    expires $until_when"
+            fi
+          fi
+        else
+          echo "public:  not configured"
+        fi
+
+        base=$(config_value_server publicBaseUrl)
+        echo "config:  server.publicBaseUrl ${base:-unset}"
         ;;
 
       --off|off)
+        domain=$(public_domain)
+        if [ -n "$domain" ]; then
+          # Order matters and is the difference between reversible and not.
+          # `compose rm` must run while COMPOSE_FILE still names the overlay:
+          # strip .env first and the caddy container becomes invisible to every
+          # compose command on the box, while `restart: unless-stopped` keeps it
+          # holding 0.0.0.0:443 with nothing able to see, stop or log it.
+          if ! compose rm -sf caddy >/dev/null 2>&1; then
+            echo "Could not remove the caddy container, so .env is left alone." >&2
+            echo "  Removing it by hand is: docker rm -f \$(docker ps -q --filter name=caddy)" >&2
+            echo "  Stripping .env first would leave it holding port 443 where no tama" >&2
+            echo "  command can see or stop it, so this stops here instead." >&2
+            exit 1
+          fi
+          # Both keys together, always: COMPOSE_FILE naming the overlay without
+          # TAMA_DOMAIN aborts every compose command on the machine.
+          sed -i '/^TAMA_DOMAIN=/d;/^COMPOSE_FILE=/d' .env
+          unset_config_value publicBaseUrl
+          unset_config_value trustProxy
+          echo "No longer public. $domain is no longer served and the certificate is not renewed."
+          echo "  The A record still points here - remove it if you are done with it."
+          echo "  The issued certificate is kept in the caddy-data volume, so turning this"
+          echo "  back on does not re-issue and does not spend a rate-limit allowance."
+          echo "  Do not 'docker compose down -v' to tidy up: that deletes it, and the vault."
+        fi
+
         command -v tailscale >/dev/null 2>&1 && sudo tailscale serve reset || true
-        echo "No longer served on the tailnet. The daemon still listens on 127.0.0.1:8080."
+        # if/fi rather than `[ ... ] && echo`: under set -e a failing test as the
+        # last command of a branch takes the whole script down with it.
+        if [ -z "$domain" ]; then
+          echo "No longer served on the tailnet. The daemon still listens on 127.0.0.1:8080."
+        fi
         ;;
 
       --public|public)
-        echo "The public path is Caddy with a domain, which is a bigger commitment:"
-        echo "  a domain, an A record, ports 80 and 443 open, and a certificate to renew."
-        echo "  docs/deploy-docker.md section 9 walks it."
+        domain=${1:-}
+
+        if [ -z "$domain" ]; then
+          echo "usage: tama expose --public DOMAIN"
+          echo ""
+          echo "A public host is a bigger commitment than the tailnet default:"
+          echo "  a domain, an A record pointing here, and ports 80 and 443 open."
+          echo ""
+          echo "You want it if something that is not YOUR machine has to dial in -"
+          echo "a ChatGPT or Claude connector, or the WhatsApp Cloud API. For MCP"
+          echo "from your own laptop, phone pairing and your own devices, plain"
+          echo "'tama expose' is enough and puts nothing on the public internet."
+          exit 2
+        fi
+
+        if ! valid_domain "$domain"; then
+          echo "\"$domain\" is not a hostname a public certificate authority can issue for." >&2
+          echo "  It needs a real registered name with a dot in it: tama.example.com." >&2
+          echo "  An IP address, localhost, and .local/.internal/.lan names cannot get one." >&2
+          exit 1
+        fi
+
+        current=$(public_domain)
+        if [ "$current" = "$domain" ] && [ "$(cert_code "$domain")" = "200" ]; then
+          echo "Already public at https://$domain, certificate valid. Nothing to do."
+          exit 0
+        fi
+        if [ -n "$current" ] && [ "$current" != "$domain" ]; then
+          echo "This deployment is already configured for $current." >&2
+          echo "  Run 'tama expose --off' first, then --public $domain." >&2
+          exit 1
+        fi
+
+        if [ ! -f docker-compose.caddy.yml ]; then
+          echo "docker-compose.caddy.yml is not in this checkout, so there is nothing to bring up." >&2
+          exit 1
+        fi
+
+        # Best-effort, and a warning rather than a refusal: an A record added a
+        # minute ago has not propagated to this resolver yet, and refusing on
+        # that would send people away to wait when the certificate would have
+        # issued fine by the time Caddy asked.
+        if command -v getent >/dev/null 2>&1; then
+          resolved=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1 || true)
+          if [ -z "$resolved" ]; then
+            echo "! $domain does not resolve from this machine yet."
+            echo "  If you have just added the A record this is normal. If you have not"
+            echo "  added one, the certificate will fail and this will tell you so."
+            echo ""
+          fi
+        fi
+
+        # A competing listener is the one failure Docker reports as an opaque
+        # bind error, and the repo already has advice for it worth printing here
+        # rather than after the fact.
+        holder=$(docker ps --no-trunc --filter publish=80 --filter publish=443 --format '{{.Names}}' 2>/dev/null | grep -v caddy || true)
+        if [ -n "$holder" ]; then
+          echo "! Something already publishes port 80 or 443: $holder"
+          echo "  Two things cannot hold the same port. If that is a proxy you run,"
+          echo "  do not start this one - point yours at 127.0.0.1:8080 instead."
+          echo "  docs/deploy-docker.md section 9 has the vhost."
+          echo ""
+        fi
+
+        echo "This will put your notes server on the public internet at https://$domain."
         echo ""
-        echo "Worth knowing: you only need this for the official WhatsApp Cloud API."
-        echo "For MCP, phone pairing and your own devices, tama expose is enough and"
-        echo "does not put anything on the public internet."
+        echo "  Caddy takes ports 80 and 443 and gets a Let's Encrypt certificate."
+        echo "  Anyone who finds the hostname can reach the login, though not the"
+        echo "  vault: every route still needs a device token, wrong ones are"
+        echo "  throttled, and /health tells a stranger only that the server is up."
+        echo ""
+        printf 'Make it public? [y/N]: '
+        read -r answer
+        case $answer in [yY]*) ;; *) echo "Nothing changed."; exit 0 ;; esac
+
+        previous=$(config_value_server publicBaseUrl)
+
+        # One write, both keys, delete-then-append: a second line for the same
+        # key wins silently and leaves the first looking authoritative.
+        touch .env
+        sed -i '/^TAMA_DOMAIN=/d;/^COMPOSE_FILE=/d' .env
+        echo "TAMA_DOMAIN=$domain" >> .env
+        echo "COMPOSE_FILE=$COMPOSE_OVERLAY" >> .env
+
+        # Prove the two lines just written produce a model Compose can load,
+        # before anything is started. Cheap, and it is the only guard against
+        # leaving a box where `tama logs` and `tama status` no longer run.
+        if ! compose config -q >/dev/null 2>&1; then
+          sed -i '/^TAMA_DOMAIN=/d;/^COMPOSE_FILE=/d' .env
+          echo "Compose could not load the Caddy overlay, so nothing was started." >&2
+          echo "  .env has been put back. Run 'docker compose config' to see why." >&2
+          exit 1
+        fi
+
+        echo ""
+        echo "Starting Caddy..."
+        if ! compose up -d --build; then
+          # Remove the container FIRST, while COMPOSE_FILE still names its file.
+          compose rm -sf caddy >/dev/null 2>&1 || true
+          sed -i '/^TAMA_DOMAIN=/d;/^COMPOSE_FILE=/d' .env
+          echo "" >&2
+          echo "Caddy did not start, so nothing is public and .env has been put back." >&2
+          echo "  The usual cause is ports 80 or 443 already in use. If that is a proxy" >&2
+          echo "  you run, point it at 127.0.0.1:8080 instead of starting this one." >&2
+          exit 1
+        fi
+
+        # A deadline, not an iteration count: each probe can itself consume its
+        # whole timeout, so counting attempts bounds the wait anywhere between
+        # two and ten minutes.
+        echo "Waiting for the certificate (up to two minutes)..."
+        deadline=$(( $(date +%s) + 120 ))
+        code=000
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+          code=$(cert_code "$domain")
+          [ "$code" = "200" ] && break
+          sleep 3
+        done
+
+        if [ "$code" != "200" ]; then
+          echo "" >&2
+          echo "The certificate has not been issued after two minutes." >&2
+          echo "  Caddy keeps trying, so this may still come good on its own." >&2
+          echo "  Almost always one of: the A record does not point at this host yet," >&2
+          echo "  or port 80 is closed inbound - Let's Encrypt has to reach it from" >&2
+          echo "  outside, and a security group that allows only 443 fails here." >&2
+          echo "" >&2
+          echo "  Watch it: tama logs caddy" >&2
+          echo "  Check again: tama expose status" >&2
+          echo "" >&2
+          echo "  .env is left in place so it can finish. 'tama expose --off' undoes it." >&2
+          exit 1
+        fi
+
+        set_config_value publicBaseUrl "https://$domain" >/dev/null || true
+        # Without this every per-caller limit keys on Caddy's container address,
+        # so ten wrong tokens from anybody would lock out everybody.
+        set_config_value trustProxy "true" >/dev/null || true
+        written=$(config_value_server publicBaseUrl)
+        if [ "$written" != "https://$domain" ]; then
+          echo "! The config was not updated (got \"${written:-nothing}\")." >&2
+          echo "  Serving works; clients told to use the address will be told the old one." >&2
+        fi
+
+        compose restart tama >/dev/null 2>&1 || true
+
+        echo ""
+        echo "Public at https://$domain"
+        echo ""
+        # Best effort and additive only: this is the one thing that separates
+        # "the certificate is valid" from "the internet can actually reach 443",
+        # and it legitimately returns 000 on a working cloud box that cannot
+        # reach its own public address.
+        outside=$(http_code "https://$domain/health" 8)
+        case $outside in
+          200) echo "  Reachable from outside this machine too." ;;
+          000) echo "  Could not confirm from here, which is normal on a cloud instance:" ;
+               echo "  a box usually cannot reach its own public address. Try it from a laptop." ;;
+          *)   echo "  Answered $outside from the public address." ;;
+        esac
+        echo ""
+        echo "Any client that can send a bearer token now reaches this from anywhere,"
+        echo "not just from your own machines:"
+        echo "  tama connect claude-code"
+        echo ""
+        echo "A hosted connector - ChatGPT, or Claude's custom connectors - can now"
+        echo "REACH this, which it could not before. It still cannot connect: those"
+        echo "want OAuth and this speaks bearer tokens. That is the remaining half."
+        echo ""
+        echo "Undo it with: tama expose --off"
         ;;
 
       tailscale)
@@ -333,7 +663,17 @@ case $command in
           exit 1
         fi
 
-        set_config_value publicBaseUrl "$url" || true
+        # Do not demote a public domain. server.publicBaseUrl is one key and
+        # both paths write it, so a `tama expose` months after `--public` would
+        # replace the domain with a tailnet name while Caddy keeps serving the
+        # domain - and every client would then be handed the wrong address.
+        if [ -n "$(public_domain)" ]; then
+          echo "! server.publicBaseUrl still points at $(public_domain), and has been left there."
+          echo "  This machine is now on the tailnet as well; both addresses work."
+          echo "  'tama expose --off' gives the key back to the tailnet."
+        else
+          set_config_value publicBaseUrl "$url" || true
+        fi
 
         echo ""
         echo "Reachable at $url"
@@ -350,7 +690,7 @@ case $command in
         echo "This survives a reboot. Nothing needs to stay running in a terminal."
         ;;
 
-      *) echo "usage: tama expose [tailscale|status|--off|--public]" >&2; exit 2 ;;
+      *) echo "usage: tama expose [tailscale|status|--off|--public DOMAIN]" >&2; exit 2 ;;
     esac
     ;;
   # The vault is a git repo; committing is how a note becomes recoverable.
@@ -473,7 +813,16 @@ case $command in
   session)
     if [ $# -eq 0 ]; then echo 'usage: tama session PROJECT [--shipped X] [--next Y] < summary.md' >&2; exit 2; fi
     compose exec -T tama bun run src/tama.ts session "$@" ;;
-  update)   git pull && compose up -d --build ;;
+  # --force-recreate caddy when public: docker/Caddyfile arrives as a read-only
+  # bind mount, so its CONTENTS are not part of the service's config hash and
+  # `up -d` leaves the old container running with the old config. A fix to the
+  # Caddyfile would otherwise land on disk and do nothing.
+  update)
+    git pull && compose up -d --build
+    if [ -n "$(public_domain)" ]; then
+      compose up -d --force-recreate caddy >/dev/null 2>&1 || true
+    fi
+    ;;
   ask)
     if [ $# -eq 0 ]; then echo "usage: tama ask \"your question\"" >&2; exit 2; fi
     # Read the token inside the container. The wizard writes the config 0600 and
@@ -498,6 +847,9 @@ tama logs [service]         follow logs; defaults to tama
 tama health                 the /health JSON
 tama mcp [NAME]             the whole editor-plugin install, as a line to paste
 tama expose                 put this server on your tailnet, no tunnel, no domain
+tama expose --public DOMAIN  put it on the public internet, with TLS
+tama expose status          how this server is currently reachable
+tama expose --off           stop serving, either way
 tama expose status          how it is currently reachable
 tama ask "question"         ask your notes from the terminal
 tama token NAME             mint a device token for a client (iOS, MCP, a script)

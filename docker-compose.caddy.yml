@@ -11,6 +11,10 @@ services:
       - "443:443"
     environment:
       TAMA_DOMAIN: ${TAMA_DOMAIN:?set TAMA_DOMAIN in .env}
+      # Same reason every other service has it: Caddy's log is the one you read
+      # side by side with tama's while a certificate is failing, and a log an
+      # hour out from the one next to it is unreadable.
+      TZ: ${TZ:-UTC}
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

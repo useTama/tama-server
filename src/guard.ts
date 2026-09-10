@@ -1,0 +1,294 @@
+/**
+ * What has to be true of an answer before it is sent.
+ *
+ * Everything here runs on the finished text, not on the prompt. The prompt is
+ * where a rule is *asked for*; this is where the ones that must not be
+ * negotiable are *held*. `stripEmDashes` in ask.ts was the first of these and
+ * states the principle: an absolute rule should not depend on the model
+ * choosing to follow it.
+ *
+ * Two rules qualified. Both were already written down in `GROUND_RULES`, both
+ * were broken in a single real WhatsApp session, and both fail silently.
+ *
+ * **A citation names a note the model was shown.** `CITE_RULES` asks for a path
+ * beside every claim and explains why: an uncited fact reads as invented. The
+ * inverse was never handled, and it is worse. A cited path reads as verified,
+ * so the citation format is the thing that makes a fabricated claim credible.
+ * Of the distinct paths cited across that session, three did not exist, and two
+ * of the three were attached to claims that were themselves false.
+ *
+ * **The ask path cannot write.** See `claimedWrite` below.
+ *
+ * The citation half of this used to live in `test/eval/metrics.ts` and ran only
+ * under a gated eval. The detector and the guard are now the same code, because
+ * two copies of "what counts as a citation" drift until the graded one and the
+ * enforced one disagree, and then the eval is measuring something the server
+ * does not do.
+ */
+
+/**
+ * A path as it appears in an answer.
+ *
+ * Deliberately loose about the leading folders, which is the property the eval
+ * relied on: a model that cites `latency-investigation.md` without its folder
+ * has still cited the right note, and grading that as a miss would measure
+ * formatting instead of grounding.
+ *
+ * Deliberately NOT loose about spaces, which the first version of this was. Its
+ * character class included a literal space, so "as you wrote in Work/notes.md"
+ * matched *from the "a" of "as"* and yielded the citation
+ * `as you wrote in Work/notes.md`. Under an eval that only over-reports a
+ * failure; under a guard that rewrites text it would delete most of a sentence.
+ * The old behaviour was never visible because `CITE_RULES` asks for a path in
+ * parentheses and "(" is not a word character, so the run always started inside
+ * the bracket.
+ *
+ * Unicode letters ARE allowed, unlike the space. `café-notes.md` used to match
+ * only its `notes.md` tail, which `supports` below then judged invented, and the
+ * strip took the tail out and left `café-`. A letter cannot run backwards
+ * through prose the way a space can, so widening the class costs nothing.
+ */
+const PATH_SOURCE = String.raw`(?:[\p{L}\p{N}][\p{L}\p{N}._-]*\/)*[\p{L}\p{N}][\p{L}\p{N}._-]*\.md`;
+
+/** Paths the answer cites. */
+export function citedPaths(answer: string): string[] {
+  return [...new Set(Array.from(answer.matchAll(new RegExp(PATH_SOURCE, "gu")), (m) => m[0]))];
+}
+
+/**
+ * Citations that name a note the model was never shown.
+ *
+ * This is the sharpest cheap signal there is. A path in the context can be
+ * copied; a path that is not in the context was constructed, and a model
+ * willing to construct a filename is willing to construct the fact under it.
+ */
+/**
+ * Whether `cited` names `allowed`, given that `cited` may be missing its
+ * leading folders.
+ *
+ * The tail has to start at a path boundary, and a SPACE counts as one. A folder
+ * name may contain a space and `PATH_SOURCE` deliberately may not, so a real
+ * citation of `Social Media Content/X/bold.md` reaches here as
+ * `Content/X/bold.md`. Requiring a slash in front of the tail judged that
+ * invented, and the strip then cut the tail out and left `(Social Media )` in
+ * the answer: a correct citation mangled into nonsense.
+ *
+ * The boundary is what keeps this from being merely loose. Without it,
+ * `Work/ab.md` would be named by a bare `b.md`, so a genuinely invented path
+ * could pass by being the suffix of a real one.
+ */
+function supports(allowed: string, cited: string): boolean {
+  if (allowed === cited) return true;
+  if (!allowed.endsWith(cited)) return false;
+  const before = allowed[allowed.length - cited.length - 1];
+  return before === "/" || before === " ";
+}
+
+export function unsupportedCitations(answer: string, allowed: string[]): string[] {
+  return citedPaths(answer).filter((cited) => !allowed.some((a) => supports(a, cited)));
+}
+
+/**
+ * A parenthesised group, so a citation can be told from prose in brackets.
+ *
+ * `[^()]*` rather than anything recursive: a nested bracket means this is not
+ * the citation format `CITE_RULES` asked for, and the fallback pass below
+ * handles a stray path wherever it turns up.
+ */
+const CITATION_GROUP = /([ \t]*)\(([^()]*)\)/g;
+
+/** What may sit between two paths in one citation group and still be one. */
+const SEPARATORS = /[\s,;]+|\band\b|\bcaptured\b|[\d:+-]|T\d/g;
+
+/**
+ * Remove citations the model was not entitled to, and keep the sentence.
+ *
+ * Stripping the path rather than dropping the sentence is the deliberate
+ * choice. The claim may be sound and the path mis-remembered, and deleting a
+ * true statement to punish a bad citation trades one silent error for another.
+ * What the reader loses is a source they could not have opened anyway; what
+ * they gain is that every path still on screen is real.
+ *
+ * Two passes, because the parenthesised form is the one that was asked for and
+ * the one that carries the false authority:
+ *
+ *   1. a group that is nothing but paths and separators. Unsupported paths come
+ *      out of it, and if that empties the group the brackets go too, along with
+ *      the space in front of them so no sentence ends "on tags ."
+ *   2. anything left, cited bare mid-sentence. The path is removed and the
+ *      whitespace tidied.
+ *
+ * Never touches a supported path, so an answer with nothing wrong in it comes
+ * back byte-identical.
+ */
+export function stripUnsupportedCitations(
+  answer: string,
+  allowed: string[],
+): { answer: string; stripped: string[] } {
+  const bad = new Set(unsupportedCitations(answer, allowed));
+  if (bad.size === 0) return { answer, stripped: [] };
+
+  const path = new RegExp(PATH_SOURCE, "gu");
+
+  let out = answer.replace(CITATION_GROUP, (whole, lead: string, inner: string) => {
+    const found = inner.match(path) ?? [];
+    if (found.length === 0) return whole;
+    // Prose that happens to contain a path is not a citation group, and
+    // rewriting it would eat words. Left for the second pass.
+    if (inner.replace(new RegExp(PATH_SOURCE, "gu"), "").replace(SEPARATORS, "") !== "") return whole;
+
+    const kept = found.filter((p) => !bad.has(p));
+    if (kept.length === found.length) return whole;
+    return kept.length === 0 ? "" : `${lead}(${kept.join(", ")})`;
+  });
+
+  out = out.replace(new RegExp(PATH_SOURCE, "gu"), (m) => (bad.has(m) ? "" : m));
+
+  // Tidy what removal left behind. Spaces and tabs only: collapsing newlines
+  // would reflow an answer that deliberately used them.
+  out = out
+    .replace(/\(\s*\)/g, "")
+    // An opening bracket the model never closed. The group pass needs both to
+    // fire, so "see (Bad.md and more" fell through to the second pass and was
+    // left as "see ( and more". A space directly after "(" is not something
+    // prose does, so this is safe to take.
+    .replace(/\((?=[ \t]|$)/gm, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([,.;:!?])/g, "$1")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+
+  // An answer that was nothing but a fabricated citation strips to nothing, and
+  // an empty string is worse than a stripped one: a WhatsApp send is refused
+  // for an empty body, and `/ask` would return a successful response with no
+  // answer in it. So say the honest thing instead.
+  if (!/[\p{L}\p{N}]/u.test(out)) return { answer: NOTHING_SOLID, stripped: [...bad] };
+
+  return { answer: out, stripped: [...bad] };
+}
+
+/**
+ * What is left when every claim in an answer rested on an invented source.
+ *
+ * Short, and it does not narrate the machinery: the reader cannot see a
+ * citation being removed and does not need to hear about one. No closing full
+ * stop, matching `CHAT_RULES`, because this lands in a chat more often than in
+ * a terminal.
+ */
+export const NOTHING_SOLID = "I do not have anything solid on that";
+
+/**
+ * Phrases that claim a write the ask path cannot perform.
+ *
+ * `GROUND_RULES` says it flatly: "This path is read-only. Never claim you
+ * edited, organized, filed, posted, sent or published anything, and never imply
+ * you will." The rule lost anyway, five times in one session, because the
+ * pressure to break it comes from the owner on exactly the requests they care
+ * most about. "Add this to the build plan" is not a question, and the socially
+ * correct completion is confirmation.
+ *
+ * The Hinglish entries are not thoroughness, they are the actual failures. The
+ * observed claims were "note add kar diya hai", "add kar liya" and "remind kar
+ * diya hai"; an English-only matcher would have caught none of them.
+ *
+ * Scoped to the first person on purpose. "You added it to the list" is a
+ * statement about something the owner did, and reporting a note's contents back
+ * must keep working.
+ */
+const WRITE_CLAIMS: RegExp[] = [
+  // English, first person, completed.
+  //
+  // "noted", "set", "recorded" and "written" are deliberately absent, though
+  // they read like writes. Each has an ordinary non-write meaning that a real
+  // answer uses: "there are three items i noted in that file" is an
+  // observation, and "i set the gain to 60" is a value, not a file. Both were
+  // being replaced with a refusal. Dropping them costs a missed claim in "i
+  // have written that down", which is the safe direction: a missed claim
+  // leaves one false sentence, a false positive destroys a correct answer.
+  /\bi(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|filed|logged|updated|appended|created)\b/i,
+  // Anchored, because unanchored this was not first-person at all and so
+  // contradicted the note above: "you added it to the list" matched, and a
+  // correct recall answer was replaced with a refusal. Sentence-initial is the
+  // standalone-confirmation form ("added it to your notes"); the alternative
+  // anchor is an explicit "I".
+  /(?:^|[.!?]\s+|\bi(?:'ve| have)?\s+)(?:added|saved|filed|logged|noted|recorded|appended|updated)\s+(?:it|that|this|them)\s+to\b/i,
+  // Sentence-initial for the same reason as the pattern above. Unanchored it
+  // matched "the draft is done, it's in your inbox", where the subject is the
+  // draft and the sentence is recall.
+  /(?:^|[.!?]\s+)(?:done|added|saved|filed|logged|noted)\s*[,.]?\s*(?:it(?:'s| is)\s+(?:in|on)\b|to\s+your\b)/i,
+  // Sentence-initial only, which is the standalone-confirmation form. Matching
+  // "reminder set" anywhere caught "your notes say the reminder is set for
+  // friday", and reporting what a note says is the thing that must keep
+  // working: the guard exists to stop invented actions, not to stop recall.
+  /(?:^|[.!?]\s+)reminder set\b/i,
+  // "set" left pattern 1, so the one place it unambiguously means a write is
+  // named here instead: a reminder is a thing this path cannot create.
+  /\bi(?:'ve| have)?\s+(?:reminded|scheduled)\b|\bi(?:'ve| have)?\s+set\s+(?:you\s+)?a\s+reminder\b/i,
+  // Hinglish. "kar diya", "kar liya" and "kar di" are the completed forms.
+  /\b(?:add|save|note|file|log|update|remind|likh|daal|dal)\w*\s+kar\s+(?:diya|liya|di|dii)\b/i,
+  /\b(?:add|note|likh|daal|dal)\w*\s+(?:diya|liya|di)\s+hai\b/i,
+  /\bnote\s+(?:bana|banaa)\s+(?:diya|liya)\b/i,
+];
+
+/**
+ * Subjects that make a completed verb a report about somebody else.
+ *
+ * The patterns above can only anchor on what sits immediately before the verb,
+ * and a sentence puts its subject further away than that: "tumne add kar diya
+ * tha" and "your note says: I added the tote bag" both matched, and both are
+ * the owner being told what they themselves did. Anchoring harder would have
+ * cost the plain first-person claims that are the whole point.
+ *
+ * Hinglish carries the same distinction in the ergative: "maine" is I, and
+ * "tune", "tumne", "aapne" and "usne" are not.
+ *
+ * "note" is deliberately NOT here, though "your note says" was the case that
+ * prompted this. Hindi puts the object before the verb, so "note add kar diya
+ * hai" - one of the real claims from the session this fixes - has "note" in
+ * front of it as the thing added. "says", "said" and "wrote" catch the
+ * reported-speech reading without costing that.
+ */
+const OTHER_SUBJECT =
+  /\b(?:you|your|u|tu|tune|tumne|tum|aap|aapne|usne|unhone|says|said|wrote)\b/i;
+
+/**
+ * Whether an answer claims to have written something.
+ *
+ * A detector, not a rewriter. What to say instead depends on what was asked,
+ * and the caller is the only thing that knows whether a write path exists yet.
+ *
+ * A match is discarded when its own clause names a different subject. Clause
+ * and not sentence, because a full stop resets who is being talked about, and
+ * clause-wide rather than a fixed window because a subject can sit any distance
+ * from its verb. The cost is a missed claim in "you asked me to, so I added
+ * it", which is the safe direction to be wrong in: a missed claim leaves one
+ * false sentence, while a false positive destroys a correct answer and replaces
+ * it with a refusal.
+ */
+export function claimedWrite(answer: string): boolean {
+  for (const re of WRITE_CLAIMS) {
+    // `re` carries no /g, so exec is stateless and needs no lastIndex reset.
+    const found = re.exec(answer);
+    if (!found) continue;
+    const clause = answer.slice(0, found.index).split(/[.!?]\s+/).pop() ?? "";
+    if (OTHER_SUBJECT.test(clause)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * What to send instead of a claimed write.
+ *
+ * Said in the plainest available terms, because the whole failure was an answer
+ * that sounded like a yes. It names the limit and hands the action back rather
+ * than apologising, and it does not promise the feature: a reply that says "not
+ * yet" invites the owner to wait for it.
+ *
+ * Deliberately not a rewrite of the model's text. Editing a confirmation into a
+ * refusal means guessing which clause was the lie, and a half-corrected answer
+ * is the failure again in a quieter voice.
+ */
+export const CANNOT_WRITE =
+  "I can read your notes but I cannot write to them, so nothing was saved just now. " +
+  "Put it in your vault and I will have it next time you ask";

@@ -3,6 +3,7 @@ import { DEFAULT_CIMD_ORIGINS } from "./oauth.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { SARVAM_URL, type SttConfig } from "./stt.ts";
 import { BUILTIN_VIEWS, resolveView, type View } from "./views.ts";
+import { PIN_MAX_NOTES, type PinPaths, type PinRole } from "./pin.ts";
 import type { AnswerStyle, Voice } from "./ask.ts";
 import { ROUTE_DEFAULTS, type RouteConfig } from "./route.ts";
 
@@ -78,6 +79,14 @@ export type Config = {
      * exceeds the remaining balance, whatever the answer would have cost.
      */
     maxTokens?: number;
+    /**
+     * Notes put in front of the model on every question, chosen by path rather
+     * than found by score. See pin.ts for why retrieval cannot supply this.
+     *
+     * Absent is exactly the behaviour that existed before pinning: whatever
+     * matched the question, and nothing else.
+     */
+    pin?: PinPaths;
   };
   /**
    * Post-processing. Absent, the Inbox is the second brain: captures pile up as
@@ -412,6 +421,69 @@ function askMaxTokens(value: unknown): number {
   return tokens;
 }
 
+/**
+ * The shape of `ask.pin`, and only the shape.
+ *
+ * Whether a path is safe to read is not decided here. `Vault.readNote` refuses
+ * traversal, dot segments and anything that is not Markdown, and duplicating
+ * those rules in a second place is how the two drift until one of them is
+ * wrong. This checks that the config is a list of strings, which is the part
+ * `Vault` cannot check because by then it has been handed one path at a time.
+ *
+ * Warns and drops rather than throwing, like `askMaxChunks` next door and for
+ * the same reason: a config that loads today has to keep loading, and a
+ * malformed pin costs a worse answer rather than a lost note. Silence is the
+ * one thing it must not do, because an owner who thinks a file is being read on
+ * every question will reason about every answer wrongly.
+ */
+function askPin(value: unknown): PinPaths | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    console.error(
+      `config: ask.pin must be an object with "conventions" and/or "state" arrays, got ` +
+        `${JSON.stringify(value)}. Nothing is being pinned.`,
+    );
+    return undefined;
+  }
+
+  const roles: PinRole[] = ["conventions", "state"];
+  const out: PinPaths = {};
+  let total = 0;
+
+  for (const role of roles) {
+    const listed = (value as Record<string, unknown>)[role];
+    if (listed === undefined) continue;
+    if (!Array.isArray(listed)) {
+      console.error(`config: ask.pin.${role} must be an array of vault-relative paths, got ${JSON.stringify(listed)}. Ignoring it.`);
+      continue;
+    }
+    const paths: string[] = [];
+    for (const entry of listed) {
+      if (typeof entry !== "string" || !entry.trim()) {
+        console.error(`config: ask.pin.${role} entry ${JSON.stringify(entry)} is not a path. Ignoring it.`);
+        continue;
+      }
+      paths.push(entry.trim());
+    }
+    if (paths.length > 0) {
+      out[role] = paths;
+      total += paths.length;
+    }
+  }
+
+  // Said here as well as enforced in pin.ts, because the ceiling is about the
+  // config the owner wrote and reading it back from a log line at request time
+  // is a worse place to learn it.
+  if (total > PIN_MAX_NOTES) {
+    console.error(
+      `config: ask.pin names ${total} notes and only the first ${PIN_MAX_NOTES} are pinned. ` +
+        `Every pinned note is read on every question, so this is input you pay for each time.`,
+    );
+  }
+
+  return out.conventions || out.state ? out : undefined;
+}
+
 export function loadConfig(path = defaultConfigPath()): Config {
   if (!existsSync(path)) {
     throw new Error(`no config at ${path}\n  cp tama.config.example.json tama.config.json\n  then set vault.path and server.adminToken`);
@@ -478,6 +550,10 @@ export function loadConfig(path = defaultConfigPath()): Config {
       baseUrl: raw.ask.baseUrl,
       maxChunks: askMaxChunks(raw.ask.maxChunks ?? 8),
       ...(raw.ask.maxTokens === undefined ? {} : { maxTokens: askMaxTokens(raw.ask.maxTokens) }),
+      ...(() => {
+        const pin = askPin(raw.ask.pin);
+        return pin ? { pin } : {};
+      })(),
     };
   }
 

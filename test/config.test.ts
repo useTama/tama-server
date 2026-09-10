@@ -464,3 +464,41 @@ test("ask.maxChunks is clamped, not obeyed and not refused", async () => {
   const bare = await config({ vault: { path: "/vault" }, server: { adminToken: "secret" } });
   expect(loadConfig(bare).ask).toBeUndefined();
 });
+
+test("ask.pin takes two lists of paths and drops what is not one", async () => {
+  const withPin = (pin: unknown) => config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret" },
+    ask: { provider: "openai-compatible", baseUrl: "http://x/v1", model: "m", apiKey: "k", maxChunks: 8, pin },
+  });
+
+  expect(loadConfig(await withPin({ conventions: ["CLAUDE.md"], state: ["Now.md"] })).ask?.pin)
+    .toEqual({ conventions: ["CLAUDE.md"], state: ["Now.md"] });
+
+  // Absent is the behaviour that existed before pinning, so it stays undefined
+  // rather than becoming an empty object nothing can tell apart from a real one.
+  expect(loadConfig(await withPin(undefined)).ask?.pin).toBeUndefined();
+  expect(loadConfig(await withPin({})).ask?.pin).toBeUndefined();
+
+  // Warned and dropped, never thrown: a config that loads today has to keep
+  // loading, and a malformed pin costs a worse answer rather than a lost note.
+  expect(loadConfig(await withPin("CLAUDE.md")).ask?.pin).toBeUndefined();
+  expect(loadConfig(await withPin(["CLAUDE.md"])).ask?.pin).toBeUndefined();
+  expect(loadConfig(await withPin({ conventions: "CLAUDE.md" })).ask?.pin).toBeUndefined();
+  expect(loadConfig(await withPin({ conventions: ["CLAUDE.md", 7, "", "  "] })).ask?.pin)
+    .toEqual({ conventions: ["CLAUDE.md"] });
+});
+
+test("whether a pinned path is safe to read is the vault's call, not the config's", async () => {
+  // Duplicating Vault's traversal rules here is how the two drift until one is
+  // wrong. loadPinnedNotes catches the throw and reports it instead.
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret" },
+    ask: {
+      provider: "openai-compatible", baseUrl: "http://x/v1", model: "m", apiKey: "k", maxChunks: 8,
+      pin: { conventions: ["../escape.md"] },
+    },
+  });
+  expect(loadConfig(path).ask?.pin).toEqual({ conventions: ["../escape.md"] });
+});

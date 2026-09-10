@@ -212,6 +212,26 @@ Emitting sources first is deliberate. A client can show what is being read from 
 model is still thinking, and a caller can tell "found nothing" apart from "the model had
 nothing to say".
 
+`sources` is also empty when the message was not a question about the notes at all. "hi",
+"thanks", "bruh", or the server's own name is contact rather than enquiry, and the vault is not
+searched for it: a greeting used to retrieve whatever the previous question had been about and
+read that back. A client cannot tell this apart from a search that matched nothing, and does not
+need to. The difference is in what the model is told, not in the response shape.
+
+### The answer is checked before it is returned
+
+Two things are enforced on the finished text rather than asked for in the prompt, because both
+were asked for and both were broken:
+
+- a path the model was never shown is removed, and the sentence around it is kept. Every path in
+  a returned answer names a note that was actually in the context.
+- an answer claiming to have written, filed, saved or set a reminder is replaced. This route is
+  read-only, so every such claim is false.
+
+On the buffered response this is exact. With `"stream": true` the guard runs once the answer is
+complete, so a client rendering `delta` events shows the unguarded text first and `done` carries
+the corrected answer. Render `done` if you can only render one.
+
 ### Saying which surface you are
 
 A chat client should send `surface`, because nothing else can tell the server what medium the
@@ -265,6 +285,33 @@ Formats outside these three are not supported.
 |---|---|---|
 | `openai-compatible` | Ollama, llama.cpp, LM Studio, vLLM, OpenAI, Groq, OpenRouter, Together, Gemini | `baseUrl` + `model`. Local servers need no key |
 | `anthropic` | Claude models | `model`, plus `apiKey` or `$ANTHROPIC_API_KEY` |
+
+### Pinning notes into every answer
+
+Retrieval can only return what a question's words match, which leaves the model nothing to
+answer "which of these two notes is the real one" with. `ask.pin` names notes by path instead:
+
+```json
+"ask": { "pin": { "conventions": ["CLAUDE.md"], "state": ["Now.md"] } }
+```
+
+`conventions` is durable structure: which note is the source of truth for a subject, which files
+are generated and disposable, what the folders mean. It is the only thing that overrides "prefer
+the newer note", so a file you regenerate every morning stops being read as authority on the
+present. `state` is what is live now, and is preferred over older notes for anything about the
+present.
+
+Both are read as untrusted note text, fenced exactly like a retrieved excerpt, and neither can
+change the model's instructions. Each path is checked against the requesting token's view, so an
+audience is never shown a pin its view excludes. That check is on the path and not the contents:
+a conventions file a scoped view does admit will still name whatever folders it names, so do not
+pin one to a scoped audience unless you are content for it to see the shape of the vault.
+Bounded at 8 notes, 32KB each and 64KB in total, read on every question; anything missing,
+hidden, oversized or skipped is logged once per process. Omit the block to pin nothing, which is
+how this behaved before pinning existed.
+
+A greeting is not given the pins either, since answering "hi" with the whole of a "what is live
+now" file is a status report nobody asked for.
 
 ## Notifications
 

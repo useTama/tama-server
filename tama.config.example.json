@@ -71,10 +71,32 @@
     "            by this before generating, so omitting it inherits the model's own",
     "            maximum and can be refused as unaffordable."
   ],
+  "//ask.pin": [
+    "Notes put in front of the model on EVERY question, chosen by path instead of",
+    "found by score. Retrieval can only return what a question's words match, so a",
+    "file describing how your vault is organised is unfindable by it: no question",
+    "shares vocabulary with it, and scoring it would spend a maxChunks slot.",
+    "",
+    "conventions: durable structure. Which note is the source of truth for a",
+    "             subject, which are generated and disposable, what the folders",
+    "             mean. This one overrides 'prefer the newer note', so a daily",
+    "             scratch file stops being treated as authority on what is current.",
+    "state:       what is live right now. Preferred over older notes for anything",
+    "             about the present.",
+    "",
+    "Both are read as untrusted note text, exactly like an excerpt, and neither can",
+    "change the model's instructions. 8 notes maximum, 32KB each, 64KB in total,",
+    "and anything skipped or cut is logged once. Omit the whole block to pin",
+    "nothing, which is how this worked before pinning existed."
+  ],
   "ask": {
     "provider": "anthropic",
     "model": "claude-sonnet-5",
     "maxChunks": 8,
-    "maxTokens": 2048
+    "maxTokens": 2048,
+    "pin": {
+      "conventions": ["CLAUDE.md"],
+      "state": ["Now.md"]
+    }
   }
 }

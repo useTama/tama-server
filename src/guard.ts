@@ -197,20 +197,33 @@ export const NOTHING_SOLID = "I do not have anything solid on that";
  */
 const WRITE_CLAIMS: RegExp[] = [
   // English, first person, completed.
-  /\bi(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|filed|logged|noted|recorded|written|updated|appended|created|set)\b/i,
+  //
+  // "noted", "set", "recorded" and "written" are deliberately absent, though
+  // they read like writes. Each has an ordinary non-write meaning that a real
+  // answer uses: "there are three items i noted in that file" is an
+  // observation, and "i set the gain to 60" is a value, not a file. Both were
+  // being replaced with a refusal. Dropping them costs a missed claim in "i
+  // have written that down", which is the safe direction: a missed claim
+  // leaves one false sentence, a false positive destroys a correct answer.
+  /\bi(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|filed|logged|updated|appended|created)\b/i,
   // Anchored, because unanchored this was not first-person at all and so
   // contradicted the note above: "you added it to the list" matched, and a
   // correct recall answer was replaced with a refusal. Sentence-initial is the
   // standalone-confirmation form ("added it to your notes"); the alternative
   // anchor is an explicit "I".
   /(?:^|[.!?]\s+|\bi(?:'ve| have)?\s+)(?:added|saved|filed|logged|noted|recorded|appended|updated)\s+(?:it|that|this|them)\s+to\b/i,
-  /\b(?:done|added|saved|filed|logged|noted)\s*[,.]?\s*(?:it(?:'s| is)\s+(?:in|on)\b|to\s+your\b)/i,
+  // Sentence-initial for the same reason as the pattern above. Unanchored it
+  // matched "the draft is done, it's in your inbox", where the subject is the
+  // draft and the sentence is recall.
+  /(?:^|[.!?]\s+)(?:done|added|saved|filed|logged|noted)\s*[,.]?\s*(?:it(?:'s| is)\s+(?:in|on)\b|to\s+your\b)/i,
   // Sentence-initial only, which is the standalone-confirmation form. Matching
   // "reminder set" anywhere caught "your notes say the reminder is set for
   // friday", and reporting what a note says is the thing that must keep
   // working: the guard exists to stop invented actions, not to stop recall.
   /(?:^|[.!?]\s+)reminder set\b/i,
-  /\bi(?:'ve| have)?\s+(?:reminded|scheduled)\b/i,
+  // "set" left pattern 1, so the one place it unambiguously means a write is
+  // named here instead: a reminder is a thing this path cannot create.
+  /\bi(?:'ve| have)?\s+(?:reminded|scheduled)\b|\bi(?:'ve| have)?\s+set\s+(?:you\s+)?a\s+reminder\b/i,
   // Hinglish. "kar diya", "kar liya" and "kar di" are the completed forms.
   /\b(?:add|save|note|file|log|update|remind|likh|daal|dal)\w*\s+kar\s+(?:diya|liya|di|dii)\b/i,
   /\b(?:add|note|likh|daal|dal)\w*\s+(?:diya|liya|di)\s+hai\b/i,
@@ -218,13 +231,50 @@ const WRITE_CLAIMS: RegExp[] = [
 ];
 
 /**
+ * Subjects that make a completed verb a report about somebody else.
+ *
+ * The patterns above can only anchor on what sits immediately before the verb,
+ * and a sentence puts its subject further away than that: "tumne add kar diya
+ * tha" and "your note says: I added the tote bag" both matched, and both are
+ * the owner being told what they themselves did. Anchoring harder would have
+ * cost the plain first-person claims that are the whole point.
+ *
+ * Hinglish carries the same distinction in the ergative: "maine" is I, and
+ * "tune", "tumne", "aapne" and "usne" are not.
+ *
+ * "note" is deliberately NOT here, though "your note says" was the case that
+ * prompted this. Hindi puts the object before the verb, so "note add kar diya
+ * hai" - one of the real claims from the session this fixes - has "note" in
+ * front of it as the thing added. "says", "said" and "wrote" catch the
+ * reported-speech reading without costing that.
+ */
+const OTHER_SUBJECT =
+  /\b(?:you|your|u|tu|tune|tumne|tum|aap|aapne|usne|unhone|says|said|wrote)\b/i;
+
+/**
  * Whether an answer claims to have written something.
  *
  * A detector, not a rewriter. What to say instead depends on what was asked,
  * and the caller is the only thing that knows whether a write path exists yet.
+ *
+ * A match is discarded when its own clause names a different subject. Clause
+ * and not sentence, because a full stop resets who is being talked about, and
+ * clause-wide rather than a fixed window because a subject can sit any distance
+ * from its verb. The cost is a missed claim in "you asked me to, so I added
+ * it", which is the safe direction to be wrong in: a missed claim leaves one
+ * false sentence, while a false positive destroys a correct answer and replaces
+ * it with a refusal.
  */
 export function claimedWrite(answer: string): boolean {
-  return WRITE_CLAIMS.some((re) => re.test(answer));
+  for (const re of WRITE_CLAIMS) {
+    // `re` carries no /g, so exec is stateless and needs no lastIndex reset.
+    const found = re.exec(answer);
+    if (!found) continue;
+    const clause = answer.slice(0, found.index).split(/[.!?]\s+/).pop() ?? "";
+    if (OTHER_SUBJECT.test(clause)) continue;
+    return true;
+  }
+  return false;
 }
 
 /**

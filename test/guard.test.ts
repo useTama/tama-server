@@ -211,3 +211,73 @@ test("a bare filename that is only a suffix of a real path is still unsupported"
   const { stripped } = stripUnsupportedCitations("as in (b.md)", ["Work/ab.md"]);
   expect(stripped).toEqual(["b.md"]);
 });
+
+// The patterns can only anchor on what sits immediately before the verb, and a
+// sentence puts its subject further away. Each of these is the owner being told
+// what they themselves did, and each was replaced with a refusal to write.
+test("a report about what someone else did is not a claimed write", () => {
+  for (const answer of [
+    "the draft is done, it's in your inbox",
+    "you saved to your inbox on the 8th",
+    "tumne add kar diya tha pichle hafte",
+    "tune note likh diya tha us din",
+    "your note says: I added the tote bag",
+    'you wrote "I have saved the draft" on monday',
+    "usne add kar liya tha",
+    "aapne likh diya hai already",
+  ]) {
+    expect(claimedWrite(answer)).toBe(false);
+  }
+});
+
+// Hindi puts the object before the verb, so "note add kar diya hai" has "note"
+// in front of it as the thing added. Keeping "note" in the subject set made
+// this real claim from the session invisible.
+test("the real claims from the session are all still caught", () => {
+  for (const answer of [
+    "note add kar diya hai tama ke build plan mein",
+    "ye paanch aur add kar liya iict print mein",
+    "remind kar diya hai, application list mein add kar lena",
+    "now.md aur build plan dono mein note add kar diya hai",
+    "added it to your notes",
+    "Done. Added it to your backlog",
+    "reminder set for tomorrow",
+  ]) {
+    expect(claimedWrite(answer)).toBe(true);
+  }
+});
+
+// Verbs that read like a write and have an ordinary non-write meaning. Both of
+// these were being replaced with a refusal to write.
+test("a verb with a non-write meaning is not a claimed write", () => {
+  expect(claimedWrite("there are three items i noted in that file")).toBe(false);
+  expect(claimedWrite("i set the gain to 60 after the clipping")).toBe(false);
+  // "set" is still a write in the one place it is unambiguous.
+  expect(claimedWrite("I set a reminder for tomorrow")).toBe(true);
+});
+
+// The "is X done" question is the most ordinary thing a note server is asked,
+// and the answer to it was being discarded.
+test("answering whether something is done is not a claimed write", () => {
+  for (const answer of [
+    "the migration is done, it's in your notes from friday",
+    "that one is done, it's on the list from last week",
+    "yes, that's done. it's in your build plan",
+    "that was added to your inbox last week",
+    "the task is marked done, it's on the friday list",
+  ]) {
+    expect(claimedWrite(answer)).toBe(false);
+  }
+});
+
+// The vault is dictated speech-to-text, written by the owner in the first
+// person, so a verbatim recall quote is the natural answer to "what did i say".
+test("quoting the owner's own first-person note is not a claimed write", () => {
+  for (const answer of [
+    'on 3 june you wrote "i logged 92kg on the deadlift"',
+    "your note reads: i added the new tyres to the service list",
+    'Gym.md says: "i logged 92kg x 3"',
+  ]) {
+    expect(claimedWrite(answer)).toBe(false);
+  }
+});

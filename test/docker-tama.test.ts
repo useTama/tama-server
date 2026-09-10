@@ -147,3 +147,30 @@ test("the certificate probe pins the domain to loopback", () => {
   // proxy to tama, which is what this script is actually responsible for.
   expect(shellFunction("cert_code")).toContain("--resolve");
 });
+
+test("optional services are opt-in, not built into every command", () => {
+  // docker-compose.yml puts the WhatsApp bridge behind `profiles:` so an
+  // install that does not want it does not run it. The wrapper used to pass
+  // `--profile whatsapp-webjs` on every single command, which meant every
+  // install ran it regardless.
+  //
+  // The cost is not abstract: clients/whatsapp-webjs/Dockerfile installs
+  // Chromium, because whatsapp-web.js drives a real browser. An install that
+  // never touched WhatsApp was building a browser on every restart and keeping
+  // one resident.
+  expect(wrapper).toContain("compose() { docker compose \"$@\"; }");
+  expect(wrapper, "compose() must not hardcode a profile").not.toMatch(/compose\(\) \{ docker compose --profile/);
+
+  // The hazard the old comment named is real - a service missing from the
+  // loaded model is an orphan Compose will stop - so an existing deployment
+  // has to keep what it already runs.
+  const fn = shellFunction("ensure_profiles");
+  expect(fn).toContain("COMPOSE_PROFILES");
+  // Derived from configuration AND from what is already running, so a bridge
+  // set up through .env rather than the wizard is not orphaned either.
+  expect(fn).toContain("config/whatsapp-bridge.json");
+  expect(fn).toContain("docker ps -aq --filter name=whatsapp-webjs");
+  // Written only when there is something to carry: an install with neither
+  // gets no line, and self-heals if WhatsApp is configured later.
+  expect(fn).toContain('if [ -n "$want" ]');
+});

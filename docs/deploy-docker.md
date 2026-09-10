@@ -107,8 +107,14 @@ tama help
 ```
 
 Then `tama setup`, `tama settings`, `tama restart`, `tama logs`, `tama ask "..."` work
-from any directory. It always passes `--profile whatsapp-webjs`, which is the single
-easiest thing to forget and the one that stops the WhatsApp bridge as an orphan.
+from any directory.
+
+Optional services — the WhatsApp bridge, local whisper — are opt-in, and which ones this
+deployment runs is recorded as `COMPOSE_PROFILES` in `.env`. Compose reads that from the
+project directory, so the wrapper, the wizard and a `docker compose` you type yourself all
+agree without anyone having to remember a flag. If you never configure WhatsApp you never
+build its image, which matters more than it sounds: that image carries a full Chromium,
+because whatsapp-web.js drives a real WhatsApp Web page.
 
 ---
 
@@ -237,8 +243,9 @@ Model size is the `MODEL` build arg on the `whisper` service:
 The model is baked into the image deliberately, so a restart never re-downloads 500 MB.
 Changing it means `docker compose --profile local-stt build whisper` again.
 
-Remember to keep `--profile local-stt` on every later `docker compose` command, or Compose
-treats the whisper container as an orphan and stops it.
+Add `local-stt` to `COMPOSE_PROFILES` in `.env` rather than passing `--profile` each time.
+A service missing from the loaded model is an orphan Compose will stop, and `.env` is the
+one place that cannot be forgotten on the next command.
 
 ---
 

@@ -31,10 +31,56 @@ done
 TAMA_DIR=${TAMA_DIR:-$(cd "$(dirname "$self")/.." && pwd)}
 cd "$TAMA_DIR"
 
-# Every command that touches the bridge needs its profile, or Compose treats the
-# container as an orphan and stops it. Getting that wrong is the single most
-# common way to break a working install, so the wrapper always passes it.
-compose() { docker compose --profile whatsapp-webjs "$@"; }
+# Which optional services this deployment actually runs.
+#
+# docker-compose.yml puts the WhatsApp bridge and local whisper behind
+# `profiles:` precisely so an install that wants neither pays for neither. This
+# wrapper used to defeat that by hardcoding `--profile whatsapp-webjs` on every
+# command, so every install ran the bridge whether or not WhatsApp had ever been
+# configured.
+#
+# That is not a small tax. clients/whatsapp-webjs/Dockerfile installs Chromium,
+# because whatsapp-web.js drives a real WhatsApp Web page - so an install that
+# has never touched WhatsApp was building a browser on every `tama restart` and
+# keeping one resident for ever.
+#
+# The profile list lives in COMPOSE_PROFILES in `.env` rather than as a flag
+# here, for the same reason COMPOSE_FILE does: Compose reads it from the project
+# directory, so `wizard()` and a `docker compose` typed by hand out of the docs
+# get it too, and none of those call sites has to know.
+#
+# The comment this replaces was right about the hazard - a profile the model
+# does not include is an orphan Compose will stop - which is why the migration
+# below exists rather than just deleting the flag.
+compose() { docker compose "$@"; }
+
+# Carry an existing bridge across the change that made it optional.
+#
+# Runs once: if `.env` already names the profiles, nothing here touches it. If
+# it does not, a deployment that has a bridge - configured, or merely already
+# built - keeps it. A deployment with neither gets nothing, which is the whole
+# point.
+ensure_profiles() {
+  [ -f .env ] || touch .env
+  grep -q '^COMPOSE_PROFILES=' .env && return 0
+  want=""
+  if [ -f config/whatsapp-bridge.json ] \
+     || [ -n "$(docker ps -aq --filter name=whatsapp-webjs 2>/dev/null)" ]; then
+    want="whatsapp-webjs"
+  fi
+  # Local whisper the same way: it is opt-in in the compose file and an install
+  # using a hosted transcriber should not be running a model server.
+  if [ -n "$(docker ps -aq --filter name=whisper 2>/dev/null)" ]; then
+    want="${want:+$want,}local-stt"
+  fi
+  if [ -n "$want" ]; then
+    echo "COMPOSE_PROFILES=$want" >> .env
+    echo "config: recorded COMPOSE_PROFILES=$want in .env, from what this deployment already runs." >&2
+    echo "  Optional services are opt-in now. Edit that line to drop one." >&2
+  fi
+  return 0
+}
+ensure_profiles
 
 # ---- public deployment ----------------------------------------------------
 #

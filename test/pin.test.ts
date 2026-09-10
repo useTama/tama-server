@@ -221,3 +221,43 @@ test("cutting a multi-byte pin does not leave half a character", async () => {
   const last = pins.at(-1)!;
   expect(last.text).not.toContain("�");
 });
+
+// The first numbers were a guess and the guess was wrong. The vault this was
+// built for has a 43KB "what is live now" file, so a 32KB per-note cap cut a
+// quarter of it, and what fell off the end was three whole streams and the
+// loose ends. The owner would have been told about the truncation and still had
+// a third of their open items missing from every answer.
+test("a realistic conventions file and now file both fit whole", async () => {
+  const conventions = "x".repeat(14 * 1024);
+  const state = "y".repeat(44 * 1024);
+
+  const pins = await loadPinnedNotes(
+    reader({ "CLAUDE.md": conventions, "Now.md": state }),
+    { conventions: ["CLAUDE.md"], state: ["Now.md"] },
+  );
+
+  expect(pins).toHaveLength(2);
+  expect(pins.every((p) => !p.truncated)).toBe(true);
+  expect(pins[1]!.text.length).toBe(state.length);
+});
+
+// A pin is input paid for on every single question, and that is the one thing
+// about this feature an owner cannot see.
+test("the pinned total and its rough token cost are reported", async () => {
+  const { said, notice } = notices();
+  await loadPinnedNotes(
+    reader({ "CLAUDE.md": "x".repeat(20 * 1024) }),
+    { conventions: ["CLAUDE.md"] },
+    undefined,
+    notice,
+  );
+
+  const line = said.find((s) => s.startsWith("pinned "));
+  expect(line).toBe("pinned 20KB across 1 note, roughly 5k tokens on every question");
+});
+
+test("nothing is reported when nothing was pinned", async () => {
+  const { said, notice } = notices();
+  await loadPinnedNotes(reader({}), { conventions: ["Gone.md"] }, undefined, notice);
+  expect(said.some((s) => s.startsWith("pinned "))).toBe(false);
+});

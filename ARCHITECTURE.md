@@ -176,7 +176,7 @@ Three properties make this safe rather than a hole:
    it names, so pinning one to a narrow audience discloses the shape of the vault to it. If
    that matters, do not pin a conventions file to a scoped audience, or keep a smaller one for
    them. A filename alone discloses, which is why `NO_CITE_RULES` exists.
-3. **A pin is bounded and loud.** 8 notes, 32KB each, 64KB total, read through `Vault.readNote`
+3. **A pin is bounded and loud.** 8 notes, 64KB each, 128KB total, read through `Vault.readNote`
    so containment stays in the adapter that owns it. Anything skipped, missing or cut is logged
    once per process, because a pin that silently does nothing is worse than no pin: the owner
    reasons about every answer as though the file were being read.

@@ -306,8 +306,10 @@ change the model's instructions. Each path is checked against the requesting tok
 audience is never shown a pin its view excludes. That check is on the path and not the contents:
 a conventions file a scoped view does admit will still name whatever folders it names, so do not
 pin one to a scoped audience unless you are content for it to see the shape of the vault.
-Bounded at 8 notes, 32KB each and 64KB in total, read on every question; anything missing,
-hidden, oversized or skipped is logged once per process. Omit the block to pin nothing, which is
+Bounded at 8 notes, 64KB each and 128KB in total, read on every question; anything missing,
+hidden, oversized or skipped is logged once per process, along with the total pinned size and
+roughly what it costs in tokens per question, because that is the one thing about pinning an
+owner cannot otherwise see. Omit the block to pin nothing, which is
 how this behaved before pinning existed.
 
 A greeting is not given the pins either, since answering "hi" with the whole of a "what is live

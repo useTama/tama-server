@@ -85,7 +85,7 @@
     "             about the present.",
     "",
     "Both are read as untrusted note text, exactly like an excerpt, and neither can",
-    "change the model's instructions. 8 notes maximum, 32KB each, 64KB in total,",
+    "change the model's instructions. 8 notes maximum, 64KB each, 128KB in total,",
     "and anything skipped or cut is logged once. Omit the whole block to pin",
     "nothing, which is how this worked before pinning existed."
   ],

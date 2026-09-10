@@ -84,17 +84,24 @@ export interface PinReader {
  * Caps, because a pin is paid for on every question rather than on the ones
  * that match it.
  *
- * 32 KiB per note takes a real conventions file whole. A large "what is live
- * now" file will be cut, which is why truncation is reported rather than
- * hidden: a pin silently halved reads to the owner as a model that ignored
- * half their instructions.
+ * Sized against a real vault rather than a guess, which is what the first
+ * numbers were. 32 KiB per note looked generous and was not: the vault this
+ * was built for has a 43 KiB "what is live now" file, so the cap cut a quarter
+ * of it, and what fell off the end was three whole streams, the loose ends and
+ * the daily rhythm. The owner would have been told about the truncation and
+ * still had a third of their open items silently missing from every answer.
  *
- * The total is the number that actually protects the bill. Eight notes at the
- * per-note cap would be 256 KiB of input on every message, so the budget is
- * spent in order and the overflow is dropped loudly.
+ * A file that says what someone is doing right now is long because their life
+ * is. That is not an abuse to be bounded tightly, it is the payload. 64 KiB
+ * takes that file whole with room to grow.
+ *
+ * The total is the number that actually protects the bill, and it is what to
+ * lower if the cost matters more than the coverage. Eight notes at the per-note
+ * cap would be 512 KiB on every message, so the budget is spent in role order
+ * and the overflow is dropped loudly.
  */
-export const PIN_MAX_BYTES = 32 * 1024;
-export const PIN_MAX_TOTAL_BYTES = 64 * 1024;
+export const PIN_MAX_BYTES = 64 * 1024;
+export const PIN_MAX_TOTAL_BYTES = 128 * 1024;
 export const PIN_MAX_NOTES = 8;
 
 /** Conventions before state: structure, then what is happening inside it. */
@@ -222,6 +229,17 @@ export async function loadPinnedNotes(
       }
       out.push({ role, path: relPath, text, truncated });
     }
+  }
+
+  // Said once, because a pin is input paid for on every single question and
+  // that is the one thing about this feature an owner cannot see. Roughly four
+  // characters to a token is close enough to judge a bill by, and being wrong
+  // about it in either direction is better than leaving them to guess.
+  if (out.length > 0) {
+    notice(
+      `pinned ${Math.round(spent / 1024)}KB across ${out.length} note${out.length === 1 ? "" : "s"}, `
+        + `roughly ${Math.round(spent / 4 / 1000)}k tokens on every question`,
+    );
   }
 
   return out;

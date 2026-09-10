@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import {
-  CANNOT_WRITE, citedPaths, claimedWrite, stripUnsupportedCitations, unsupportedCitations,
+  CANNOT_WRITE, NOTHING_SOLID, citedPaths, claimedWrite, stripUnsupportedCitations,
+  unsupportedCitations,
 } from "../src/guard.ts";
 
 const SHOWN = ["Work/latency-investigation.md", "Inbox/2025-01-08-1412-mic-gain.md"];
@@ -76,6 +77,21 @@ test("prose inside brackets is not mistaken for a citation group", () => {
   expect(answer).toContain("you wrote that in");
   expect(answer).toContain("remember");
   expect(answer).not.toContain("Made/up.md");
+});
+
+// An empty string is worse than a stripped one: a WhatsApp send is refused for
+// an empty body, and /ask would return a successful response with no answer.
+test("an answer that was nothing but an invented citation says so", () => {
+  const { answer, stripped } = stripUnsupportedCitations("(Nope.md)", SHOWN);
+  expect(answer).toBe(NOTHING_SOLID);
+  expect(stripped).toEqual(["Nope.md"]);
+});
+
+test("a bracket the model never closed does not survive as a stray", () => {
+  // The group pass needs both brackets, so this falls to the second pass and
+  // used to leave "see ( and more".
+  const { answer } = stripUnsupportedCitations("see (Nope.md and more", SHOWN);
+  expect(answer).toBe("see and more");
 });
 
 test("newlines survive, because an answer that used them meant to", () => {

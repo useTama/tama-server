@@ -122,14 +122,35 @@ export function stripUnsupportedCitations(
   // Tidy what removal left behind. Spaces and tabs only: collapsing newlines
   // would reflow an answer that deliberately used them.
   out = out
+    .replace(/\(\s*\)/g, "")
+    // An opening bracket the model never closed. The group pass needs both to
+    // fire, so "see (Bad.md and more" fell through to the second pass and was
+    // left as "see ( and more". A space directly after "(" is not something
+    // prose does, so this is safe to take.
+    .replace(/\((?=[ \t]|$)/gm, "")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+([,.;:!?])/g, "$1")
-    .replace(/\(\s*\)/g, "")
     .replace(/[ \t]+$/gm, "")
     .trim();
 
+  // An answer that was nothing but a fabricated citation strips to nothing, and
+  // an empty string is worse than a stripped one: a WhatsApp send is refused
+  // for an empty body, and `/ask` would return a successful response with no
+  // answer in it. So say the honest thing instead.
+  if (!/[\p{L}\p{N}]/u.test(out)) return { answer: NOTHING_SOLID, stripped: [...bad] };
+
   return { answer: out, stripped: [...bad] };
 }
+
+/**
+ * What is left when every claim in an answer rested on an invented source.
+ *
+ * Short, and it does not narrate the machinery: the reader cannot see a
+ * citation being removed and does not need to hear about one. No closing full
+ * stop, matching `CHAT_RULES`, because this lands in a chat more often than in
+ * a terminal.
+ */
+export const NOTHING_SOLID = "I do not have anything solid on that";
 
 /**
  * Phrases that claim a write the ask path cannot perform.

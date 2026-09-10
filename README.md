@@ -32,7 +32,11 @@ The installer builds from source — it needs `git` and [bun](https://bun.sh) �
 `tama-server` in `~/.local/bin`. Set `PREFIX` to put it elsewhere; if that directory is not on
 your `PATH` it prints the line to add.
 
-Two answers in the wizard matter on this path, and both have an option that asks for nothing:
+The wizard is six pages — World, Vault, Voice, Ask, WhatsApp, Review. Nothing is written until
+the last one is confirmed, and `[Back]` (or `esc`) re-opens the page before with your answer
+still in it.
+
+Two answers in it matter on this path, and both have an option that asks for nothing:
 
 - **Speech-to-text** → *Not yet — text notes and the editor plugin, no voice.* Nothing here
   transcribes anything, so there is nothing to configure. Voice capture fails until you set it

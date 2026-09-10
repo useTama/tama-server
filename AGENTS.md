@@ -24,7 +24,11 @@ route behavior, vault handling, authentication, or the public API.
 - `src/auth.ts`, `src/idempotency.ts`: device access and retry safety.
 - `src/audio.ts`, `src/stt.ts`, `src/capture-time.ts`: capture pipeline.
 - `src/whisper.ts`: local whisper.cpp bring-up. Mechanics only; setup owns the prompts.
-- `src/ui.ts`: terminal colour. Never let colour be the only thing carrying a meaning.
+- `src/ui.ts`: terminal colour, cards and widths. Never let colour be the only thing carrying
+  a meaning, and lay out to `layoutWidth()` so nothing draws wider than the window.
+- `src/logo.ts`: the mascot as a token grid rendered with half-blocks. Edit the grid, not escapes.
+- `src/screen.ts`: the setup wizard's page frame — rail, header, footer. `src/setup.ts` owns the
+  questions; the driver at the bottom of it owns Back.
 - `src/qr.ts`, `src/pair-page.ts`: the QR encoder and the `GET /pair` page. Self-contained
   on purpose; drawing a square should not add a dependency.
 - `src/retrieval.ts`, `src/llm.ts`, `src/ask.ts`: optional question-answering path.

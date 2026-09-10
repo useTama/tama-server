@@ -15,6 +15,14 @@ export type WriteResult = { path: string; relPath: string; bytes: number; dryRun
 export type ImportResult = WriteResult & { imported: boolean };
 
 /**
+ * How much of one note `readNote` will hand back when the caller states no
+ * limit. Matches `GrepRetriever`'s own per-file cap, because the two are
+ * reading the same notes for the same model and disagreeing about how much of
+ * a note exists would be worse than either number.
+ */
+const DEFAULT_READ_BYTES = 256 * 1024;
+
+/**
  * Local folder adapter. A plain directory on local disk, git-tracked.
  *
  * Deliberately NOT a cloud-sync folder. iCloud, Dropbox and OneDrive serve
@@ -230,6 +238,86 @@ export class Vault {
       .trim();
     if (!cleaned || cleaned === "." || cleaned === "..") throw new Error("unsafe filename");
     return cleaned;
+  }
+
+  /**
+   * Read one note by its vault-relative path, or null if there is no such note.
+   *
+   * The only read on this class, and it exists because retrieval is not the
+   * only thing that needs a note any more: a pinned note (#83) is chosen by
+   * path rather than found by score, and a cited path (#84) has to be checked
+   * against the vault before an answer claiming it goes out.
+   *
+   * ## Why this cannot call confineDir
+   *
+   * `confineDir` mkdirs every missing segment as it walks, which is correct for
+   * a writer about to create a file and completely wrong here. Reading a
+   * configured path that does not exist would silently build the directories
+   * for it, so a typo in `ask.pin` would litter the vault with empty folders on
+   * every question. So the containment is done again, read-only:
+   *
+   *   1. `checkedPath` first, lexically, which is the same validator the
+   *      writers use and creates nothing. It refuses `..`, dot segments,
+   *      backslashes, control characters and anything not ending `.md`.
+   *   2. the lexical root check, before the file is opened.
+   *   3. lstat, refusing a symlink outright rather than resolving it. Same rule
+   *      `GrepRetriever.collect` already applies: a read path has no business
+   *      reaching files the write path refuses to touch.
+   *   4. realpath after opening, because steps 1 to 3 cannot see that a parent
+   *      directory is itself a link out of the vault.
+   *
+   * Byte-capped for the same reason retrieval caps a file: a caller asking for
+   * one note must not be turned into an unbounded read by a stray logfile that
+   * someone named `.md`. Truncation is reported rather than hidden, because a
+   * pin silently cut in half is worse than one that says it was cut.
+   *
+   * Missing is null, not an error. A pin that names a note the owner has not
+   * written yet is a configuration to grow into, not a reason to fail a
+   * question.
+   */
+  async readNote(
+    relPath: string,
+    maxBytes = DEFAULT_READ_BYTES,
+  ): Promise<{ text: string; bytes: number; truncated: boolean } | null> {
+    const { dir: relDir, name } = this.checkedPath(relPath);
+
+    const realRoot = await realpath(this.root);
+    const lexicalDir = resolve(realRoot, relDir);
+    if (lexicalDir !== realRoot && !lexicalDir.startsWith(realRoot + sep)) {
+      throw new Error(`path escapes vault root: ${relPath}`);
+    }
+    const abs = join(lexicalDir, name);
+
+    try {
+      const st = await lstat(abs);
+      if (st.isSymbolicLink()) throw new Error(`refusing to read a symlinked note: ${relPath}`);
+      if (!st.isFile()) return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+
+    const fh = await open(abs, "r");
+    try {
+      // After the open, so a link at an intermediate segment is caught even
+      // though the lexical pass and the lstat above both looked clean.
+      const realFile = await realpath(abs);
+      if (!realFile.startsWith(realRoot + sep)) {
+        throw new Error(`path escapes vault root: ${relPath}`);
+      }
+      const { size } = await fh.stat();
+      const want = Math.min(size, maxBytes);
+      if (want <= 0) return { text: "", bytes: 0, truncated: false };
+      const buf = Buffer.allocUnsafe(want);
+      const { bytesRead } = await fh.read(buf, 0, want, 0);
+      return {
+        text: buf.subarray(0, bytesRead).toString("utf8"),
+        bytes: bytesRead,
+        truncated: size > want,
+      };
+    } finally {
+      await fh.close();
+    }
   }
 
   async capture(input: CaptureInput): Promise<WriteResult> {

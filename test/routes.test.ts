@@ -9,6 +9,7 @@ import { Vault } from "../src/vault.ts";
 import { GrepRetriever } from "../src/retrieval.ts";
 import { mintToken } from "../src/auth.ts";
 import { createRoutes, type RouteDeps } from "../src/routes.ts";
+import { AuthThrottle } from "../src/auth-throttle.ts";
 import { whatsappSource } from "../src/whatsapp.ts";
 import { CaptureError } from "../src/capture-error.ts";
 import type { Llm } from "../src/llm.ts";
@@ -107,15 +108,31 @@ const req = (path: string, init: RequestInit & { token?: string } = {}) => {
   });
 };
 
-test("health needs no token and does not leak the vault path", async () => {
+test("health needs no token, and says less to someone who has none", async () => {
   const f = await serverFixture();
   try {
-    const body = await (await f.routes.handle(req("/health"))).json() as any;
-    expect(body.ok).toBe(true);
-    expect(body.mcp.tools).toBe(5);
-    // #10's fix, still holding: an unauthenticated route must not disclose
-    // where someone's notes live.
-    expect(JSON.stringify(body)).not.toContain("/vault");
+    const anon = await (await f.routes.handle(req("/health"))).json() as any;
+    // Liveness and the version contract stay open. `minClient` especially: it
+    // is how a client that is too old finds out it is too old, which it has to
+    // be able to do before it is trusted with anything.
+    expect(anon.ok).toBe(true);
+    expect(anon.version).toBeTruthy();
+    expect(anon.minClient).toBeTruthy();
+    // How this box is configured is not liveness. Fine for someone on your own
+    // tailnet, more than a stranger on port 443 needs.
+    expect(anon.mcp).toBeUndefined();
+    expect(anon.ask).toBeUndefined();
+    expect(anon.whatsapp).toBeUndefined();
+    expect(anon.stt).toBeUndefined();
+
+    const known = await (await f.routes.handle(req("/health", { token: f.ownerToken }))).json() as any;
+    expect(known.mcp.tools).toBe(5);
+    expect(known.ask.available).toBe(true);
+
+    // #10's fix, still holding for both: a health route must not disclose where
+    // someone's notes live.
+    expect(JSON.stringify(anon)).not.toContain("/vault");
+    expect(JSON.stringify(known)).not.toContain("/vault");
   } finally {
     await f.cleanup();
   }
@@ -127,6 +144,53 @@ test("an unknown token is refused everywhere that matters", async () => {
     for (const path of ["/capture", "/ask", "/notes", "/sessions", "/mcp"]) {
       const res = await f.routes.handle(req(path, { method: "POST", token: "nope", body: "{}" }));
       expect(res.status).toBe(401);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a caller who keeps guessing is made to wait; a valid token never is", async () => {
+  let now = 1_000_000;
+  const throttle = new AuthThrottle(() => now);
+  const f = await serverFixture({}, { throttle });
+  try {
+    const guess = () => f.routes.handle(req("/ask", { method: "POST", token: "nope", body: "{}" }));
+
+    // Nine wrong tokens still get the honest answer. A client with a stale
+    // token is far more common than an attacker, and it retries on its own.
+    for (let i = 0; i < 9; i++) expect((await guess()).status).toBe(401);
+
+    // The tenth is the one that costs something, and it says for how long
+    // rather than leaving the caller to guess that too.
+    const locked = await guess();
+    expect(locked.status).toBe(429);
+    expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+
+    // Held while locked, and the lock covers every route behind the bearer
+    // check rather than only the one that tripped it.
+    expect((await f.routes.handle(req("/capture", { method: "POST", token: "nope", body: "{}" }))).status).toBe(429);
+
+    // /health is deliberately outside it: an uptime check must not be
+    // collateral damage from somebody else guessing at the same address.
+    expect((await f.routes.handle(req("/health"))).status).toBe(200);
+
+    now += 31_000;
+    expect((await guess()).status).toBe(401);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("throttling does not touch a client that authenticates", async () => {
+  // The loopback and tailnet case, which is every install today: nothing here
+  // may change for a caller whose token works.
+  let now = 1_000_000;
+  const f = await serverFixture({}, { throttle: new AuthThrottle(() => now) });
+  try {
+    for (let i = 0; i < 30; i++) {
+      const res = await f.routes.handle(req("/health", { token: f.ownerToken }));
+      expect(res.status).toBe(200);
     }
   } finally {
     await f.cleanup();

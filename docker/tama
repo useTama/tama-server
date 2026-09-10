@@ -151,7 +151,17 @@ case $command in
     fi
     ;;
   logs)     compose logs -f --tail 100 "${@:-tama}" ;;
-  health)   curl -s localhost:8080/health ;;
+  # With the admin token, because /health tells an unauthenticated caller only
+  # that the server is alive. The operator asking from the box it runs on wants
+  # the half that says whether whisper is up and whether ask is configured.
+  health)
+    admin=$(config_value adminToken)
+    if [ -n "$admin" ]; then
+      curl -s -H "Authorization: Bearer $admin" localhost:8080/health
+    else
+      curl -s localhost:8080/health
+    fi
+    ;;
 
   # Everything a client needs, in one command, as a line to paste.
   #

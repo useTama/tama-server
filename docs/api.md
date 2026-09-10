@@ -4,9 +4,18 @@ All routes are on `localhost:8080` by default. `GET /health` is open, `POST /pai
 authenticates with the pairing code itself, and the optional WhatsApp webhook uses Meta's
 verification-token/HMAC protocol. Everything else needs a bearer token.
 
+`/health` answers everyone with `{ok, version, minClient}` — enough for an uptime check, and
+enough for a client to discover it is too old before it has been trusted with anything. The
+rest of the body, which describes how this box is configured, needs a token.
+
+Repeatedly presenting a credential that does not work earns a `429` with a `Retry-After`,
+per source address, on every route behind the bearer check. A token that works is never
+throttled, and `/health` is deliberately outside it so an uptime check is not collateral
+damage from somebody else guessing at the same address.
+
 | Route | Auth | Does |
 |---|---|---|
-| `GET /health` | none | version, min client version, whisper status |
+| `GET /health` | none, or a token for more | liveness and the version contract; with a token, how this box is configured |
 | `GET /pair` | admin | a page showing a QR code a phone can scan |
 | `POST /pair` | the code itself | redeem a pairing code for a device token |
 | `POST /capture` | device token | audio or text in, note path out |

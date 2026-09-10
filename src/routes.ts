@@ -40,6 +40,7 @@ import { DEFAULT_MAX_OUTPUT_TOKENS, spendLabel, type Llm } from "./llm.ts";
 import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
 import { resolveView, visible, type View } from "./views.ts";
 import { may, resolveGrant, writeRefusal, type Grant } from "./grants.ts";
+import { AuthThrottle } from "./auth-throttle.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { summariseSession } from "./session-summary.ts";
 import { appendSession, sessionPath } from "./session.ts";
@@ -70,6 +71,8 @@ export type RouteDeps = {
   notifier: Notifier;
   /** Called after a vault write, so the caller can schedule a commit. */
   onWrite: () => void;
+  /** Injectable so a test can drive the clock instead of waiting out a lockout. */
+  throttle?: AuthThrottle;
   /**
    * Graph API transport for the WhatsApp integration. `WhatsAppIntegration`
    * already takes one; this threads it through so the dependencies built here -
@@ -88,9 +91,15 @@ export type Routes = {
 export function createRoutes(deps: RouteDeps): Routes {
   const { config, db, vault, stt, retriever, llm, notifier, onWrite, whatsappFetch } = deps;
   let inflight = 0;
+  // Per server instance, not per module: two servers in one test process must
+  // not lock each other out.
+  const throttle = deps.throttle ?? new AuthThrottle();
 
-const json = (b: unknown, s = 200) =>
-  new Response(JSON.stringify(b, null, 2) + "\n", { status: s, headers: { "content-type": "application/json" } });
+const json = (b: unknown, s = 200, extraHeaders: Record<string, string> = {}) =>
+  new Response(JSON.stringify(b, null, 2) + "\n", {
+    status: s,
+    headers: { "content-type": "application/json", ...extraHeaders },
+  });
 
 // ---------------------------------------------------------------- capture
 
@@ -433,10 +442,25 @@ const whatsapp = config.whatsapp
     const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer /i, "");
 
     if (url.pathname === "/health") {
+      /**
+       * Two bodies, because two callers want different things.
+       *
+       * Unauthenticated gets liveness and the version contract. `minClient` in
+       * particular has to be readable by a client that has not been trusted
+       * yet - it is how a too-old client learns it is too old - and a version
+       * string tells a stranger nothing they could not get from the repo.
+       *
+       * Everything else describes how this box is configured: whether ask is
+       * on and against which provider, whether WhatsApp is wired up, how many
+       * MCP tools there are. Fine to hand someone on your own tailnet, more
+       * than a stranger on port 443 needs, and free to withhold.
+       */
+      const base = { ok: true, version: VERSION, minClient: MIN_CLIENT };
+      const known =
+        adminTokenOk(bearer, config.server.adminToken) || Boolean(bearer && verifyToken(db, bearer));
+      if (!known) return json(base);
       return json({
-        ok: true,
-        version: VERSION,
-        minClient: MIN_CLIENT,
+        ...base,
         stt: await stt.health(),
         notify: notifier.name,
         // Advertised so a client can hide or show an ask affordance instead of
@@ -512,9 +536,38 @@ const whatsapp = config.whatsapp
       return json({ ok: true, id: r.id, token: r.token, note: "store this now, it is not shown again" });
     }
 
+    /**
+     * Everything below needs a credential, so this is where a wrong one starts
+     * costing something. Placed after /health and the WhatsApp webhook: Meta
+     * authenticates with an HMAC rather than a bearer, and throttling its
+     * retries on our counter would drop real messages.
+     */
+    const caller = requestIP?.(req) ?? "unknown";
+    const locked = throttle.check(caller);
+    if (locked.locked) {
+      return json({ error: "too many failed credentials, try later" }, 429, {
+        "retry-after": String(locked.retryAfterSec),
+      });
+    }
+
     const isAdmin = adminTokenOk(bearer, config.server.adminToken);
     const device: CaptureDevice | null = isAdmin ? { id: "admin", deviceName: "admin" } : verifyToken(db, bearer);
-    if (!device) return json({ error: "unauthorized" }, 401);
+    if (!device) {
+      const after = throttle.fail(caller);
+      // One line per lock rather than per attempt. A log with ten thousand
+      // failures in it is a log where a real one cannot be seen.
+      if (throttle.justLocked(locked, after)) {
+        console.error(`${orange("auth")} locked ${caller} for ${after.retryAfterSec}s after repeated bad credentials`);
+        // The attempt that crossed the line is itself the first 429, rather
+        // than a 401 that invites one more try before the door shuts. Both are
+        // true of this request; only one of them tells the caller what to do.
+        return json({ error: "too many failed credentials, try later" }, 429, {
+          "retry-after": String(after.retryAfterSec),
+        });
+      }
+      return json({ error: "unauthorized" }, 401);
+    }
+    throttle.succeed(caller);
 
     /**
      * What this caller may do, resolved once for every route below.

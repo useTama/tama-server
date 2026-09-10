@@ -822,10 +822,22 @@ export async function runSetup(argv: string[] = Bun.argv, scope: SetupScope = {}
     // The welcome page. The preflight warnings live here rather than scrolling
     // past behind the first question: a missing ffmpeg is the reason voice will
     // fail later, and it has to be read before it is scrolled away.
+    // Named from the flags rather than written out, because the sentence has to
+    // stay true of whatever the caller scoped out. A scoped run that lists a
+    // block it is about to walk anyway is the same lie the settings menu was
+    // telling: it reads as "you will not be asked", and then it asks.
+    const untouched = [
+      ...(walkStt ? [] : ["Transcription"]),
+      ...(walkAsk ? [] : ["Ask"]),
+      ...(walkWhatsApp ? [] : ["WhatsApp"]),
+    ];
+    const untouchedList = untouched.length > 1
+      ? `${untouched.slice(0, -1).join(", ")} and ${untouched[untouched.length - 1]}`
+      : untouched.join("");
     coverPage(
       partial ? "Change your setup" : "Welcome to Tama",
       partial
-        ? `${steps.length} pages: your world and notes folder. Transcription, Ask and WhatsApp have their own sections in settings.`
+        ? `${steps.length} pages: ${steps.map((s) => s.title).join(", ")}. ${untouchedList} ${untouched.length === 1 ? "is" : "are"} left as saved — each has its own section in settings.`
         : `${steps.length} pages. Nothing is written until the last one, and every page can be walked back to.`,
     );
     if (!Bun.which("ffmpeg")) console.log(warn(`ffmpeg is not installed; audio capture will fail until it is. ${grey(process.platform === "darwin" ? "brew install ffmpeg" : "apt install ffmpeg")}`));

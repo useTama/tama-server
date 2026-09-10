@@ -990,8 +990,14 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
       // Setup reads the saved config as its defaults, so this is a re-run and
       // not a reset. Duplicating its questions here would mean two writers for
       // one file and two places to keep in step.
-      console.log(grey("\nRunning the full wizard. Enter keeps each saved answer.\n"));
-      await runSetup(argv);
+      //
+      // Scoped to the blocks nothing above owns. Transcription and Ask each have
+      // their own section in this menu, and walking them again from here meant
+      // re-answering provider, key and model — nine or ten prompts — to change a
+      // world name. WhatsApp stays in: this menu can edit the bridge's senders
+      // and token, but choosing between the bridge and the Cloud API, and the
+      // five Meta values that second path needs, exist nowhere else.
+      await runSetup(argv, { stt: false, ask: false });
       return;
     }
     if (section === "audiences") await audiencesSection(configPath, dbPath, bridgePath, config);

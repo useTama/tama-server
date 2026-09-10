@@ -850,7 +850,6 @@ tama expose                 put this server on your tailnet, no tunnel, no domai
 tama expose --public DOMAIN  put it on the public internet, with TLS
 tama expose status          how this server is currently reachable
 tama expose --off           stop serving, either way
-tama expose status          how it is currently reachable
 tama ask "question"         ask your notes from the terminal
 tama token NAME             mint a device token for a client (iOS, MCP, a script)
 tama session PROJECT        record what a session did; summary on stdin

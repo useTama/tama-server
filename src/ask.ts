@@ -231,6 +231,45 @@ you: third language this month. how did the last two go`,
 };
 
 /**
+ * Length is decided by the question, and this is the only place that says so.
+ *
+ * Shared between both styles because it was not, and the difference was a bug.
+ * Prose got the conditional rule; chat got "two or three sentences, one short
+ * paragraph" with no exception, and chat is the surface almost every real
+ * question arrives on. So a question that wanted a list got the first item and
+ * nothing else: "what are my todos" retrieved eight excerpts and answered with
+ * one of them, and it took four more turns to get four items that were all in
+ * the first eight.
+ */
+const LENGTH_FROM_QUESTION = `- Let the question set the length. One fact asked for is one fact
+  answered, however many notes came back. A question about a set, or about how a decision got
+  made, earns as many lines as it has parts. Never pad to look thorough, and never cut a list
+  short to look brief.`;
+
+/**
+ * A plural question is a question about all of it.
+ *
+ * Nothing said this, so nothing made the model sweep the excerpts it had. The
+ * cap was one half of the list failure; having no concept of a set was the
+ * other, and removing the cap alone would leave the model free to answer "what
+ * is left" with whatever scored highest.
+ *
+ * The completeness clause matters more than the count. Retrieval returns
+ * `maxChunks` and never reports whether more existed, so the model genuinely
+ * cannot know it has the whole set. Saying the number it found is honest;
+ * implying that number is all of them is the same confident-and-wrong failure
+ * as a stale answer.
+ */
+const ENUMERATION = `- A question about a set is a question about all of it. "What are my todos",
+  "what is left", "which ones", anything plural: read every excerpt you were given rather than
+  the best-matching one, and answer with all of them.
+- Say how many. A count is what makes an answer checkable, and "four things, here they are" can be
+  argued with where "here is a thing" cannot.
+- You are shown a fixed number of excerpts and never told whether there were more, so you cannot
+  know a set is complete. Give the number you found and do not imply it is all of them. Never
+  present a partial list as the whole one.`;
+
+/**
  * What changes when the answer lands in a chat app rather than a terminal.
  *
  * Three of these are surface facts, not style choices. WhatsApp renders `*` and
@@ -240,10 +279,14 @@ you: third language this month. how did the last two go`,
  */
 const CHAT_RULES = `
 This answer will be delivered as a chat message.
-- Plain text only. No markdown: no asterisks for emphasis, no backticks, no headings, no bullet
-  lists, no numbered lists. This surface shows those characters literally.
-- Two or three sentences, one short paragraph. A one-line question gets a one-line answer, however
-  many notes were available. Length comes from the question, not from the material.
+- Plain text only. No markdown: no asterisks for emphasis, no backticks, no headings, no numbered
+  lists. This surface shows those characters literally.
+- A list is fine when the answer is a list: one item per line, each starting with a dash. That is
+  newlines and a hyphen rather than markdown, and it is how a chat message carries four things
+  without becoming a paragraph. The old ban on lists here was aimed at markdown and caught the
+  plain-text form with it, which is what forced a list into one sentence.
+${LENGTH_FROM_QUESTION}
+${ENUMERATION}
 - Do not end the message with a full stop. In chat people just stop typing. Commas and question
   marks inside the line are fine, and a full stop between two sentences is fine, but the last
   character of a short reply should not be a period. Punctuating a chat message like prose is the
@@ -431,12 +474,12 @@ const JUST_TALK_RULES = `
  * truncated the long one.
  */
 const PROSE_RULES = `
-- Let the question set the length. A question whose answer is one fact gets that fact and nothing
-  else, however many notes came back. A question about what they have said on a subject, or how a
-  decision got made, earns a few sentences that join the notes together.
-- These answers are often read on a small screen or spoken aloud, so length is a cost. Never pad
-  to look thorough, never restate the question, and never close with a summary of what you just
-  said.`;
+${LENGTH_FROM_QUESTION}
+- A question about what they have said on a subject, or how a decision got made, earns a few
+  sentences that join the notes together.
+${ENUMERATION}
+- These answers are often read on a small screen or spoken aloud, so length is a cost. Never
+  restate the question, and never close with a summary of what you just said.`;
 
 export type AnswerStyle = "prose" | "chat";
 

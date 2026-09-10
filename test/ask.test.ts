@@ -259,12 +259,39 @@ test("today's date stays out of the system prompt, which has to stay cacheable",
   expect(systemPrompt()).not.toContain("Today is");
 });
 
-test("answer length comes from the question in prose too, not only in chat", () => {
+test("answer length comes from the question in both styles, not only in prose", () => {
   // "Be brief" was unconditional, so it applied equally to "when is the
-  // dentist" and "what have I said about the mic gain problem".
-  const p = systemPrompt({ style: "prose" });
-  expect(p).toContain("Let the question set the length");
-  expect(p).toContain("one fact gets that fact and nothing");
+  // dentist" and "what have I said about the mic gain problem". Chat then kept
+  // a flat two-or-three-sentence cap long after prose grew the conditional,
+  // and chat is the surface almost every real question arrives on.
+  for (const style of ["prose", "chat"] as const) {
+    const p = systemPrompt({ style });
+    expect(p).toContain("Let the question set the length");
+    expect(p).toContain("One fact asked for is one fact");
+    expect(p).not.toContain("Two or three sentences");
+  }
+});
+
+test("a plural question is told to sweep every excerpt and say how many", () => {
+  // Removing the length cap alone would leave the model free to answer "what
+  // is left" with whatever scored highest. Nothing said a set was a set.
+  for (const style of ["prose", "chat"] as const) {
+    const p = systemPrompt({ style });
+    expect(p).toContain("a question about all of it");
+    expect(p).toContain("Say how many");
+    // Retrieval never reports whether more existed, so completeness cannot be
+    // claimed. Implying it is the same confident-and-wrong failure as staleness.
+    expect(p).toContain("do not imply it is all of them");
+  }
+});
+
+test("chat may use a plain list, and still no markdown", () => {
+  const chat = systemPrompt({ style: "chat" });
+  expect(chat).toContain("Plain text only");
+  expect(chat).toContain("one item per line, each starting with a dash");
+  // The old ban was aimed at markdown and caught the plain-text form with it,
+  // which is what forced a four-item answer into one sentence.
+  expect(chat).not.toContain("no bullet\n  lists");
 });
 
 test("each claim carries its own citation, so an uncited fact is not hidden", () => {

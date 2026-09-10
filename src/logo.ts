@@ -1,58 +1,165 @@
 /**
- * The Tama cloud mascot as a truecolor pixel-art graphic (like Antigravity / Gemini CLI),
- * sampled directly from assets/icon.png with horizontally and vertically aligned cartoon eyes.
+ * The Tama mascot as terminal pixel art, traced from assets/icon.png.
  *
- * Uses 2-character square blocks with 24-bit background color and 256-color fallback.
- * Vanishes completely when colour is disabled (LEVEL === 0).
+ * Two decisions make it read as the icon rather than as an orange ball.
+ *
+ * The first is half-block characters. A terminal cell is about twice as tall as
+ * it is wide, so the obvious way to get square pixels — two spaces per pixel —
+ * throws away half the vertical resolution. `▀` with a foreground colour for
+ * its top half and a background colour for its bottom half fits two pixels in
+ * one cell, which is what buys the cloud lobes and the round pupils the logo is
+ * actually recognised by. The previous art had neither: it was a smooth blob
+ * with two black bars for eyes.
+ *
+ * The second is storing the art as a grid of tokens rather than as escape
+ * codes. The gradient is computed from a pixel's position, so a colour is
+ * defined once instead of once per pixel, and the shape stays editable: these
+ * are pictures you can read in the source and change by typing.
+ *
+ * Nothing is drawn at all when colour is off (LEVEL === 0). Colour is the whole
+ * content of a logo, and a mascot spelled in `#` would be noise in a log.
  */
 
 import { colourLevel, red } from "./ui.ts";
 
 const LEVEL = colourLevel(process.stdout);
 
-const TRUECOLOR_LOGO = [
-  "",
-  "          \u001b[48;2;253;185;102m  \u001b[0m\u001b[48;2;253;185;102m  \u001b[0m\u001b[48;2;253;178;99m  \u001b[0m\u001b[48;2;250;164;93m  \u001b[0m            ",
-  "        \u001b[48;2;250;186;103m  \u001b[0m\u001b[48;2;255;201;113m  \u001b[0m\u001b[48;2;255;177;100m  \u001b[0m\u001b[48;2;255;175;99m  \u001b[0m\u001b[48;2;255;163;93m  \u001b[0m\u001b[48;2;253;153;89m  \u001b[0m\u001b[48;2;255;149;87m  \u001b[0m\u001b[48;2;253;144;86m  \u001b[0m      ",
-  "      \u001b[48;2;253;195;108m  \u001b[0m\u001b[48;2;253;183;103m  \u001b[0m\u001b[48;2;255;182;105m  \u001b[0m\u001b[48;2;255;170;99m  \u001b[0m\u001b[48;2;255;162;94m  \u001b[0m\u001b[48;2;255;156;92m  \u001b[0m\u001b[48;2;255;153;92m  \u001b[0m\u001b[48;2;255;140;86m  \u001b[0m\u001b[48;2;255;138;85m  \u001b[0m\u001b[48;2;253;125;78m  \u001b[0m    ",
-  "    \u001b[48;2;253;193;105m  \u001b[0m\u001b[48;2;255;197;110m  \u001b[0m\u001b[48;2;255;179;103m  \u001b[0m\u001b[48;2;255;164;90m  \u001b[0m\u001b[48;2;255;155;81m  \u001b[0m\u001b[48;2;255;155;91m  \u001b[0m\u001b[48;2;255;145;84m  \u001b[0m\u001b[48;2;255;133;75m  \u001b[0m\u001b[48;2;255;129;77m  \u001b[0m\u001b[48;2;255;126;80m  \u001b[0m\u001b[48;2;255;123;80m  \u001b[0m    ",
-  "  \u001b[48;2;252;185;99m  \u001b[0m\u001b[48;2;255;188;103m  \u001b[0m\u001b[48;2;255;175;99m  \u001b[0m\u001b[48;2;255;165;92m  \u001b[0m\u001b[48;2;255;192;143m  \u001b[0m\u001b[48;2;255;214;179m  \u001b[0m\u001b[48;2;255;149;90m  \u001b[0m\u001b[48;2;255;170;126m  \u001b[0m\u001b[48;2;255;226;208m  \u001b[0m\u001b[48;2;255;163;125m  \u001b[0m\u001b[48;2;253;112;70m  \u001b[0m\u001b[48;2;254;117;80m  \u001b[0m\u001b[48;2;244;102;69m  \u001b[0m  ",
-  "  \u001b[48;2;252;177;96m  \u001b[0m\u001b[48;2;255;178;99m  \u001b[0m\u001b[48;2;255;164;89m  \u001b[0m\u001b[48;2;255;183;129m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;255;205;179m  \u001b[0m\u001b[48;2;255;237;223m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;254;121;84m  \u001b[0m\u001b[48;2;249;104;72m  \u001b[0m\u001b[48;2;255;104;73m  \u001b[0m\u001b[48;2;242;90;66m  \u001b[0m",
-  "  \u001b[48;2;253;171;92m  \u001b[0m\u001b[48;2;255;177;100m  \u001b[0m\u001b[48;2;255;153;79m  \u001b[0m\u001b[48;2;255;205;166m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;40;35;34m  \u001b[0m\u001b[48;2;253;224;210m  \u001b[0m\u001b[48;2;253;239;227m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;40;35;34m  \u001b[0m\u001b[48;2;255;125;92m  \u001b[0m\u001b[48;2;245;95;66m  \u001b[0m\u001b[48;2;248;92;68m  \u001b[0m\u001b[48;2;239;82;62m  \u001b[0m",
-  "  \u001b[48;2;251;162;89m  \u001b[0m\u001b[48;2;255;168;95m  \u001b[0m\u001b[48;2;255;148;80m  \u001b[0m\u001b[48;2;255;180;130m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;40;35;34m  \u001b[0m\u001b[48;2;255;177;148m  \u001b[0m\u001b[48;2;255;166;137m  \u001b[0m\u001b[48;2;255;255;255m  \u001b[0m\u001b[48;2;40;35;34m  \u001b[0m\u001b[48;2;248;94;64m  \u001b[0m\u001b[48;2;243;92;68m  \u001b[0m\u001b[48;2;245;85;65m  \u001b[0m\u001b[48;2;236;75;60m  \u001b[0m",
-  "  \u001b[48;2;252;157;85m  \u001b[0m\u001b[48;2;255;155;87m  \u001b[0m\u001b[48;2;255;147;86m  \u001b[0m\u001b[48;2;255;135;77m  \u001b[0m\u001b[48;2;255;175;136m  \u001b[0m\u001b[48;2;255;188;158m  \u001b[0m\u001b[48;2;255;127;86m  \u001b[0m\u001b[48;2;252;107;70m  \u001b[0m\u001b[48;2;255;118;86m  \u001b[0m\u001b[48;2;248;96;66m  \u001b[0m\u001b[48;2;243;91;68m  \u001b[0m\u001b[48;2;241;84;64m  \u001b[0m\u001b[48;2;252;81;65m  \u001b[0m\u001b[48;2;231;70;57m  \u001b[0m",
-  "  \u001b[48;2;252;149;83m  \u001b[0m\u001b[48;2;255;150;85m  \u001b[0m\u001b[48;2;255;138;81m  \u001b[0m\u001b[48;2;255;133;82m  \u001b[0m\u001b[48;2;255;118;70m  \u001b[0m\u001b[48;2;255;109;64m  \u001b[0m\u001b[48;2;251;111;75m  \u001b[0m\u001b[48;2;249;107;75m  \u001b[0m\u001b[48;2;246;97;68m  \u001b[0m\u001b[48;2;243;92;68m  \u001b[0m\u001b[48;2;240;84;64m  \u001b[0m\u001b[48;2;246;79;64m  \u001b[0m\u001b[48;2;231;69;56m  \u001b[0m  ",
-  "    \u001b[48;2;253;141;81m  \u001b[0m\u001b[48;2;255;140;85m  \u001b[0m\u001b[48;2;255;126;78m  \u001b[0m\u001b[48;2;254;118;78m  \u001b[0m\u001b[48;2;252;113;78m  \u001b[0m\u001b[48;2;249;105;73m  \u001b[0m\u001b[48;2;246;98;69m  \u001b[0m\u001b[48;2;242;91;67m  \u001b[0m\u001b[48;2;240;84;64m  \u001b[0m\u001b[48;2;236;77;61m  \u001b[0m\u001b[48;2;246;72;60m  \u001b[0m    ",
-  "      \u001b[48;2;253;128;77m  \u001b[0m\u001b[48;2;252;115;75m  \u001b[0m\u001b[48;2;253;112;75m  \u001b[0m\u001b[48;2;247;103;70m  \u001b[0m\u001b[48;2;245;97;68m  \u001b[0m\u001b[48;2;244;90;66m  \u001b[0m\u001b[48;2;247;85;65m  \u001b[0m\u001b[48;2;236;76;61m  \u001b[0m\u001b[48;2;244;71;60m  \u001b[0m\u001b[48;2;232;61;55m  \u001b[0m    ",
-  "        \u001b[48;2;248;106;71m  \u001b[0m\u001b[48;2;255;112;76m  \u001b[0m\u001b[48;2;247;96;67m  \u001b[0m\u001b[48;2;251;91;67m  \u001b[0m\u001b[48;2;241;82;62m  \u001b[0m\u001b[48;2;236;75;60m  \u001b[0m\u001b[48;2;237;68;57m  \u001b[0m\u001b[48;2;240;63;57m  \u001b[0m      ",
-  "          \u001b[48;2;243;94;64m  \u001b[0m\u001b[48;2;248;90;65m  \u001b[0m\u001b[48;2;246;83;62m  \u001b[0m\u001b[48;2;235;76;59m  \u001b[0m            ",
-  "",
-].join("\n");
+/**
+ * `#` body, `o` eye white, `@` pupil, `.` nothing. Rows are pixels, not lines:
+ * two of them share one terminal line.
+ */
+const FULL = [
+  "..........#####..#####..........",
+  "........################........",
+  ".......##################.......",
+  "......####################......",
+  "......####################......",
+  "......####################......",
+  "...##########################...",
+  "..############################..",
+  ".##############################.",
+  ".##############################.",
+  "##########ooo######ooo##########",
+  "#########ooooo####ooooo#########",
+  "########ooooooo##ooooooo########",
+  "########oo@@ooo##ooo@@oo########",
+  "########oo@@@oo##oo@@@oo########",
+  ".#######o@@@@oo##oo@@@@o#######.",
+  ".#######o@@@@oo##oo@@@@o#######.",
+  "#########o@@oo####oo@@o#########",
+  "##########ooo######ooo##########",
+  "################################",
+  "################################",
+  "################################",
+  ".##############################.",
+  ".##############################.",
+  "..############################..",
+  "...##########################...",
+  "......####################......",
+  "......####################......",
+  "......####################......",
+  ".......##################.......",
+  "........################........",
+  "..........#####..#####..........",
+];
 
-const CUBE_LOGO = [
-  "",
-  "          \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m            ",
-  "        \u001b[48;5;215m  \u001b[0m\u001b[48;5;221m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m      ",
-  "      \u001b[48;5;221m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m    ",
-  "    \u001b[48;5;215m  \u001b[0m\u001b[48;5;221m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m    ",
-  "  \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;223m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;224m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m  ",
-  "  \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;223m  \u001b[0m\u001b[48;5;230m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m",
-  "  \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;223m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;16m  \u001b[0m\u001b[48;5;224m  \u001b[0m\u001b[48;5;230m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;16m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m",
-  "  \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;16m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;231m  \u001b[0m\u001b[48;5;16m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m",
-  "  \u001b[48;5;215m  \u001b[0m\u001b[48;5;215m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;216m  \u001b[0m\u001b[48;5;217m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;167m  \u001b[0m",
-  "  \u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;167m  \u001b[0m  ",
-  "    \u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m    ",
-  "      \u001b[48;5;209m  \u001b[0m\u001b[48;5;209m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;167m  \u001b[0m    ",
-  "        \u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m      ",
-  "          \u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m\u001b[48;5;203m  \u001b[0m            ",
-  "",
-].join("\n");
+/**
+ * The same face at half the size, for headers that share their line with text.
+ * Hand-drawn rather than downsampled: the cloud lobes and the pupil highlight
+ * turn to mush at 16 pixels, and a clean round face reads as the mascot where a
+ * blurred accurate one reads as a smudge.
+ */
+const SMALL = [
+  "....########....",
+  "..############..",
+  ".##############.",
+  "################",
+  "################",
+  "###oooo##oooo###",
+  "###oooo##oooo###",
+  "###o@@o##o@@o###",
+  "###o@@o##o@@o###",
+  "###oooo##oooo###",
+  "################",
+  "################",
+  "################",
+  ".##############.",
+  "..############..",
+  "....########....",
+];
 
-export function logo(): string {
-  if (LEVEL === 2) return TRUECOLOR_LOGO;
-  if (LEVEL === 1) return CUBE_LOGO;
-  return "";
+type Rgb = [number, number, number];
+
+// Sampled from the icon's two extremes. ui.ts's `orange` and `red` are the
+// text-weight versions of the same pair; these are the picture's own, because
+// the art is what the gradient is for.
+const GRADIENT_TOP: Rgb = [255, 190, 104];
+const GRADIENT_BOTTOM: Rgb = [232, 62, 56];
+const EYE_WHITE: Rgb = [255, 250, 244];
+const PUPIL: Rgb = [58, 50, 48];
+
+/** Nearest index in the 6×6×6 cube, for terminals without truecolour. */
+function cube([r, g, b]: Rgb): number {
+  const q = (c: number) => Math.round((c / 255) * 5);
+  return 16 + 36 * q(r) + 6 * q(g) + q(b);
 }
 
-export const T = LEVEL === 0 ? "" : ` ${red("▐")} `;
+function colourAt(grid: string[], x: number, y: number): Rgb | undefined {
+  const token = grid[y]?.[x];
+  if (token === undefined || token === ".") return undefined;
+  if (token === "o") return EYE_WHITE;
+  if (token === "@") return PUPIL;
+  // The icon's gradient runs corner to corner, so the mix is the average of how
+  // far across and how far down the pixel is.
+  const width = grid[0]!.length - 1;
+  const height = grid.length - 1;
+  const t = (x / width + y / height) / 2;
+  return GRADIENT_TOP.map((c, i) => Math.round(c + (GRADIENT_BOTTOM[i]! - c) * t)) as Rgb;
+}
 
+/**
+ * One character per pixel column, one per two pixel rows. The half-block never
+ * paints a cell whose pixels are both empty, so the art composites onto whatever
+ * background the terminal has rather than stamping a black rectangle on it.
+ */
+function render(grid: string[], indent: number): string {
+  const pad = " ".repeat(indent);
+  const lines: string[] = [];
+  for (let row = 0; row < grid.length; row += 2) {
+    let line = pad;
+    for (let x = 0; x < grid[0]!.length; x++) {
+      const top = colourAt(grid, x, row);
+      const bottom = colourAt(grid, x, row + 1);
+      if (!top && !bottom) { line += " "; continue; }
+      const fg = (c: Rgb) => (LEVEL === 2 ? `\x1b[38;2;${c.join(";")}m` : `\x1b[38;5;${cube(c)}m`);
+      const bg = (c: Rgb) => (LEVEL === 2 ? `\x1b[48;2;${c.join(";")}m` : `\x1b[48;5;${cube(c)}m`);
+      // "▀" is the top half, so an empty top half is drawn as "▄" instead of as
+      // a background colour: a background would fill the cell's other half too.
+      if (top && bottom) line += `${fg(top)}${bg(bottom)}▀\x1b[39;49m`;
+      else if (top) line += `${fg(top)}▀\x1b[39m`;
+      else line += `${fg(bottom!)}▄\x1b[39m`;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+/** The mascot, with the blank lines above and below that a banner wants. */
+export function logo(): string {
+  if (LEVEL === 0) return "";
+  return `\n${render(FULL, 2)}\n`;
+}
+
+/** The mascot at header size, without surrounding blank lines. */
+export function logoSmall(): string {
+  if (LEVEL === 0) return "";
+  return render(SMALL, 0);
+}
+
+/** How many lines and columns `logoSmall()` occupies, for laying out beside it. */
+export const SMALL_SIZE = { rows: Math.ceil(SMALL.length / 2), columns: SMALL[0]!.length };
+
+/** Exported for the test that keeps the two eyes the same size and level. */
+export const GRIDS = { full: FULL, small: SMALL };
+
+export const T = LEVEL === 0 ? "" : ` ${red("▐")} `;

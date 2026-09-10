@@ -4,7 +4,7 @@
  * `clients/claude-desktop/manifest.json` and
  * `clients/claude-code/.claude-plugin/plugin.json` are shipped to strangers and
  * loaded by someone else's application, so a mistake in one is discovered at an
- * install rather than here. Three of those mistakes are mechanical, and this is
+ * install rather than here. Four of those mistakes are mechanical, and this is
  * where they get caught:
  *
  * 1. A tool renamed in `src/mcp.ts` leaves the manifests advertising a tool that
@@ -14,6 +14,9 @@
  *    Dockerfile that copied a list of files and missed the newest one.
  * 3. `plugin.json` and the marketplace entry are two files with the same version
  *    in them, which is the kind of pair that drifts silently.
+ * 4. A licence restated in a manifest is a licence that can disagree with the
+ *    one in the repository, and both manifests did: they said MIT while `LICENSE`
+ *    and `package.json` said Apache-2.0.
  */
 
 import { expect, test } from "bun:test";
@@ -86,6 +89,23 @@ test("the two clients are versioned in lockstep", async () => {
   const bundle = await readJson("clients/claude-desktop/manifest.json");
   expect(plugin.version).toBe(bundle.version);
   expect(plugin.version).toMatch(/^\d+\.\d+\.\d+$/);
+});
+
+test("both clients state the licence the repository actually has", async () => {
+  // Not a comment: the `.mcpb` carries this into the Claude Desktop install
+  // dialog and `claude plugin details` prints it, so it is one of the few
+  // things somebody reads before deciding to trust the thing. Both manifests
+  // shipped "MIT" against an Apache-2.0 repository, which understates the
+  // patent grant - the one clause the two licences genuinely differ on.
+  //
+  // Compared against package.json rather than a literal, so relicensing the
+  // project is one edit and this test follows it.
+  const { license } = await readJson("package.json");
+  expect(license).toBeTruthy();
+  for (const rel of ["clients/claude-desktop/manifest.json", "clients/claude-code/.claude-plugin/plugin.json"]) {
+    const manifest = await readJson(rel);
+    expect(manifest.license, `${rel} states a licence the repository does not have`).toBe(license);
+  }
 });
 
 test("the marketplace entry and the plugin agree on name and source", async () => {

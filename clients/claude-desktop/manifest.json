@@ -20,7 +20,7 @@
     "voice",
     "second-brain"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "server": {
     "type": "node",
     "entry_point": "server/index.mjs",

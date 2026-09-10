@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
 import { loadConfig, configPathFromArgs, publicBaseUrl } from "./config.ts";
+import { assertIssuerUsable, sweepOAuth } from "./oauth.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
@@ -27,6 +28,13 @@ const notifier: Notifier =
   config.notify.provider === "ntfy"
     ? new NtfyNotifier(config.notify.ntfy.url, config.notify.ntfy.topic, config.notify.ntfy.token)
     : new ConsoleNotifier();
+
+// Checked at boot, where the config is in front of us, rather than at the
+// first request. The issuer must be byte-identical to the origin a client
+// derived the well-known URL from, and a trailing slash or a stray path is a
+// mismatch the client reports as something unrelated - hours of debugging for
+// one character.
+if (config.server.oauth) assertIssuerUsable(publicBaseUrl(config, { httpsOnly: true }));
 
 await vault.preflight();
 sweepExpiredCodes(db);
@@ -159,7 +167,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
 });
 
 const stopDigest = scheduleDigest(db, notifier, config.notify.digestAt);
-setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); }, 3600_000).unref();
+setInterval(() => { sweepExpiredCodes(db); idem.sweep(db); sweepOAuth(db); }, 3600_000).unref();
 
 // Post-processing runs in the server process rather than a cron entry, because
 // it needs the same vault, the same debounced commit and the same database as

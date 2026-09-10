@@ -42,6 +42,9 @@ import { resolveView, visible, type View } from "./views.ts";
 import { may, resolveGrant, writeRefusal, type Grant } from "./grants.ts";
 import { AuthThrottle } from "./auth-throttle.ts";
 import { clientIp } from "./client-ip.ts";
+import { handleOAuth } from "./oauth-routes.ts";
+import { bearerChallenge } from "./oauth.ts";
+import { publicBaseUrl } from "./config.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { summariseSession } from "./session-summary.ts";
 import { appendSession, sessionPath } from "./session.ts";
@@ -537,6 +540,17 @@ const whatsapp = config.whatsapp
       return json({ ok: true, id: r.id, token: r.token, note: "store this now, it is not shown again" });
     }
 
+    // The OAuth surface, before the bearer check, because every route on it is
+    // reachable without a credential by design - that is what it is for. Only
+    // mounted when there is a public hostname to be the issuer: it is
+    // meaningless on loopback, and the accountless local path must not grow a
+    // login it never needed.
+    const issuer = config.server.oauth ? publicBaseUrl(config, { httpsOnly: true }) : undefined;
+    if (issuer) {
+      const answered = await handleOAuth(req, url, { db, config, issuer });
+      if (answered) return answered;
+    }
+
     /**
      * Everything below needs a credential, so this is where a wrong one starts
      * costing something. Placed after /health and the WhatsApp webhook: Meta
@@ -548,12 +562,25 @@ const whatsapp = config.whatsapp
     if (locked.locked) {
       return json({ error: "too many failed credentials, try later" }, 429, {
         "retry-after": String(locked.retryAfterSec),
+        ...(issuer ? { "www-authenticate": bearerChallenge(issuer) } : {}),
       });
     }
 
     const isAdmin = adminTokenOk(bearer, config.server.adminToken);
-    const device: CaptureDevice | null = isAdmin ? { id: "admin", deviceName: "admin" } : verifyToken(db, bearer);
+    const device: CaptureDevice | null = isAdmin
+      ? { id: "admin", deviceName: "admin" }
+      : verifyToken(db, bearer, issuer ? `${issuer}/mcp` : undefined);
     if (!device) {
+      // A request with no Authorization header at all is the first, mandated
+      // step of the OAuth handshake - the client is asking to be told where to
+      // authenticate. Counting it as a wrong credential would let a connector
+      // throttle itself out of ever connecting.
+      const presented = Boolean(bearer);
+      const challenge: Record<string, string> = issuer
+        ? { "www-authenticate": bearerChallenge(issuer, presented ? "invalid_token" : undefined) }
+        : {};
+      if (!presented) return json({ error: "unauthorized" }, 401, challenge);
+
       const after = throttle.fail(caller);
       // One line per lock rather than per attempt. A log with ten thousand
       // failures in it is a log where a real one cannot be seen.
@@ -562,11 +589,14 @@ const whatsapp = config.whatsapp
         // The attempt that crossed the line is itself the first 429, rather
         // than a 401 that invites one more try before the door shuts. Both are
         // true of this request; only one of them tells the caller what to do.
+        // The challenge rides along on the 429 too, so a locked-out connector's
+        // failure is debuggable rather than looking like an outage.
         return json({ error: "too many failed credentials, try later" }, 429, {
           "retry-after": String(after.retryAfterSec),
+          ...challenge,
         });
       }
-      return json({ error: "unauthorized" }, 401);
+      return json({ error: "unauthorized" }, 401, challenge);
     }
     throttle.succeed(caller);
 

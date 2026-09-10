@@ -1,4 +1,5 @@
 import { resolve, dirname } from "node:path";
+import { DEFAULT_CIMD_ORIGINS } from "./oauth.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { SARVAM_URL, type SttConfig } from "./stt.ts";
 import { BUILTIN_VIEWS, resolveView, type View } from "./views.ts";
@@ -35,6 +36,22 @@ export type Config = {
      * request and never be throttled at all.
      */
     trustProxy: boolean;
+    /**
+     * OAuth 2.1, for connectors dialled from someone else's servers.
+     *
+     * Off unless a block is present. It needs a public hostname to be the
+     * issuer, so it is meaningless on a loopback or tailnet install, and the
+     * accountless local path must not grow a login.
+     */
+    oauth?: {
+      /** View names applied to every OAuth grant. Absent means unrestricted. */
+      readView?: string;
+      writeView?: string;
+      /** Callbacks beyond the two vendors, for a client that is neither. */
+      extraRedirects: string[];
+      /** Origins whose client metadata documents may be fetched. */
+      cimdOrigins: string[];
+    };
   };
   notify: {
     provider: "console" | "ntfy";
@@ -595,6 +612,20 @@ export function loadConfig(path = defaultConfigPath()): Config {
       // else - including the string "false" - is false, which is the safe
       // direction: the failure of reading this wrong is a spoofable throttle.
       trustProxy: raw.server?.trustProxy === true || raw.server?.trustProxy === "true",
+      ...(raw.server?.oauth
+        ? {
+            oauth: {
+              ...(raw.server.oauth.readView ? { readView: String(raw.server.oauth.readView) } : {}),
+              ...(raw.server.oauth.writeView ? { writeView: String(raw.server.oauth.writeView) } : {}),
+              extraRedirects: Array.isArray(raw.server.oauth.extraRedirects)
+                ? raw.server.oauth.extraRedirects.map(String)
+                : [],
+              cimdOrigins: Array.isArray(raw.server.oauth.cimdOrigins)
+                ? raw.server.oauth.cimdOrigins.map(String)
+                : [...DEFAULT_CIMD_ORIGINS],
+            },
+          }
+        : {}),
     },
     notify: {
       provider,

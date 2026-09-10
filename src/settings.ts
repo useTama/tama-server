@@ -80,7 +80,7 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
     try {
       token = mintToken(db, "whatsapp-bridge").token;
       console.log(ok("Device token minted."));
-      if (current?.token) console.log(grey("  The old one still works until you revoke it under Devices."));
+      if (current?.token) console.log(grey("  The old one still works until you revoke it under Credentials."));
     } finally {
       db.close();
     }
@@ -97,16 +97,25 @@ async function bridgeSection(bridgePath: string, dbPath: string): Promise<void> 
 
 }
 
-/** The other half of a leaked token: seeing what exists and taking one away. */
-async function devicesSection(dbPath: string): Promise<void> {
+/**
+ * The other half of a leaked token: seeing what exists and taking one away.
+ *
+ * Called Credentials rather than Devices because half of what it lists is not a
+ * device. An OAuth grant belongs to somebody else's server, a bridge token
+ * belongs to a container, and only the rest are phones — but the row a person
+ * reads before typing an id at a revoke prompt has to cover all three, and a
+ * heading that names one of them invites the reader to assume the others are
+ * missing from the list.
+ */
+async function credentialsSection(dbPath: string): Promise<void> {
   const db = openDb(dbPath);
   try {
     const tokens = listTokens(db);
     if (tokens.length === 0) {
-      console.log(warn("No devices are paired yet."));
+      console.log(warn("Nothing is issued yet: no device tokens and no OAuth grants."));
       return;
     }
-    console.log(`\n${bold("Devices")}`);
+    console.log(`\n${bold("Credentials")}`);
     for (const row of tokens) {
       // Two things this line has to do that it did not.
       //
@@ -135,18 +144,18 @@ async function devicesSection(dbPath: string): Promise<void> {
       const facts = [
         row.id,
         what,
-        `paired ${row.created_at.slice(0, 10)}`,
+        `issued ${row.created_at.slice(0, 10)}`,
         row.last_used ? `last used ${row.last_used.slice(0, 10)}` : "never used",
         expiry,
       ].filter(Boolean).join("  ");
       console.log(`  ${label} ${grey(facts)}`);
     }
     if (!(await yes("Revoke one?", false))) return;
-    const id = await ask("Device id to revoke", "");
+    const id = await ask("Credential id to revoke", "");
     if (!id) return;
     console.log(revokeToken(db, id)
-      ? ok(`Revoked ${id}. That device stops working immediately.`)
-      : warn(`No device with id ${id}.`));
+      ? ok(`Revoked ${id}. Whatever holds it stops working immediately.`)
+      : warn(`No credential with id ${id}.`));
   } finally {
     db.close();
   }
@@ -491,7 +500,7 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
     const name = pick.slice("remove:".length);
     if (!(await yes(`Remove "${name}"? Its tokens stop working immediately.`, false))) return;
     await patchConfig(configPath, (raw) => { delete raw.audiences?.[name]; });
-    // Not revoked here: the token rows stay visible under Devices so it is
+    // Not revoked here: the token rows stay visible under Credentials so it is
     // obvious what was cut off, and /ask already refuses a token whose
     // audience is gone rather than falling back to the owner's view.
     console.log(ok(`Removed "${name}". Any token naming it is now refused.`));
@@ -539,7 +548,7 @@ async function audiencesSection(configPath: string, dbPath: string, bridgePath: 
       const db = openDb(dbPath);
       try {
         await write(mintToken(db, `audience:${name}`, name).token, wired.match);
-        console.log(ok("New token issued. Revoke the old one under Devices."));
+        console.log(ok("New token issued. Revoke the old one under Credentials."));
       } finally {
         db.close();
       }
@@ -974,14 +983,20 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
       return;
     }
 
+    // Every row names the thing it writes. Describing the subject instead
+    // ("everyone who is not you", "who transcribes your voice notes") reads
+    // pleasantly and answers the wrong question: someone at this menu already
+    // knows what an audience is for, and is looking for which of eight rows
+    // holds the field they came to change. Naming the fields is what makes that
+    // a decision rather than a guess.
     const section = await choose("What would you like to change?", [
-      { value: "audiences" as const, label: "Audiences — everyone who is not you: groups, other people" },
-      { value: "views" as const, label: "Views — named slices of the vault, for audiences to see through" },
-      { value: "ask" as const, label: "Ask — which model answers your questions" },
-      { value: "stt" as const, label: "Speech-to-text — who transcribes your voice notes" },
-      { value: "bridge" as const, label: "WhatsApp bridge — your own numbers and token" },
-      { value: "devices" as const, label: "Devices — list what is paired, revoke one" },
-      { value: "wizard" as const, label: "Everything else — vault, transcription, Ask (full setup)" },
+      { value: "audiences" as const, label: "Audiences — the view, voice and token given to someone else" },
+      { value: "views" as const, label: "Views — named include/exclude globs an audience reads through" },
+      { value: "ask" as const, label: "Ask — provider, model and API key for answering questions" },
+      { value: "stt" as const, label: "Speech-to-text — provider, model and API key for transcription" },
+      { value: "bridge" as const, label: "WhatsApp bridge — allowed senders and its device token" },
+      { value: "credentials" as const, label: "Credentials — device tokens and OAuth grants; revoke one" },
+      { value: "wizard" as const, label: "Re-run setup — world name, vault folder, note import, WhatsApp" },
       { value: "done" as const, label: "Done" },
     ], "audiences");
 
@@ -1005,6 +1020,6 @@ export async function runSettings(argv: string[] = Bun.argv): Promise<void> {
     if (section === "ask") await askSection(configPath, config);
     if (section === "stt") await sttSection(configPath, config);
     if (section === "bridge") await bridgeSection(bridgePath, dbPath);
-    if (section === "devices") await devicesSection(dbPath);
+    if (section === "credentials") await credentialsSection(dbPath);
   }
 }

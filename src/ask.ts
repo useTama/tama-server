@@ -2,7 +2,7 @@ import type { Chunk, Retriever } from "./retrieval.ts";
 import type { Llm, LlmMessage, LlmUsage } from "./llm.ts";
 import type { View } from "./views.ts";
 import { renderPinnedNotes, type PinnedNote } from "./pin.ts";
-import { citedPaths, stripUnsupportedCitations } from "./guard.ts";
+import { CANNOT_WRITE, citedPaths, claimedWrite, stripUnsupportedCitations } from "./guard.ts";
 
 /**
  * Answering questions from the vault: retrieve, frame, stream.
@@ -770,11 +770,24 @@ export async function* ask(opts: {
   yield { type: "done", answer: guarded, ...(usage ? { usage } : {}) };
 }
 
-/** Apply the answer guards to the finished text. */
+/**
+ * Apply the answer guards, in the order that matters.
+ *
+ * A claimed write is replaced wholesale, so its citations are moot and the
+ * citation pass would be rewriting text that is already gone. Checking it first
+ * also means the notice is the honest one: "it said it wrote something", not
+ * "it cited a file that does not exist", which is what a fabricated write tends
+ * to produce as a side effect.
+ */
 function guardAnswer(
   answer: string,
   opts: { allowed: string[]; onNotice?: (message: string) => void },
 ): string {
+  if (claimedWrite(answer)) {
+    opts.onNotice?.("the answer claimed to have written something, which this path cannot do");
+    return CANNOT_WRITE;
+  }
+
   const { answer: clean, stripped } = stripUnsupportedCitations(answer, opts.allowed);
   if (stripped.length > 0) {
     opts.onNotice?.(`removed ${stripped.length} invented citation(s): ${stripped.join(", ")}`);

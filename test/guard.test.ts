@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import {
-  citedPaths, stripUnsupportedCitations, unsupportedCitations,
+  CANNOT_WRITE, citedPaths, claimedWrite, stripUnsupportedCitations, unsupportedCitations,
 } from "../src/guard.ts";
 
 const SHOWN = ["Work/latency-investigation.md", "Inbox/2025-01-08-1412-mic-gain.md"];
@@ -81,4 +81,57 @@ test("prose inside brackets is not mistaken for a citation group", () => {
 test("newlines survive, because an answer that used them meant to", () => {
   const { answer } = stripUnsupportedCitations("one (Bad.md)\ntwo (Work/latency-investigation.md)", SHOWN);
   expect(answer).toBe("one\ntwo (Work/latency-investigation.md)");
+});
+
+// ---------------------------------------------------------------- claimed writes
+
+test("a first-person completed write is caught", () => {
+  for (const answer of [
+    "added it to your build plan",
+    "I've added that to the list",
+    "I have saved that note for you",
+    "noted, it's in your inbox now",
+    "reminder set for tomorrow",
+    "I logged that against the project",
+  ]) {
+    expect(claimedWrite(answer)).toBe(true);
+  }
+});
+
+// The observed failures were Hinglish. An English-only matcher would have
+// caught none of the five real ones.
+test("the Hinglish forms are caught, because those are the ones that got through", () => {
+  for (const answer of [
+    "note add kar diya hai tama ke build plan mein",
+    "ye paanch aur add kar liya iict print mein",
+    "remind kar diya hai, application list mein add kar lena",
+    "now.md aur build plan dono mein note add kar diya hai",
+    "likh diya hai",
+  ]) {
+    expect(claimedWrite(answer)).toBe(true);
+  }
+});
+
+test("reporting what the notes say is not a claimed write", () => {
+  // "You added it" is a statement about something the owner did, and reading a
+  // note's contents back has to keep working.
+  for (const answer of [
+    "you added the tote bag to that list on the 8th",
+    "your notes say the reminder is set for friday",
+    "three items are still open on that list",
+    "you wrote that you had saved the draft already",
+    "nothing in your notes about that",
+  ]) {
+    expect(claimedWrite(answer)).toBe(false);
+  }
+});
+
+test("the replacement names the limit and hands the action back", () => {
+  expect(CANNOT_WRITE).toContain("cannot write");
+  expect(CANNOT_WRITE).toContain("nothing was saved");
+  // Not "not yet": a reply that promises the feature invites the owner to wait
+  // for it instead of writing the note.
+  expect(CANNOT_WRITE).not.toContain("not yet");
+  // Chat surface rule: a short reply does not end on a full stop.
+  expect(CANNOT_WRITE.endsWith(".")).toBe(false);
 });

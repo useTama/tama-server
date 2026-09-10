@@ -7,8 +7,8 @@
  * states the principle: an absolute rule should not depend on the model
  * choosing to follow it.
  *
- * One rule qualified so far. It was already written down in `GROUND_RULES`, it
- * was broken in a real WhatsApp session, and it fails silently.
+ * Two rules qualified. Both were already written down in `GROUND_RULES`, both
+ * were broken in a single real WhatsApp session, and both fail silently.
  *
  * **A citation names a note the model was shown.** `CITE_RULES` asks for a path
  * beside every claim and explains why: an uncited fact reads as invented. The
@@ -16,6 +16,8 @@
  * so the citation format is the thing that makes a fabricated claim credible.
  * Of the distinct paths cited across that session, three did not exist, and two
  * of the three were attached to claims that were themselves false.
+ *
+ * **The ask path cannot write.** See `claimedWrite` below.
  *
  * The citation half of this used to live in `test/eval/metrics.ts` and ran only
  * under a gated eval. The detector and the guard are now the same code, because
@@ -128,3 +130,64 @@ export function stripUnsupportedCitations(
 
   return { answer: out, stripped: [...bad] };
 }
+
+/**
+ * Phrases that claim a write the ask path cannot perform.
+ *
+ * `GROUND_RULES` says it flatly: "This path is read-only. Never claim you
+ * edited, organized, filed, posted, sent or published anything, and never imply
+ * you will." The rule lost anyway, five times in one session, because the
+ * pressure to break it comes from the owner on exactly the requests they care
+ * most about. "Add this to the build plan" is not a question, and the socially
+ * correct completion is confirmation.
+ *
+ * The Hinglish entries are not thoroughness, they are the actual failures. The
+ * observed claims were "note add kar diya hai", "add kar liya" and "remind kar
+ * diya hai"; an English-only matcher would have caught none of them.
+ *
+ * Scoped to the first person on purpose. "You added it to the list" is a
+ * statement about something the owner did, and reporting a note's contents back
+ * must keep working.
+ */
+const WRITE_CLAIMS: RegExp[] = [
+  // English, first person, completed.
+  /\bi(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|filed|logged|noted|recorded|written|updated|appended|created|set)\b/i,
+  /\b(?:added|saved|filed|logged|noted|recorded|appended|updated)\s+(?:it|that|this|them)\s+to\b/i,
+  /\b(?:done|added|saved|filed|logged|noted)\s*[,.]?\s*(?:it(?:'s| is)\s+(?:in|on)\b|to\s+your\b)/i,
+  // Sentence-initial only, which is the standalone-confirmation form. Matching
+  // "reminder set" anywhere caught "your notes say the reminder is set for
+  // friday", and reporting what a note says is the thing that must keep
+  // working: the guard exists to stop invented actions, not to stop recall.
+  /(?:^|[.!?]\s+)reminder set\b/i,
+  /\bi(?:'ve| have)?\s+(?:reminded|scheduled)\b/i,
+  // Hinglish. "kar diya", "kar liya" and "kar di" are the completed forms.
+  /\b(?:add|save|note|file|log|update|remind|likh|daal|dal)\w*\s+kar\s+(?:diya|liya|di|dii)\b/i,
+  /\b(?:add|note|likh|daal|dal)\w*\s+(?:diya|liya|di)\s+hai\b/i,
+  /\bnote\s+(?:bana|banaa)\s+(?:diya|liya)\b/i,
+];
+
+/**
+ * Whether an answer claims to have written something.
+ *
+ * A detector, not a rewriter. What to say instead depends on what was asked,
+ * and the caller is the only thing that knows whether a write path exists yet.
+ */
+export function claimedWrite(answer: string): boolean {
+  return WRITE_CLAIMS.some((re) => re.test(answer));
+}
+
+/**
+ * What to send instead of a claimed write.
+ *
+ * Said in the plainest available terms, because the whole failure was an answer
+ * that sounded like a yes. It names the limit and hands the action back rather
+ * than apologising, and it does not promise the feature: a reply that says "not
+ * yet" invites the owner to wait for it.
+ *
+ * Deliberately not a rewrite of the model's text. Editing a confirmation into a
+ * refusal means guessing which clause was the lie, and a half-corrected answer
+ * is the failure again in a quieter voice.
+ */
+export const CANNOT_WRITE =
+  "I can read your notes but I cannot write to them, so nothing was saved just now. " +
+  "Put it in your vault and I will have it next time you ask";

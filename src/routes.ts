@@ -419,7 +419,7 @@ const whatsapp = config.whatsapp
         // one-to-one messages to a business number: the sender IS the chat.
         const thread = whatsappSource(input.sender, config.whatsapp!.appSecret);
         const memory = recall(db, thread);
-        const search = searchQuery(input.question, memory.turns);
+        const search = searchQuery(input.question, memory.turns, { selfName: config.world?.name });
 
         const result = await askOnce({
           question: input.question,
@@ -1012,7 +1012,9 @@ const whatsapp = config.whatsapp
         : "";
       const memory = thread ? recall(db, thread) : { turns: [] as Turn[] };
       const history = asMessages(memory.turns);
-      const search = thread ? searchQuery(question, memory.turns) : question;
+      // Unconditional now: with no thread there is no history to carry, but a
+      // greeting is still not a question, and memory.turns is already empty.
+      const search = searchQuery(question, memory.turns, { selfName: config.world?.name });
 
       // Retrieval works with no model configured, so say which half is missing
       // rather than pretending the whole endpoint does not exist.

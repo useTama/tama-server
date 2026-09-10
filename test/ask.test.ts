@@ -406,3 +406,28 @@ test("an instruction inside a pinned note is fenced like any other note text", (
   expect(messages).toHaveLength(1);
   expect(messages[0]!.role).toBe("user");
 });
+
+test("a message that was not a search does not report an empty search", () => {
+  // Saying the notes were empty in reply to "hi" reports on a search nobody
+  // asked for, which is how banter got answered with "nothing in your notes".
+  const searchedNothing = renderChunks([], true);
+  const notSearched = renderChunks([], false);
+
+  expect(searchedNothing).toContain("No notes matched");
+  expect(notSearched).not.toContain("No notes matched");
+  expect(notSearched).toContain("not a question about the notes");
+  expect(notSearched).toContain("Do not mention notes");
+});
+
+test("a greeting is not handed the excerpt framing or the pins", () => {
+  const content = buildMessages(
+    "hi", [], undefined, false, [], undefined, new Date("2026-09-10T09:00:00"),
+    {
+      searched: false,
+      pins: [{ role: "state", path: "Now.md", text: "shipping the pin", truncated: false }],
+    },
+  )[0]!.content;
+
+  expect(content).not.toContain("Here are excerpts from my notes");
+  expect(content).toContain("not a question about the notes");
+});

@@ -125,6 +125,63 @@ function substantive(question: string): string[] {
 }
 
 /**
+ * Words that are contact rather than enquiry.
+ *
+ * Small, closed, and hand-maintained on purpose, exactly like `ANAPHORIC`
+ * above. Anything not on this list keeps the old behaviour, so a word missing
+ * from it costs nothing new; a word wrongly on it would make a real question
+ * unanswerable, which is why nothing here can be the subject of a sentence.
+ *
+ * Hinglish included because the chat is. "haan", "theek" and "arre" arrive as
+ * often as "ok" and "hey" do.
+ */
+const PLEASANTRIES = new Set([
+  // greeting
+  "hi", "hii", "hiii", "hey", "heya", "hello", "helo", "hlo", "yo", "sup", "wassup", "whatsup",
+  "hola", "namaste", "oi", "oye", "gm", "gn", "morning", "night", "evening", "afternoon", "good",
+  // acknowledgement
+  "ok", "okay", "oki", "k", "kk", "thanks", "thanx", "thx", "ty", "cool", "nice", "great",
+  "fine", "sure", "yes", "yeah", "yep", "yup", "nope", "haan", "han", "nahi", "nai",
+  "theek", "thik", "achha", "acha", "accha", "sahi", "badhiya", "bas", "done",
+  // interjection
+  "bruh", "bro", "bhai", "dude", "man", "lol", "lmao", "haha", "hahaha", "hehe", "hmm", "hm",
+  "hmmm", "arre", "arey", "oof", "ugh", "oops", "wow",
+]);
+
+/**
+ * Whether a message is contact rather than a question about the notes.
+ *
+ * This is the other half of #57. That fix stopped a question with its own
+ * subject being polluted by the previous one, by carrying prior turns only when
+ * the question has fewer than two substantive terms. Correct for anaphora, and
+ * a greeting has zero substantive terms too, so "hi" took the same branch:
+ * retrieve whatever they were last talking about, and report it. The bare name
+ * of the assistant came back with an unrelated open issue; "sup" came back with
+ * a deadline and a build status. That reads as a slot machine, not as recall.
+ *
+ * Conservative by construction. Every remaining word must be a pleasantry, so
+ * "hi what about the mic" is still a question and only a message that is
+ * nothing but contact is treated as one.
+ *
+ * `selfName` is here because being addressed by name is the same act as saying
+ * hello, and the name is whatever the owner called their world. Without it,
+ * "tama" is a substantive term that matches its own project notes.
+ */
+export function isSmallTalk(question: string, selfName?: string): boolean {
+  const words = question
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return false;
+
+  const self = selfName?.trim().toLowerCase();
+  return words.every(
+    (w) => PLEASANTRIES.has(w) || (self !== undefined && self.length > 0 && w === self),
+  );
+}
+
+/**
  * What to search the vault for, given a question that may not stand alone.
  *
  * `GrepRetriever` scores on word overlap, so "and the other one?" retrieves
@@ -153,11 +210,21 @@ function substantive(question: string): string[] {
  * feeding them back would score those same notes higher for reasons that have
  * nothing to do with the question.
  */
-export function searchQuery(question: string, turns: Turn[], lookBack = 2): string {
+export function searchQuery(
+  question: string,
+  turns: Turn[],
+  opts: { lookBack?: number; selfName?: string } = {},
+): string | null {
+  // Null rather than a query, because "search for nothing" and "do not search"
+  // are different and only one of them should make the model say the notes
+  // were empty. Checked before the carry-forward branch below, which is the
+  // branch it used to fall into.
+  if (isSmallTalk(question, opts.selfName)) return null;
+
   if (substantive(question).length >= 2) return question.slice(0, 1000);
   const recent = turns
     .filter((t) => t.role === "user")
-    .slice(-lookBack)
+    .slice(-(opts.lookBack ?? 2))
     .map((t) => t.text);
   return [...recent, question].join(" ").slice(0, 1000);
 }

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
-import { asMessages, forget, recall, remember, searchQuery, summarise, KEEP_TURNS, SUMMARISE_AFTER } from "../src/memory.ts";
+import { asMessages, forget, isSmallTalk, recall, remember, searchQuery, summarise, KEEP_TURNS, SUMMARISE_AFTER, type Turn } from "../src/memory.ts";
 import type { Llm } from "../src/llm.ts";
 
 async function db() {
@@ -184,4 +184,50 @@ test("one substantive term is not enough to stand alone", () => {
 
 test("with no prior turns a question is searched as itself, whatever its shape", () => {
   expect(searchQuery("and the other one?", [])).toBe("and the other one?");
+});
+
+// ---------------------------------------------------------------- small talk
+
+// The other half of #57. That fix stopped a question with its own subject
+// being polluted by the previous one. A greeting has zero substantive terms
+// too, so it fell into the same carry-forward branch: retrieve whatever they
+// were last talking about, and read it out.
+test("a greeting is not a search, so nothing is carried into one", () => {
+  const turns: Turn[] = [
+    { id: 1, role: "user", text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant", text: "you landed on 60" },
+  ];
+
+  for (const hello of ["hi", "Hi?", "hello", "hey", "yo", "sup", "bruh", "ok", "haan", "gm"]) {
+    expect(searchQuery(hello, turns)).toBeNull();
+  }
+});
+
+test("being addressed by name is the same act as saying hello", () => {
+  // Without the name, "tama" is a substantive term that matches its own
+  // project notes, which is how the bare name came back with an open issue.
+  expect(searchQuery("tama", [], { selfName: "Tama" })).toBeNull();
+  expect(searchQuery("Tama!", [], { selfName: "tama" })).toBeNull();
+  // Not its name, so still a question.
+  expect(searchQuery("tama", [])).not.toBeNull();
+});
+
+test("a greeting with a question attached is still a question", () => {
+  const turns: Turn[] = [{ id: 1, role: "user", text: "the mic gain thing" }];
+  expect(searchQuery("hi what about the mic", turns)).not.toBeNull();
+  expect(searchQuery("ok and the rent review", turns)).not.toBeNull();
+});
+
+test("a follow-up that points at the last subject still carries it", () => {
+  // The #57 behaviour, unchanged. Only the no-subject-at-all case moved.
+  const turns: Turn[] = [
+    { id: 1, role: "user", text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant", text: "you landed on 60" },
+  ];
+  expect(searchQuery("and the other one?", turns)).toContain("mic gain");
+});
+
+test("an empty message is not small talk, so it takes the ordinary path", () => {
+  expect(isSmallTalk("")).toBe(false);
+  expect(isSmallTalk("   ")).toBe(false);
 });

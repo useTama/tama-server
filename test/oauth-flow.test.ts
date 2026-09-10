@@ -333,3 +333,28 @@ async function fixtureWithoutOAuth() {
   });
   return { routes, cleanup: async () => { db.close(); await rm(root, { recursive: true, force: true }); } };
 }
+
+test("an unknown well-known document is absent, not protected", async () => {
+  // ChatGPT probes three discovery documents. Two are ours; `openid-configuration`
+  // is not, and it used to fall through to the bearer gate and answer 401 with a
+  // WWW-Authenticate challenge - "authenticate to read my discovery", which is
+  // both untrue and the sort of thing that stops a connector proceeding.
+  //
+  // Observed in a real connection attempt: PRM 200, AS metadata 200,
+  // openid-configuration 401, and the client then never called the token
+  // endpoint at all.
+  const f = await fixture();
+  try {
+    for (const p of ["/.well-known/openid-configuration", "/.well-known/oauth-protected-resource-x", "/.well-known/anything"]) {
+      const res = await f.routes.handle(get(p));
+      expect(res.status, p).toBe(404);
+      expect(res.headers.get("www-authenticate"), p).toBeNull();
+    }
+
+    // The two that are ours still answer.
+    expect((await f.routes.handle(get("/.well-known/oauth-protected-resource"))).status).toBe(200);
+    expect((await f.routes.handle(get("/.well-known/oauth-authorization-server"))).status).toBe(200);
+  } finally {
+    await f.cleanup();
+  }
+});

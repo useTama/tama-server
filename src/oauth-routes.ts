@@ -126,6 +126,31 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
     return json(authorizationServerMetadata(issuer));
   }
 
+  /**
+   * Any other well-known document is absent, not protected.
+   *
+   * Without this the path falls through to the bearer gate and is answered
+   * `401` with a `WWW-Authenticate` challenge, which says something quite
+   * different and quite wrong: "authenticate to read my discovery". A client
+   * probing for a document this server does not publish should learn that it
+   * does not exist and move on.
+   *
+   * Found in the wild rather than reasoned about. ChatGPT probes three
+   * documents during discovery - protected-resource, authorization-server, and
+   * `openid-configuration`. The first two answered 200 and the third answered
+   * 401, and the connector then never reached the token endpoint at all.
+   *
+   * `/.well-known/` is reserved (RFC 8615) and nothing under it is ever
+   * private here, so the whole prefix is answered rather than a list of names
+   * that would need extending every time a client invents another probe.
+   */
+  if (path.startsWith("/.well-known/")) {
+    return new Response(JSON.stringify({ error: "not_found" }) + "\n", {
+      status: 404,
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+    });
+  }
+
   // ---- authorize ----------------------------------------------------------
 
   if (path === "/oauth/authorize" && req.method === "GET") {

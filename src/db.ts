@@ -46,6 +46,31 @@ export function openDb(path: string): Database {
       write_view  TEXT
     );
 
+    -- An authorization request parked between /oauth/authorize and the owner
+    -- consenting, then between consent and the code being exchanged.
+    --
+    -- Parked here rather than carried through the consent page as hidden form
+    -- fields: the POST reads redirect_uri, code_challenge, state and resource
+    -- back from this row, so there is nothing for a caller to tamper with and
+    -- no re-validation for a later refactor to drop.
+    CREATE TABLE IF NOT EXISTS oauth_requests (
+      id            TEXT PRIMARY KEY,
+      client_id     TEXT NOT NULL,
+      client_name   TEXT NOT NULL,
+      redirect_uri  TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      state         TEXT,
+      -- RFC 8707. Bound into the issued token and checked on every request, so
+      -- a token minted for this server cannot be replayed at another.
+      resource      TEXT,
+      scope         TEXT NOT NULL,
+      created_at    TEXT NOT NULL,
+      -- Set when the owner consents; the row becomes the pending code.
+      consumed_at   TEXT,
+      code_hash     TEXT,
+      granted_scope TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS pairing_codes (
       code       TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -249,7 +274,16 @@ export function openDb(path: string): Database {
   }
   // Same shape, same reasoning: additive and nullable, so every token that
   // predates capabilities keeps meaning "the owner's own device, everything".
-  for (const name of ["caps", "read_view", "write_view"]) {
+  //
+  // The OAuth columns are on `tokens` rather than in a table of their own
+  // because an OAuth grant IS a device token with an expiry and a client label.
+  // That is what makes it appear in Devices, obey its Grant, and die to the
+  // same revokeToken as everything else, with no second code path.
+  //   expires_at   NULL for a device token, which never expires.
+  //   resource     the RFC 8707 audience; NULL means "not audience-bound".
+  //   client_id    which connector holds it, for the Devices list.
+  //   refresh_hash the current refresh token, rotated in place on use.
+  for (const name of ["caps", "read_view", "write_view", "expires_at", "resource", "client_id", "refresh_hash"]) {
     if (!columns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tokens ADD COLUMN ${name} TEXT`);
     }

@@ -42,12 +42,17 @@
  * The old behaviour was never visible because `CITE_RULES` asks for a path in
  * parentheses and "(" is not a word character, so the run always started inside
  * the bracket.
+ *
+ * Unicode letters ARE allowed, unlike the space. `café-notes.md` used to match
+ * only its `notes.md` tail, which `supports` below then judged invented, and the
+ * strip took the tail out and left `café-`. A letter cannot run backwards
+ * through prose the way a space can, so widening the class costs nothing.
  */
-const PATH_SOURCE = String.raw`(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.md`;
+const PATH_SOURCE = String.raw`(?:[\p{L}\p{N}][\p{L}\p{N}._-]*\/)*[\p{L}\p{N}][\p{L}\p{N}._-]*\.md`;
 
 /** Paths the answer cites. */
 export function citedPaths(answer: string): string[] {
-  return [...new Set(Array.from(answer.matchAll(new RegExp(PATH_SOURCE, "g")), (m) => m[0]))];
+  return [...new Set(Array.from(answer.matchAll(new RegExp(PATH_SOURCE, "gu")), (m) => m[0]))];
 }
 
 /**
@@ -57,10 +62,30 @@ export function citedPaths(answer: string): string[] {
  * copied; a path that is not in the context was constructed, and a model
  * willing to construct a filename is willing to construct the fact under it.
  */
+/**
+ * Whether `cited` names `allowed`, given that `cited` may be missing its
+ * leading folders.
+ *
+ * The tail has to start at a path boundary, and a SPACE counts as one. A folder
+ * name may contain a space and `PATH_SOURCE` deliberately may not, so a real
+ * citation of `Social Media Content/X/bold.md` reaches here as
+ * `Content/X/bold.md`. Requiring a slash in front of the tail judged that
+ * invented, and the strip then cut the tail out and left `(Social Media )` in
+ * the answer: a correct citation mangled into nonsense.
+ *
+ * The boundary is what keeps this from being merely loose. Without it,
+ * `Work/ab.md` would be named by a bare `b.md`, so a genuinely invented path
+ * could pass by being the suffix of a real one.
+ */
+function supports(allowed: string, cited: string): boolean {
+  if (allowed === cited) return true;
+  if (!allowed.endsWith(cited)) return false;
+  const before = allowed[allowed.length - cited.length - 1];
+  return before === "/" || before === " ";
+}
+
 export function unsupportedCitations(answer: string, allowed: string[]): string[] {
-  return citedPaths(answer).filter(
-    (cited) => !allowed.some((a) => a === cited || a.endsWith(`/${cited}`)),
-  );
+  return citedPaths(answer).filter((cited) => !allowed.some((a) => supports(a, cited)));
 }
 
 /**
@@ -103,21 +128,21 @@ export function stripUnsupportedCitations(
   const bad = new Set(unsupportedCitations(answer, allowed));
   if (bad.size === 0) return { answer, stripped: [] };
 
-  const path = new RegExp(PATH_SOURCE, "g");
+  const path = new RegExp(PATH_SOURCE, "gu");
 
   let out = answer.replace(CITATION_GROUP, (whole, lead: string, inner: string) => {
     const found = inner.match(path) ?? [];
     if (found.length === 0) return whole;
     // Prose that happens to contain a path is not a citation group, and
     // rewriting it would eat words. Left for the second pass.
-    if (inner.replace(new RegExp(PATH_SOURCE, "g"), "").replace(SEPARATORS, "") !== "") return whole;
+    if (inner.replace(new RegExp(PATH_SOURCE, "gu"), "").replace(SEPARATORS, "") !== "") return whole;
 
     const kept = found.filter((p) => !bad.has(p));
     if (kept.length === found.length) return whole;
     return kept.length === 0 ? "" : `${lead}(${kept.join(", ")})`;
   });
 
-  out = out.replace(new RegExp(PATH_SOURCE, "g"), (m) => (bad.has(m) ? "" : m));
+  out = out.replace(new RegExp(PATH_SOURCE, "gu"), (m) => (bad.has(m) ? "" : m));
 
   // Tidy what removal left behind. Spaces and tabs only: collapsing newlines
   // would reflow an answer that deliberately used them.

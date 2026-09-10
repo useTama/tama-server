@@ -302,11 +302,13 @@ present. `state` is what is live now, and is preferred over older notes for anyt
 present.
 
 Both are read as untrusted note text, fenced exactly like a retrieved excerpt, and neither can
-change the model's instructions. Each path is checked against the requesting token's view, so a
-scoped audience is never shown a pin naming files its view hides. Bounded at 8 notes, 32KB each
-and 64KB in total, read on every question; anything missing, hidden, oversized or skipped is
-logged once per process. Omit the block to pin nothing, which is how this behaved before pinning
-existed.
+change the model's instructions. Each path is checked against the requesting token's view, so an
+audience is never shown a pin its view excludes. That check is on the path and not the contents:
+a conventions file a scoped view does admit will still name whatever folders it names, so do not
+pin one to a scoped audience unless you are content for it to see the shape of the vault.
+Bounded at 8 notes, 32KB each and 64KB in total, read on every question; anything missing,
+hidden, oversized or skipped is logged once per process. Omit the block to pin nothing, which is
+how this behaved before pinning existed.
 
 A greeting is not given the pins either, since answering "hi" with the whole of a "what is live
 now" file is a status report nobody asked for.

@@ -149,6 +149,20 @@ const PLEASANTRIES = new Set([
 ]);
 
 /**
+ * Whether the last thing said was a question from us.
+ *
+ * A bare "yes", "haan", "sure" or "done" is contact when it arrives out of
+ * nowhere and a REPLY when it answers something we just asked. Tama asks
+ * follow-ups ("kisko reminder dalna hai aur kab, batao"), so treating the
+ * answer as a greeting drops the thread and instructs the model not to mention
+ * the notes it was about to need.
+ */
+function weJustAsked(turns: Turn[]): boolean {
+  const last = turns.at(-1);
+  return last?.role === "assistant" && last.text.includes("?");
+}
+
+/**
  * Whether a message is contact rather than a question about the notes.
  *
  * This is the other half of #57. That fix stopped a question with its own
@@ -219,7 +233,11 @@ export function searchQuery(
   // are different and only one of them should make the model say the notes
   // were empty. Checked before the carry-forward branch below, which is the
   // branch it used to fall into.
-  if (isSmallTalk(question, opts.selfName)) return null;
+  //
+  // Not when we just asked something, though. "haan" is contact out of nowhere
+  // and an answer when it follows a question of ours, and answering it as a
+  // greeting drops the thread we opened.
+  if (!weJustAsked(turns) && isSmallTalk(question, opts.selfName)) return null;
 
   if (substantive(question).length >= 2) return question.slice(0, 1000);
   const recent = turns

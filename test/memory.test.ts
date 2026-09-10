@@ -231,3 +231,25 @@ test("an empty message is not small talk, so it takes the ordinary path", () => 
   expect(isSmallTalk("")).toBe(false);
   expect(isSmallTalk("   ")).toBe(false);
 });
+
+// A bare affirmation is contact out of nowhere and a REPLY when it answers
+// something we just asked. Tama asks follow-ups, so treating the answer as a
+// greeting drops the thread it opened.
+test("an affirmation answering our own question is not small talk", () => {
+  const asked: Turn[] = [
+    { id: 1, role: "user", text: "remind me about the print list" },
+    { id: 2, role: "assistant", text: "kisko reminder dalna hai aur kab?" },
+  ];
+  for (const reply of ["haan", "yes", "sure", "done"]) {
+    expect(searchQuery(reply, asked)).not.toBeNull();
+  }
+});
+
+test("the same affirmation out of nowhere still is small talk", () => {
+  const chatting: Turn[] = [
+    { id: 1, role: "user", text: "what did i decide about the mic gain" },
+    { id: 2, role: "assistant", text: "you landed on 60" },
+  ];
+  expect(searchQuery("haan", chatting)).toBeNull();
+  expect(searchQuery("yes", [])).toBeNull();
+});

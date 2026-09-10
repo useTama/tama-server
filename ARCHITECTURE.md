@@ -169,9 +169,13 @@ Three properties make this safe rather than a hole:
    an attacker, so the version that reads it into the system prompt is the version that hands
    that attacker every question. A pin establishes facts about how the vault is arranged; it
    cannot reach the ground rules.
-2. **A pin obeys the view.** Each path is checked with `visible()` before it is read, so a
-   scoped audience is never handed a guide naming files its view hides. A filename alone
-   discloses, which is why `NO_CITE_RULES` exists.
+2. **A pin obeys the view, as far as its own path.** Each path is checked with `visible()`
+   before it is read, so an audience is never handed a pin its view excludes. That is the
+   whole of the guarantee, and it is worth being exact: `visible()` sees the path, not the
+   contents. A conventions file that a scoped view *does* admit will still name every folder
+   it names, so pinning one to a narrow audience discloses the shape of the vault to it. If
+   that matters, do not pin a conventions file to a scoped audience, or keep a smaller one for
+   them. A filename alone discloses, which is why `NO_CITE_RULES` exists.
 3. **A pin is bounded and loud.** 8 notes, 32KB each, 64KB total, read through `Vault.readNote`
    so containment stays in the adapter that owns it. Anything skipped, missing or cut is logged
    once per process, because a pin that silently does nothing is worse than no pin: the owner

@@ -4,7 +4,6 @@ import { detectLanguage, languageLine } from "../src/language.ts";
 test("plain English is English", () => {
   for (const message of [
     "Can you see images?",
-    "Tama install path?",
     "what are my todos",
     "whats my todos",
     "Are not just kubeflow but all todos",
@@ -101,4 +100,24 @@ test("dropping those three does not cost the real Hinglish cases", () => {
   // it, which is what made them safe to lose.
   expect(detectLanguage("koi baat nahi")).toBe("hinglish");
   expect(detectLanguage("mat karo yaar")).toBe("hinglish");
+});
+
+// "No Hindi marker" is not evidence of English. Without positive evidence the
+// hint overrode MIRROR and demanded an English reply to a French question,
+// which is the exact failure the undefined case exists to prevent.
+test("a Latin-script language that is not English gets no hint", () => {
+  expect(detectLanguage("quand est mon rendez-vous")).toBeUndefined();
+  expect(detectLanguage("cuando es mi cita")).toBeUndefined();
+});
+
+test("a bare noun phrase with no function word gets no hint", () => {
+  // Nothing is lost: there is no register to mirror, and MIRROR handles it.
+  expect(detectLanguage("Tama install path?")).toBeUndefined();
+  expect(detectLanguage("mic gain?")).toBeUndefined();
+});
+
+// The known cost of curating against English only. Kept because "mein" is one
+// of the most common romanised Hindi postpositions and German will not arrive.
+test("German mein is a known collision, and is accepted", () => {
+  expect(detectLanguage("wann ist mein termin")).toBe("hinglish");
 });

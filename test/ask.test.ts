@@ -541,3 +541,11 @@ test("a note with no capture date is anchored on now rather than dropped", () =>
   );
   expect(facts).toContain('"by december" means December 2026, which is in 3 months');
 });
+
+test("the pin rules do not order a file to be named, which cite:false forbids", () => {
+  // The WhatsApp Cloud API path runs with cite:false, so on the surface this
+  // was written for the two fragments used to contradict each other.
+  const pinned = systemPrompt({ pinned: true, cite: false });
+  expect(pinned).toContain("Never print a note path");
+  expect(pinned).not.toContain("say which file you are going by");
+});

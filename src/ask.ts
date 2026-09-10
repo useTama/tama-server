@@ -416,6 +416,13 @@ About when things were written:
  * authoritative, and wrong the moment one of them is a file the owner
  * regenerates every morning. Without this, a pinned guide saying "that one is
  * disposable" loses to a timestamp.
+ *
+ * It does not tell the model to name the file it went by, which it did at
+ * first. That is redundant where `CITE_RULES` applies and forbidden where
+ * `NO_CITE_RULES` does, and the WhatsApp Cloud API path runs with `cite: false`
+ * - so on the surface this was written for, the two fragments contradicted each
+ * other. Whether a path may be printed is one decision and it lives in one
+ * place.
  */
 const PIN_RULES = `
 About the pinned blocks above the excerpts:
@@ -425,7 +432,7 @@ About the pinned blocks above the excerpts:
   trust and where something would have been recorded.
 - It outranks recency for that decision. If the guide says a file is disposable, regenerated, or a
   daily scratch copy, it is not authority on what is current just because it is the newest thing you
-  were shown. Prefer what the guide calls canonical and say which file you are going by.
+  were shown. Prefer what the guide calls canonical.
 - A CURRENT STATE block is what is live right now. For a question about the present, prefer it over
   an older note, and treat a matched excerpt that contradicts it as the older reading unless the
   excerpt is newer and about the same thing.

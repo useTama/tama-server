@@ -189,3 +189,25 @@ test("a path named inside a note it was shown is not an invented citation", () =
   expect(answer).toBe("Morning-Brief.md is the disposable one, Now.md is the source of truth");
   expect(stripped).toEqual([]);
 });
+
+// This vault has a "Social Media Content/" folder. PATH_SOURCE cannot contain a
+// space (that is what stopped it eating prose), so a real citation arrives here
+// missing its first folder, and requiring a slash in front of the tail judged
+// it invented: the answer came back as "(Social Media )".
+test("a real citation in a folder whose name has a space survives", () => {
+  const allowed = ["Social Media Content/X/Sample/bold.md"];
+  const answer = "the bold samples are there (Social Media Content/X/Sample/bold.md)";
+  expect(stripUnsupportedCitations(answer, allowed)).toEqual({ answer, stripped: [] });
+});
+
+test("a real citation with a non-ASCII filename survives", () => {
+  const allowed = ["café-notes.md"];
+  const answer = "see (café-notes.md)";
+  expect(stripUnsupportedCitations(answer, allowed)).toEqual({ answer, stripped: [] });
+});
+
+// The boundary is what keeps the space allowance from being merely loose.
+test("a bare filename that is only a suffix of a real path is still unsupported", () => {
+  const { stripped } = stripUnsupportedCitations("as in (b.md)", ["Work/ab.md"]);
+  expect(stripped).toEqual(["b.md"]);
+});

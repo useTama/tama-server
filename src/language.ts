@@ -54,6 +54,13 @@
  * One hit is the threshold on purpose. A single "bhai" in an otherwise English
  * sentence IS code-mixing, and answering it in English would be exactly the
  * flattening `MIRROR` forbids.
+ *
+ * The curation is against ENGLISH only, and "mein" is the known cost of that:
+ * it is also German for "my", so "wann ist mein termin" reads as Hinglish.
+ * Kept anyway. "mein" is one of the most common postpositions in romanised
+ * Hindi and this pair is the one the owner actually code-mixes, so losing it to
+ * protect a language that will not arrive is the worse trade. Recorded rather
+ * than hidden, because the next person to read this list will wonder.
  */
 const HINDI_MARKERS = new Set([
   // to be, to do, to happen
@@ -80,6 +87,31 @@ const HINDI_MARKERS = new Set([
   "matlab", "yaar", "bhai", "achha", "acha", "accha", "theek", "thik", "sahi",
   "badhiya", "wala", "wale", "wali", "jaise", "waise", "itna", "pade", "bache",
   "dekh", "bol", "chal", "samajh", "bata", "batao", "hoga",
+]);
+
+/**
+ * Function words that say a Latin-script sentence is English.
+ *
+ * Needed because "no Hindi marker" is not evidence of English. Without this,
+ * "quand est mon rendez-vous" and "wann ist mein termin" both came back as
+ * english, and the hint then overrode `MIRROR` to demand an English reply to a
+ * French or German question. That is the exact failure the undefined case
+ * exists to avoid, arriving through the other door.
+ *
+ * Short and high-frequency: any real English sentence contains one of these,
+ * and none of them is a romanised Hindi word. A bare noun phrase with no
+ * function word at all ("mic gain?") returns undefined and loses nothing,
+ * because `MIRROR` handles a message with no register to mirror.
+ */
+const ENGLISH_MARKERS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "be", "been", "am",
+  "do", "does", "did", "doing", "done", "have", "has", "had",
+  "i", "you", "my", "your", "me", "we", "it", "its", "he", "she", "they", "them",
+  "what", "when", "where", "which", "who", "why", "how", "whats",
+  "and", "or", "but", "if", "not", "no", "yes", "of", "to", "in", "on", "at",
+  "for", "from", "with", "about", "any", "all", "can", "could", "should",
+  "would", "will", "just", "still", "there", "this", "that", "these", "those",
+  "need", "want", "get", "got", "say", "said", "think", "know", "tell",
 ]);
 
 /** Latin letters, so a script check does not depend on a locale. */
@@ -111,7 +143,10 @@ export function detectLanguage(message: string): Language | undefined {
     .split(/\s+/)
     .filter(Boolean);
 
-  return words.some((w) => HINDI_MARKERS.has(w)) ? "hinglish" : "english";
+  if (words.some((w) => HINDI_MARKERS.has(w))) return "hinglish";
+  // Positive evidence, not the absence of the other kind. Latin script with no
+  // Hindi marker in it is just as likely to be French.
+  return words.some((w) => ENGLISH_MARKERS.has(w)) ? "english" : undefined;
 }
 
 const NAMES: Record<Language, string> = {

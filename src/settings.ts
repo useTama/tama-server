@@ -23,7 +23,7 @@ import type { Audience, Config } from "./config.ts";
 import { listTokens, mintToken, revokeToken } from "./auth.ts";
 import { openDb } from "./db.ts";
 import { ask, choose, endpoint, requireTty, secret, yes } from "./prompt.ts";
-import { tama, grey, bold, ok, warn, divider, card } from "./ui.ts";
+import { tama, grey, bold, ok, warn, divider, card, displayName } from "./ui.ts";
 import { logo } from "./logo.ts";
 
 async function readBridge(path: string): Promise<BridgeSettings | undefined> {
@@ -108,7 +108,38 @@ async function devicesSection(dbPath: string): Promise<void> {
     }
     console.log(`\n${bold("Devices")}`);
     for (const row of tokens) {
-      console.log(`  ${row.device_name} ${grey(`${row.id}  paired ${row.created_at.slice(0, 10)}  ${row.last_used ? `last used ${row.last_used.slice(0, 10)}` : "never used"}`)}`);
+      // Two things this line has to do that it did not.
+      //
+      // Name what the credential IS. An OAuth grant issued to somebody else's
+      // servers and the owner's own unrestricted laptop token rendered
+      // identically here, and this is the list a person reads before typing an
+      // id at a revoke prompt. What it can do, and when it dies, are the two
+      // facts that decide whether to revoke it.
+      //
+      // And sanitise the name. For an OAuth token device_name comes from the
+      // client's own metadata document, so it is attacker-influenced text being
+      // printed straight into the owner's terminal, right above a prompt. An
+      // escape sequence there can move the cursor and rewrite the line above -
+      // which is to say, it can make one token's id look like another's.
+      const label = displayName(row.device_name);
+      const what = row.client_id
+        ? `oauth ${row.caps ?? "everything"}`
+        : row.audience
+          ? `audience ${row.audience}`
+          : row.caps ?? "everything";
+      const expiry = row.expires_at
+        ? Date.parse(row.expires_at) < Date.now()
+          ? "EXPIRED"
+          : `expires ${row.expires_at.slice(0, 10)}`
+        : "";
+      const facts = [
+        row.id,
+        what,
+        `paired ${row.created_at.slice(0, 10)}`,
+        row.last_used ? `last used ${row.last_used.slice(0, 10)}` : "never used",
+        expiry,
+      ].filter(Boolean).join("  ");
+      console.log(`  ${label} ${grey(facts)}`);
     }
     if (!(await yes("Revoke one?", false))) return;
     const id = await ask("Device id to revoke", "");

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { colourLevel } from "../src/ui.ts";
+import { colourLevel, displayName } from "../src/ui.ts";
 
 const tty = { isTTY: true };
 const pipe = { isTTY: false };
@@ -74,4 +74,34 @@ test("card never draws wider than the layout, and every border lines up", async 
   expect(widths.size).toBe(1);
   expect([...widths][0]!).toBeLessThanOrEqual(layoutWidth() + 2);
   expect(stripAnsi(card([long], undefined, 56)).includes("…")).toBe(true);
+});
+
+test("displayName makes another party's text safe to print above a prompt", () => {
+  // The Devices list prints a token's name and its id, and the owner reads that
+  // id and types it at a revoke prompt. For an OAuth grant the name comes from
+  // the client's own metadata document, so it is written by whoever is asking
+  // for access.
+  //
+  // A terminal is not a text box: an escape sequence in that name can move the
+  // cursor and rewrite the line above it, so one credential's line can be made
+  // to display another's id and the owner revokes the wrong one.
+  const cursorUp = "\u001b[1A\u001b[2Kimposter";
+  expect(displayName(cursorUp)).not.toContain("\u001b");
+  expect(displayName(cursorUp)).toBe("[1A [2Kimposter");
+
+  // Newlines and carriage returns do the same job with no escape at all.
+  expect(displayName("first\nsecond")).toBe("first second");
+  expect(displayName("overwrite\rme")).toBe("overwrite me");
+  expect(displayName("bell\u0007")).toBe("bell");
+  // C1 controls too - the 8-bit forms of the same thing.
+  expect(displayName("c1\u009bmarker")).toBe("c1 marker");
+
+  // A name long enough to wrap achieves most of the same effect, so it is capped.
+  const overlong = "a".repeat(200);
+  expect(displayName(overlong).length).toBeLessThanOrEqual(48);
+  expect(displayName(overlong).endsWith("…")).toBe(true);
+
+  // Ordinary names are left alone, and an empty one is named rather than blank.
+  expect(displayName("claude.ai")).toBe("claude.ai");
+  expect(displayName("   ")).toBe("(unnamed)");
 });

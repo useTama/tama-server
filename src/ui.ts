@@ -150,3 +150,30 @@ export function card(lines: string[], title?: string, width = 56, indent = 0): s
   const bottom = `${padLeft}${border(`╰${"─".repeat(minWidth)}╯`)}`;
   return [top, ...rows, bottom].join("\n");
 }
+
+/**
+ * Text from somewhere else, made safe to print next to something a human acts on.
+ *
+ * Most strings this file styles are ours. A few are not: an OAuth token's
+ * device name comes from the client's own metadata document, so it is written
+ * by whoever is asking for access and then printed into the owner's terminal -
+ * in the Devices list, directly above the prompt where they type an id to
+ * revoke one.
+ *
+ * A terminal is not a text box. Left alone, an escape sequence in that name can
+ * move the cursor, clear the line and rewrite what was printed before it, which
+ * means one credential's line can be made to display another's id. The reader
+ * would then revoke the wrong token and believe they had revoked the right one.
+ *
+ * So: no C0 or C1 controls (which is where ESC lives, so no escape sequences),
+ * no line breaks, and a width cap - because a name long enough to wrap achieves
+ * most of the same effect without needing a control character at all.
+ */
+export function displayName(raw: string, max = 48): string {
+  const flattened = raw
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!flattened) return "(unnamed)";
+  return flattened.length > max ? `${flattened.slice(0, max - 1)}…` : flattened;
+}

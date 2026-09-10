@@ -86,7 +86,7 @@ export const KNOWN_REDIRECTS = [
 ] as const;
 
 /** The one prefix match, because ChatGPT mints a callback id per connector. */
-const CHATGPT_CALLBACK_PREFIX = "https://chatgpt.com/connector/oauth/";
+export const CHATGPT_CALLBACK_PREFIX = "https://chatgpt.com/connector/oauth/";
 
 /**
  * Origins whose Client ID Metadata Documents will be fetched.

@@ -23,7 +23,7 @@ import type { Database } from "bun:sqlite";
 import type { Config } from "./config.ts";
 import { adminTokenOk, mintToken, revokeByToken } from "./auth.ts";
 import { CAPABILITIES, serialiseCaps, type Capability } from "./grants.ts";
-import { CONSENT_HEADERS, renderConsent } from "./consent-page.ts";
+import { consentHeaders, renderConsent } from "./consent-page.ts";
 import {
   ACCESS_TTL_MS,
   ASSERTION_TYPE,
@@ -214,7 +214,7 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
         // pre-ticked box is a decision the owner did not make.
         preTicked: ["read"],
       }),
-      { headers: CONSENT_HEADERS },
+      { headers: consentHeaders(extraRedirects(config)) },
     );
   }
 
@@ -261,7 +261,7 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
           preTicked: [],
           error: "That admin token was not right. Nothing has been granted.",
         }),
-        { status: 401, headers: CONSENT_HEADERS },
+        { status: 401, headers: consentHeaders(extraRedirects(config)) },
       );
     }
 

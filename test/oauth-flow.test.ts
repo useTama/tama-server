@@ -397,3 +397,46 @@ test("a resubmitted consent says the approval worked, not that it failed", async
     await f.cleanup();
   }
 });
+
+test("the consent page permits navigating to the callbacks it will redirect to", async () => {
+  // The bug this exists to prevent cost an entire afternoon and produced no
+  // error anywhere.
+  //
+  // Chrome enforces form-action on the REDIRECT that results from a form
+  // submission, not only on where the form posts. The consent form posts to
+  // /oauth/authorize (same origin) and the server answers 302 to claude.ai or
+  // chatgpt.com. Under `form-action 'self'` Chrome refuses to follow it: the
+  // server logs a clean 302 carrying a valid code, the browser stays put, and
+  // the connector never receives a code to exchange.
+  //
+  // It looked exactly like two different vendors silently giving up, while curl
+  // - which has no CSP - completed the same flow perfectly.
+  const f = await fixture();
+  try {
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const q = new URLSearchParams({
+      response_type: "code", client_id: "https://claude.ai/oauth/client-metadata",
+      redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: "S256", scope: "read",
+    });
+    const res = await f.routes.handle(get(`/oauth/authorize?${q}`));
+    const csp = res.headers.get("content-security-policy")!;
+
+    // Every origin the server is willing to send a code to must be navigable.
+    for (const origin of ["https://claude.ai", "https://claude.com", "https://chatgpt.com"]) {
+      expect(csp, origin).toContain(origin);
+    }
+    expect(csp).toContain("form-action 'self'");
+
+    // And no wider than that: the rest of the policy is unchanged, because the
+    // page still must not be framed or load anything.
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("base-uri 'none'");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+    // form-action is a permission to navigate, not to fetch: nothing else opens up.
+    expect(csp).not.toContain("script-src");
+  } finally {
+    await f.cleanup();
+  }
+});

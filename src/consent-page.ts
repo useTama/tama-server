@@ -28,6 +28,7 @@
 
 import { escapeXml as escapeHtml } from "./qr.ts";
 import type { Capability } from "./grants.ts";
+import { CHATGPT_CALLBACK_PREFIX, KNOWN_REDIRECTS } from "./oauth.ts";
 
 export type ConsentView = {
   requestId: string;
@@ -117,15 +118,50 @@ ${rows}
 </main></body></html>`;
 }
 
-/** The headers this page must be served with. */
-export const CONSENT_HEADERS: Record<string, string> = {
-  "content-type": "text/html; charset=utf-8",
-  "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
-  // Clickjacking an Allow button is the obvious attack on a consent screen, and
-  // both of these are needed: x-frame-options for what still only reads that,
-  // frame-ancestors for everything else.
-  "x-frame-options": "DENY",
-  "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-};
+/**
+ * The headers this page must be served with.
+ *
+ * `form-action` is the one that has to be built rather than written down, and
+ * getting it wrong broke the entire product silently.
+ *
+ * Chrome enforces `form-action` on the REDIRECT that results from a form
+ * submission, not only on where the form posts. This page posts to
+ * `/oauth/authorize` - same origin, allowed - and the server answers 302 to
+ * `https://claude.ai/...` or `https://chatgpt.com/...`. With `form-action
+ * 'self'` Chrome refuses to follow that redirect.
+ *
+ * Nothing reports this. The server logs a clean 302 with a valid code. The
+ * browser stays put. The connector never receives a code, so it never calls the
+ * token endpoint, so the failure appears to be the client silently giving up
+ * for no reason - which is exactly how it looked for hours, against two
+ * different vendors, while curl (which has no CSP) completed the same flow
+ * perfectly.
+ *
+ * So the allowed callback origins are listed here. They are the same origins
+ * `redirectAllowed` will accept, and no wider: a form-action entry is only a
+ * permission to navigate somewhere the server was already willing to send a
+ * code.
+ */
+export function consentHeaders(extraRedirects: string[] = []): Record<string, string> {
+  const origins = new Set<string>();
+  for (const uri of [...KNOWN_REDIRECTS, CHATGPT_CALLBACK_PREFIX, ...extraRedirects]) {
+    try {
+      origins.add(new URL(uri).origin);
+    } catch { /* not a URL; redirectAllowed will refuse it anyway */ }
+  }
+  const formAction = ["'self'", ...[...origins].sort()].join(" ");
+  return {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    // Clickjacking an Allow button is the obvious attack on a consent screen, and
+    // both of these are needed: x-frame-options for what still only reads that,
+    // frame-ancestors for everything else.
+    "x-frame-options": "DENY",
+    "content-security-policy":
+      `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; base-uri 'none'; frame-ancestors 'none'`,
+  };
+}
+
+/** The default set, for callers with no extra redirects configured. */
+export const CONSENT_HEADERS: Record<string, string> = consentHeaders();

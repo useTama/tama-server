@@ -3,6 +3,7 @@ import type { Llm, LlmMessage, LlmUsage } from "./llm.ts";
 import type { View } from "./views.ts";
 import { renderPinnedNotes, type PinnedNote } from "./pin.ts";
 import { CANNOT_WRITE, citedPaths, claimedWrite, stripUnsupportedCitations } from "./guard.ts";
+import { detectLanguage, languageLine } from "./language.ts";
 
 /**
  * Answering questions from the vault: retrieve, frame, stream.
@@ -638,6 +639,11 @@ export type TurnContext = {
    * question about it, which is not the same as a search that found nothing.
    */
   searched?: boolean;
+  /**
+   * The language of this message, stated so the prior turns cannot decide it.
+   * See language.ts.
+   */
+  language?: string;
 };
 
 function buildMessages(
@@ -665,7 +671,10 @@ function buildMessages(
         // read against, and outside the system prompt so the cacheable prefix
         // does not change every day.
         `Today is ${todayLine(now)}.`,
-        "",
+        // Beside the date and the speaker label, because all three are facts
+        // about this turn rather than about the deployment, and this is the
+        // part of the request that is not the cached prefix.
+        ...(extra.language ? [extra.language, ""] : [""]),
         ...(summary
           ? [`Earlier in this conversation: ${summary}`, ""]
           : []),
@@ -791,7 +800,7 @@ export async function* ask(opts: {
   const pins = searched ? opts.pins ?? [] : [];
   const messages = buildMessages(
     question, chunks, opts.speaker, opts.speakerIsOwner, opts.history, opts.summary, opts.now,
-    { pins, searched },
+    { pins, searched, language: languageLine(detectLanguage(question)) },
   );
 
   let answer = "";

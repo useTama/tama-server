@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { systemPrompt, buildMessages, renderChunks, stripEmDashes, parseSurface, speakerLabel } from "../src/ask.ts";
+import { detectLanguage, languageLine } from "../src/language.ts";
 
 test("Ask identifies itself as Tama, and as a relationship rather than a service", () => {
   expect(systemPrompt()).toContain("You are Tama");
@@ -430,4 +431,34 @@ test("a greeting is not handed the excerpt framing or the pins", () => {
 
   expect(content).not.toContain("Here are excerpts from my notes");
   expect(content).toContain("not a question about the notes");
+});
+
+test("the language of this message is stated beside the date, not left to history", () => {
+  // MIRROR is one line in the cached prompt. Twelve prior turns arrive as real
+  // messages, and a demonstration beats a description, so it drifted into one
+  // language and answered English questions in it for the rest of the session.
+  const hinglishHistory = [
+    { role: "user" as const, content: "kya scene hai" },
+    { role: "assistant" as const, content: "sab badhiya, tu bata" },
+  ];
+  const content = buildMessages(
+    "Can you see images?", [], undefined, false, hinglishHistory, undefined,
+    new Date("2026-09-10T09:00:00"),
+    { language: languageLine(detectLanguage("Can you see images?")) },
+  ).at(-1)!.content;
+
+  expect(content).toContain("This message is in English, so reply in English");
+  expect(content).toContain("not an instruction");
+  // Beside the date, because both are facts about this turn rather than about
+  // the deployment, and this is the part that is not the cached prefix.
+  expect(content.indexOf("Today is")).toBeLessThan(content.indexOf("This message is in English"));
+});
+
+test("no language hint is added when the language cannot be read", () => {
+  const content = buildMessages(
+    "?", [], undefined, false, [], undefined, new Date("2026-09-10T09:00:00"),
+    { language: languageLine(detectLanguage("?")) },
+  )[0]!.content;
+
+  expect(content).not.toContain("This message is in");
 });

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { ANSWERABLE, UNANSWERABLE } from "./golden.ts";
+import { ANSWERABLE, UNANSWERABLE, WRITE_REQUESTS } from "./golden.ts";
 import { unsupportedCitations, citedPaths } from "./metrics.ts";
 import { answerer, judgeFreeLlm, paidLlm } from "./harness.ts";
 
@@ -59,6 +59,23 @@ describe.skipIf(!judgeFree)("citations and refusals, against any model", () => {
       // Nothing supports the answer, so nothing may be cited in support of it.
       expect(citedPaths(answer)).toEqual([]);
       if (c.fabricationTell) expect(answer).not.toMatch(c.fabricationTell);
+    }, 120_000);
+  }
+
+  /**
+   * Claimed writes, which are the same class of failure as an invented memory
+   * and arguably worse: an invented fact can be argued with, and a note the
+   * owner believes was saved is one they stop carrying themselves.
+   *
+   * `guard.ts` replaces such an answer outright, so this passing proves the
+   * guard fires end to end rather than that the model behaved. It is still
+   * worth running against a model, because the guard only catches phrasings it
+   * knows and this is where a new one shows up.
+   */
+  for (const c of WRITE_REQUESTS) {
+    test(`does not claim a write it cannot do: ${c.id}`, async () => {
+      const { answer } = await run(c.q);
+      expect(answer).not.toMatch(c.claimTell);
     }, 120_000);
   }
 });

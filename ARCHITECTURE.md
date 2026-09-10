@@ -42,6 +42,8 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `vault.ts` | **every** read and write, and all seven invariants below |
 | `retrieval.ts` | grep over the vault, ranked, behind a `Retriever` interface |
 | `pin.ts` | notes chosen by path rather than found by score, bounded and view-checked |
+| `guard.ts` | what must be true of a finished answer, held rather than asked for |
+| `language.ts` | which language this message is in, so history cannot decide it |
 | `llm.ts` | two adapters behind one streaming interface |
 | `ask.ts` | retrieve, frame as data, stream |
 | `digest.ts` | counts and failures, daily. Needs no model, a digest is arithmetic |
@@ -178,3 +180,49 @@ Three properties make this safe rather than a hole:
 Not cached. The only cache breakpoint is the Anthropic adapter's `system` parameter, and
 property 1 forbids putting a pin there, so the volatility split between the two roles buys
 framing rather than a discount.
+
+## Some rules are held, not asked for
+
+The prompt is where a rule is requested. `guard.ts` is where the ones that must not be
+negotiable are enforced, on the finished text. `stripEmDashes` was the first of these and states
+the principle: an absolute rule should not depend on the model choosing to follow it.
+
+Two rules earned it. Both were already written in `GROUND_RULES`, both were broken in a single
+real session, and both fail silently.
+
+**A citation names a note the model was shown.** `CITE_RULES` asks for a path beside every claim
+because an uncited fact reads as invented. The inverse is worse and was unhandled: a cited path
+reads as *verified*, so the citation format is what makes a fabricated claim credible. The path
+is stripped and the sentence kept, since the claim may be sound and the path mis-remembered, and
+deleting a true statement to punish a bad citation trades one silent error for another.
+
+**The ask path cannot write.** It confirmed writes anyway, because the pressure to break that
+rule comes from the owner on exactly the requests they care most about, and "add this to the
+build plan" is not a question. Such an answer is replaced wholesale rather than edited: rewriting
+a confirmation into a refusal means guessing which clause was the lie. This is a guard, not the
+feature; letting a chat write to the vault is [#52](https://github.com/useTama/tama-server/issues/52).
+
+Exact on the buffered path, which is where every chat client already is. An SSE consumer
+rendering deltas sees unguarded text first and gets the corrected answer in `done`.
+
+## Three facts about this turn, stated where they cannot be outvoted
+
+The system prompt is a cacheable prefix, so anything that changes per message rides in the user
+message instead. Today's date was the first. Three more joined it, each because a prompt rule was
+losing to something stronger.
+
+| Fact | Was losing to | Now |
+|---|---|---|
+| the language of this message | twelve prior turns of the model's own output | named outright, with the earlier turns explicitly disowned |
+| whether the vault was searched | one sentence covering both "found nothing" and "did not search" | separate, so a greeting is not answered with a report on a search |
+| how far away each date is | the model's own arithmetic | subtracted in `dates.ts` and handed over as words |
+
+`MIRROR` asked for the current message's language and always had. It is one line; the history is
+twelve worked examples of how this assistant talks, and a demonstration beats a description. The
+fix is not to weaken history, which is what makes a follow-up work, but to add a stronger
+per-turn signal.
+
+The interval rule is the same shape. "Never state an interval you have not worked out" is not
+obeyable by something with no reliable way to subtract two dates, and it produced the same
+deadline as eight days away and then seven. `until()` respects precision: a month-precision
+mention has a fabricated day, so it renders as "next month" and never as a day count.

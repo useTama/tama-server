@@ -111,6 +111,30 @@ test("a token authenticates, and revoking one does not affect the others", () =>
   expect(verifyToken(db, b.token)?.deviceName).toBe("cheeko-02");
 });
 
+test("a token carries its scope back out, and a bare name still means the owner", () => {
+  // The compatibility half: `mintToken(db, name)` is what every caller passed
+  // before capabilities existed, and it has to keep minting an unrestricted
+  // token. A string second argument still means the audience, because that is
+  // the other signature already in the codebase and a silent change of meaning
+  // there would be a silent change of access.
+  const owner = mintToken(db, "laptop");
+  const verified = verifyToken(db, owner.token)!;
+  expect(verified.caps).toBeUndefined();
+  expect(verified.readView).toBeUndefined();
+  expect(verified.writeView).toBeUndefined();
+  expect(verified.audience).toBeUndefined();
+
+  const legacy = mintToken(db, "group", "friends");
+  expect(verifyToken(db, legacy.token)?.audience).toBe("friends");
+
+  const agent = mintToken(db, "agent", { caps: "read,write", readView: "work", writeView: "work-logs" });
+  const back = verifyToken(db, agent.token)!;
+  expect(back.caps).toBe("read,write");
+  expect(back.readView).toBe("work");
+  expect(back.writeView).toBe("work-logs");
+  expect(back.audience).toBeUndefined();
+});
+
 test("tokens are not stored in the clear", () => {
   const { token } = mintToken(db, "cheeko-01");
   const rows = db.query("SELECT hash FROM tokens").all() as { hash: string }[];

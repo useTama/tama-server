@@ -26,6 +26,15 @@ export type Config = {
      * whatsapp key that needs it.
      */
     publicBaseUrl?: string;
+    /**
+     * Whether something trusted terminates TLS in front of this process.
+     *
+     * Off by default and only turned on by `tama expose --public`, because
+     * `X-Forwarded-For` is a header a client can send: trusting it without a
+     * proxy actually being there would let any caller claim a new address per
+     * request and never be throttled at all.
+     */
+    trustProxy: boolean;
   };
   notify: {
     provider: "console" | "ntfy";
@@ -581,6 +590,11 @@ export function loadConfig(path = defaultConfigPath()): Config {
         const url = parseBaseUrl(raw.server?.publicBaseUrl, "server.publicBaseUrl", false);
         return url ? { publicBaseUrl: url } : {};
       })(),
+      // `true` and `"true"` both, because docker/tama writes config values
+      // through a Python one-liner that has only ever written strings. Anything
+      // else - including the string "false" - is false, which is the safe
+      // direction: the failure of reading this wrong is a spoofable throttle.
+      trustProxy: raw.server?.trustProxy === true || raw.server?.trustProxy === "true",
     },
     notify: {
       provider,

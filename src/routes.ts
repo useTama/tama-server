@@ -41,6 +41,7 @@ import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
 import { resolveView, visible, type View } from "./views.ts";
 import { may, resolveGrant, writeRefusal, type Grant } from "./grants.ts";
 import { AuthThrottle } from "./auth-throttle.ts";
+import { clientIp } from "./client-ip.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { summariseSession } from "./session-summary.ts";
 import { appendSession, sessionPath } from "./session.ts";
@@ -529,7 +530,7 @@ const whatsapp = config.whatsapp
     if (url.pathname === "/pair" && req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { code?: string; deviceName?: string };
       if (!b.code) return json({ error: "code is required" }, 400);
-      const caller = requestIP?.(req) ?? "unknown";
+      const caller = clientIp(req, requestIP?.(req), config.server.trustProxy);
       const r = redeemPairingCode(db, String(b.code), b.deviceName ?? "unnamed device", caller);
       if (!r.ok) return json({ error: `pairing code ${r.reason}` }, 403);
       safeNotify(notifier, { level: "info", title: "Tama: new device paired", message: b.deviceName ?? "unnamed device" });
@@ -542,7 +543,7 @@ const whatsapp = config.whatsapp
      * authenticates with an HMAC rather than a bearer, and throttling its
      * retries on our counter would drop real messages.
      */
-    const caller = requestIP?.(req) ?? "unknown";
+    const caller = clientIp(req, requestIP?.(req), config.server.trustProxy);
     const locked = throttle.check(caller);
     if (locked.locked) {
       return json({ error: "too many failed credentials, try later" }, 429, {

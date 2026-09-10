@@ -32,7 +32,18 @@ export function openDb(path: string): Database {
       -- It lives on the token rather than in the request because a client that
       -- names its own audience can name a different one. The bridge holds one
       -- token per audience; the server decides what each may see.
-      audience    TEXT
+      audience    TEXT,
+
+      -- What this token may do, and where. All three NULL is the owner's own
+      -- device: every capability, no path constraint. See src/grants.ts for why
+      -- these are separate from the audience column rather than derived from it.
+      --
+      -- caps is a comma-separated subset of capture,read,write,ask. The two
+      -- view columns hold view NAMES; views.ts owns what they mean, so the same
+      -- subset is not spelled out again per token.
+      caps        TEXT,
+      read_view   TEXT,
+      write_view  TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -235,6 +246,13 @@ export function openDb(path: string): Database {
   const columns = db.query("PRAGMA table_info(tokens)").all() as { name: string }[];
   if (!columns.some((c) => c.name === "audience")) {
     db.exec("ALTER TABLE tokens ADD COLUMN audience TEXT");
+  }
+  // Same shape, same reasoning: additive and nullable, so every token that
+  // predates capabilities keeps meaning "the owner's own device, everything".
+  for (const name of ["caps", "read_view", "write_view"]) {
+    if (!columns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE tokens ADD COLUMN ${name} TEXT`);
+    }
   }
 
   return db;

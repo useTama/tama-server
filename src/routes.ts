@@ -433,6 +433,7 @@ const whatsapp = config.whatsapp
           // No view on this path: the Cloud API bridge answers as the owner in
           // a one-to-one chat, so there is nothing to scope the pins against.
           pins: await pinnedFor(undefined),
+          onGuard: (m) => console.error(`${orange("ask")} ${grey(m)}`),
         });
         const ms = Math.round(performance.now() - started);
 
@@ -1042,7 +1043,7 @@ const whatsapp = config.whatsapp
           async start(controller) {
             const enc = new TextEncoder();
             try {
-              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins })) {
+              for await (const ev of ask({ question, retriever, llm: llm!, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins, onGuard: (m) => console.error(`${orange("ask")} ${grey(m)}`) })) {
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(ev)}\n\n`));
                 // The streaming half reported nothing, so an answer streamed to
                 // a client spent money the log never mentioned - and the buffered
@@ -1081,7 +1082,7 @@ const whatsapp = config.whatsapp
       let answer = "";
       let usage: import("./llm.ts").LlmUsage | undefined;
       let sources: Array<{ path: string; score: number }> = [];
-      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins })) {
+      for await (const ev of ask({ question, retriever, llm, maxChunks: config.ask?.maxChunks, view: profile.view, prompt: profile.prompt, speaker, speakerIsOwner, history, summary: memory.summary, searchQuery: search, pins, onGuard: (m) => console.error(`${orange("ask")} ${grey(m)}`) })) {
         if (ev.type === "sources") sources = ev.sources;
         else if (ev.type === "done") {
           answer = ev.answer;

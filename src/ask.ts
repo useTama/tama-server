@@ -2,6 +2,7 @@ import type { Chunk, Retriever } from "./retrieval.ts";
 import type { Llm, LlmMessage, LlmUsage } from "./llm.ts";
 import type { View } from "./views.ts";
 import { renderPinnedNotes, type PinnedNote } from "./pin.ts";
+import { citedPaths, stripUnsupportedCitations } from "./guard.ts";
 
 /**
  * Answering questions from the vault: retrieve, frame, stream.
@@ -685,6 +686,12 @@ export async function* ask(opts: {
    * leaves every vault read in the adapter that owns the invariants.
    */
   pins?: PinnedNote[];
+  /**
+   * Told when a guard changed the answer, so a server can log what the model
+   * tried to say. Not an error path: the caller gets a corrected answer either
+   * way, and a guard that fires silently is one nobody knows to investigate.
+   */
+  onGuard?: (message: string) => void;
   /** The clock, so a test can assert the date the model was told. */
   now?: Date;
 }): AsyncGenerator<AskEvent> {
@@ -737,7 +744,42 @@ export async function* ask(opts: {
     return;
   }
 
-  yield { type: "done", answer, ...(usage ? { usage } : {}) };
+  // Held on the finished text, because both of these need the whole answer and
+  // neither can be judged a delta at a time.
+  //
+  // Exact on the buffered path, which is where every chat client already is:
+  // the WhatsApp bridges read `answer` off `askOnce` or off the JSON route and
+  // never subscribe to deltas. An SSE consumer that renders deltas will have
+  // shown the unguarded text before this runs, and `done` then carries the
+  // corrected version. Holding a delta back until a path-shaped token resolved
+  // would fix that and is a bigger change than the failure justifies.
+  const guarded = guardAnswer(answer, {
+    allowed: [
+      ...chunks.map((c) => c.path),
+      ...pins.map((p) => p.path),
+      // Paths the thread was already shown. A follow-up answered from history
+      // rather than from this turn's retrieval is citing something real, and
+      // comparing against this turn alone would strip it. A fabricated path
+      // that entered history before this guard existed stays allowed until the
+      // turns roll over, which is a bounded and self-healing cost.
+      ...(opts.history ?? []).flatMap((m) => citedPaths(m.content)),
+    ],
+    onNotice: opts.onGuard,
+  });
+
+  yield { type: "done", answer: guarded, ...(usage ? { usage } : {}) };
+}
+
+/** Apply the answer guards to the finished text. */
+function guardAnswer(
+  answer: string,
+  opts: { allowed: string[]; onNotice?: (message: string) => void },
+): string {
+  const { answer: clean, stripped } = stripUnsupportedCitations(answer, opts.allowed);
+  if (stripped.length > 0) {
+    opts.onNotice?.(`removed ${stripped.length} invented citation(s): ${stripped.join(", ")}`);
+  }
+  return clean;
 }
 
 /** Non-streaming convenience for callers that just want the finished answer. */
@@ -754,6 +796,7 @@ export async function askOnce(opts: {
   summary?: string;
   searchQuery?: string;
   pins?: PinnedNote[];
+  onGuard?: (message: string) => void;
   now?: Date;
 }): Promise<{ answer: string; sources: Array<{ path: string; score: number }>; usage?: LlmUsage }> {
   let sources: Array<{ path: string; score: number }> = [];

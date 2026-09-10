@@ -34,7 +34,7 @@ import type { Database } from "bun:sqlite";
 import type { Retriever } from "./retrieval.ts";
 import type { Vault } from "./vault.ts";
 import { visible } from "./views.ts";
-import { may, writeRefusal, type Grant } from "./grants.ts";
+import { may, writeRefusal, type Capability, type Grant } from "./grants.ts";
 import { appendSession, sessionPath } from "./session.ts";
 
 /** Everything a tool needs, passed in so this file owns no state. */
@@ -70,6 +70,19 @@ type Tool = {
   name: string;
   title: string;
   description: string;
+  /**
+   * What a caller must hold to call this at all, checked once in `tools/call`
+   * rather than inside each `run`.
+   *
+   * It was inside each run, and only the two writing tools had it - so `read`
+   * was a capability the model could grant and nothing enforced. A token minted
+   * `--caps capture`, an ingest agent deliberately denied read, could still
+   * call search_notes and read the whole vault. That is the exact case #38
+   * lists first, and the reason it slipped is that a per-tool check is a thing
+   * you can forget to write. Here it is a field: a new tool cannot compile
+   * without answering the question.
+   */
+  capability: Capability;
   inputSchema: Record<string, unknown>;
   run: (args: Record<string, any>, caller: McpCaller, deps: McpDeps) => Promise<ToolResult>;
 };
@@ -103,6 +116,7 @@ async function confinedNote(relPath: string, caller: McpCaller, deps: McpDeps): 
 const TOOLS: Tool[] = [
   {
     name: "search_notes",
+    capability: "read",
     title: "Search the second brain",
     // Descriptions are the interface. A vague one is never called; an eager one
     // is called every turn and burns tokens. Both failures are silent, so these
@@ -138,6 +152,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "read_note",
+    capability: "read",
     title: "Read one note",
     description:
       "Read a whole note by its vault-relative path, for when a search excerpt is not enough. " +
@@ -167,6 +182,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "append_note",
+    capability: "write",
     title: "Add to a note",
     description:
       "Append Markdown to a note, creating it if needed. Use it when the user says to remember " +
@@ -203,6 +219,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "record_session",
+    capability: "write",
     title: "Record what this session did",
     description:
       "Write a summary of the work just done into the user's project log, so they can ask about " +
@@ -255,6 +272,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "today",
+    capability: "read",
     title: "What is active right now",
     description:
       "What the user has been doing lately: recent voice captures and the latest entry from each " +
@@ -362,8 +380,13 @@ export async function handleMcp(req: Request, caller: McpCaller, deps: McpDeps):
       return isNotification ? new Response(null, { status: 202 }) : rpcResult(id, {});
 
     case "tools/list":
+      // Only what this caller may actually call. Advertising a tool that will
+      // always refuse spends the model's attention on discovering the refusal,
+      // and descriptions are the interface: a list that lies about what is
+      // available is the same failure as a description that lies about what a
+      // tool does.
       return rpcResult(id, {
-        tools: TOOLS.map((t) => ({
+        tools: TOOLS.filter((t) => may(caller.grant, t.capability)).map((t) => ({
           name: t.name,
           title: t.title,
           description: t.description,
@@ -374,6 +397,14 @@ export async function handleMcp(req: Request, caller: McpCaller, deps: McpDeps):
     case "tools/call": {
       const tool = TOOLS.find((t) => t.name === params?.name);
       if (!tool) return rpcError(id, METHOD_NOT_FOUND, `no tool named ${JSON.stringify(params?.name ?? "")}`);
+      // One check, before any tool runs, so a capability cannot be forgotten by
+      // a tool that does not think to ask.
+      if (!may(caller.grant, tool.capability)) {
+        return rpcResult(id, {
+          content: [{ type: "text", text: `This token may not ${tool.capability} the notes.` }],
+          isError: true,
+        });
+      }
       try {
         const result = await tool.run(params?.arguments ?? {}, caller, deps);
         // A tool failure is a result with isError, not a protocol error: the

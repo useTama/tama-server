@@ -46,6 +46,14 @@ const agent: McpCaller = {
   },
 };
 
+/**
+ * An ingest agent: may capture, may not read the vault back. The first case
+ * #38 lists, and the one that was unenforced - every tool checked `write` or
+ * nothing, so `read` was a capability the owner could grant and the server
+ * ignored.
+ */
+const ingest: McpCaller = { deviceName: "esp32", grant: { caps: new Set(["capture"] as const) } };
+
 function rpc(method: string, params?: unknown, id: unknown = 1) {
   return new Request("http://tama.local/mcp", {
     method: "POST",
@@ -231,6 +239,44 @@ test("append_note and record_session go through the vault's own checks", async (
 
     const session = await callText(await handleMcp(rpc("tools/call", { name: "record_session", arguments: { project: "Tama Server", summary: "fixed the mention detection", next: ["scoped tokens"] } }), owner, deps));
     expect(session.text).toContain("Projects/tama-server/sessions.md");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a token without read cannot read, whatever the view says", async () => {
+  const { deps, cleanup } = await fixture();
+  try {
+    for (const [name, args] of [
+      ["search_notes", { query: "mic gain problem" }],
+      ["read_note", { path: "Work/cpa.md" }],
+      ["today", {}],
+    ] as const) {
+      const { text, isError } = await callText(
+        await handleMcp(rpc("tools/call", { name, arguments: args }), ingest, deps),
+      );
+      expect(isError, `${name} should refuse a capture-only token`).toBe(true);
+      expect(text).toContain("may not read");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("tools/list offers only what this caller may call", async () => {
+  const { deps, cleanup } = await fixture();
+  try {
+    const all = await (await handleMcp(rpc("tools/list"), owner, deps)).json() as any;
+    expect(all.result.tools).toHaveLength(5);
+
+    // An audience reads and asks; it never writes. Advertising append_note to
+    // it spends the model's attention on discovering a refusal.
+    const scoped = await (await handleMcp(rpc("tools/list"), guest, deps)).json() as any;
+    const names = scoped.result.tools.map((t: any) => t.name).sort();
+    expect(names).toEqual(["read_note", "search_notes", "today"]);
+
+    const ingestList = await (await handleMcp(rpc("tools/list"), ingest, deps)).json() as any;
+    expect(ingestList.result.tools).toHaveLength(0);
   } finally {
     await cleanup();
   }

@@ -336,3 +336,44 @@ export function describe(m: Mention): string {
   const month = MONTH_LABELS[Number(mo) - 1] ?? mo;
   return m.precision === "month" ? `${month} ${y}` : `${Number(d)} ${month} ${y}`;
 }
+
+/**
+ * How far away a mention is, in the units the note actually gave.
+ *
+ * `TEMPORAL_RULES` said "never state an interval you have not worked out",
+ * which is not something a model can obey: it has a date string on each
+ * excerpt, today's date in the user message, and no reliable way to subtract
+ * them. It did it anyway. In one session the same deadline was reported as
+ * eight days away and, in the very next message, seven.
+ *
+ * So the subtraction happens here and the answer is handed the words.
+ *
+ * The precision rule is the whole reason this is not two lines. A
+ * month-precision mention has a fabricated day (`at` is always the 1st, see
+ * both month producers above), so rendering it as a day count would invent
+ * certainty the note never had, in a format the owner would act on. "November
+ * 2026" is three months away, never ninety-one days. `describe` already refuses
+ * to print that day; this refuses to count with it.
+ */
+export function until(m: Mention, now: Date): string {
+  const [y, mo, d] = m.at.split("-").map(Number) as [number, number, number];
+
+  if (m.precision === "month") {
+    const months = (y - now.getFullYear()) * 12 + (mo - 1 - now.getMonth());
+    if (months === 0) return "this month";
+    if (months === 1) return "next month";
+    if (months === -1) return "last month";
+    return months > 0 ? `in ${months} months` : `${-months} months ago`;
+  }
+
+  // Both midnight-local, so the difference is a whole number of calendar days
+  // and the rounding only ever absorbs a daylight-saving hour.
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(y, mo - 1, d);
+  const days = Math.round((target.getTime() - today.getTime()) / 86_400_000);
+
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  return days > 0 ? `in ${days} days` : `${-days} days ago`;
+}

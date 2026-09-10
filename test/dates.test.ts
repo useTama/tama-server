@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mentionedDates } from "../src/dates.ts";
+import { mentionedDates, until } from "../src/dates.ts";
 
 const JAN14 = "2025-01-14T06:55:20+05:30";
 const at = (body: string, anchor = JAN14) => mentionedDates(body, anchor);
@@ -172,4 +172,49 @@ test("the digest quotes the note and cites it, so a bad parse looks like one", (
 test("nothing coming up adds no section rather than an empty one", () => {
   const rendered = renderDigest(buildDigest(db, "2025-01-13T00:00:00.000Z", NOW));
   expect(rendered.message).not.toContain("coming up");
+});
+
+// ---------------------------------------------------------------- until
+
+// TEMPORAL_RULES said "never state an interval you have not worked out", which
+// a model cannot obey: it has a date string and today's date and no reliable
+// way to subtract them. In one session the same deadline came back as eight
+// days away and then, in the next message, seven.
+test("a day-precision mention counts days", () => {
+  const now = new Date(2026, 8, 10); // 10 September 2026
+  const day = (at: string) => until({ text: "x", at, precision: "day" }, now);
+
+  expect(day("2026-09-10")).toBe("today");
+  expect(day("2026-09-11")).toBe("tomorrow");
+  expect(day("2026-09-09")).toBe("yesterday");
+  expect(day("2026-09-16")).toBe("in 6 days");
+  expect(day("2026-09-03")).toBe("7 days ago");
+  expect(day("2026-10-10")).toBe("in 30 days");
+});
+
+// The reason this function exists rather than a subtraction at the call site.
+// A month-precision `at` has a fabricated day, so a day count would invent
+// certainty the note never gave, in a format the owner would act on.
+test("a month-precision mention never becomes a day count", () => {
+  const now = new Date(2026, 8, 10);
+  const month = (at: string) => until({ text: "x", at, precision: "month" }, now);
+
+  expect(month("2026-09-01")).toBe("this month");
+  expect(month("2026-10-01")).toBe("next month");
+  expect(month("2026-08-01")).toBe("last month");
+  expect(month("2026-11-01")).toBe("in 2 months");
+  expect(month("2027-01-01")).toBe("in 4 months");
+  expect(month("2026-06-01")).toBe("3 months ago");
+
+  // The fabricated 1st is never counted with, in any direction.
+  for (const at of ["2026-09-01", "2026-11-01", "2026-06-01"]) {
+    expect(month(at)).not.toMatch(/day/);
+  }
+});
+
+test("an interval is measured in calendar days, not elapsed hours", () => {
+  // Late in the evening, so an hours-based subtraction would round to the
+  // wrong day and a DST shift would too.
+  const now = new Date(2026, 8, 10, 23, 55);
+  expect(until({ text: "x", at: "2026-09-11", precision: "day" }, now)).toBe("tomorrow");
 });

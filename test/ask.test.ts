@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { systemPrompt, buildMessages, renderChunks, stripEmDashes, parseSurface, speakerLabel } from "../src/ask.ts";
+import { systemPrompt, buildMessages, renderChunks, stripEmDashes, parseSurface, speakerLabel, datesNamed } from "../src/ask.ts";
 import { detectLanguage, languageLine } from "../src/language.ts";
 
 test("Ask identifies itself as Tama, and as a relationship rather than a service", () => {
@@ -461,4 +461,83 @@ test("no language hint is added when the language cannot be read", () => {
   )[0]!.content;
 
   expect(content).not.toContain("This message is in");
+});
+
+test("intervals are worked out for the model, and the prompt forbids doing it itself", () => {
+  const prompt = systemPrompt();
+  expect(prompt).toContain("never do date arithmetic yourself");
+  expect(prompt).toContain("worked out for you");
+  expect(prompt).toContain("name the date instead of subtracting");
+  // The precision rule, stated where the model will read it rather than only
+  // enforced in dates.ts.
+  expect(prompt).toContain("stays a month");
+});
+
+test("a date in an excerpt arrives already subtracted", () => {
+  const chunks = [{
+    path: "Work/iict.md",
+    text: "print cutoff is 15 september and the workshop is 2 october",
+    score: 9,
+    capturedAt: "2026-09-08T20:20:00+05:30",
+  }];
+
+  const content = buildMessages(
+    "when is the print cutoff", chunks, undefined, false, [], undefined,
+    new Date(2026, 8, 10),
+    { dates: undefined },
+  )[0]!.content;
+  // Nothing supplied, so nothing claimed.
+  expect(content).not.toContain("worked out against today");
+
+  const withDates = buildMessages(
+    "when is the print cutoff", chunks, undefined, false, [], undefined,
+    new Date(2026, 8, 10),
+    { dates: ['"15 september" means 15 September 2026, which is in 5 days'] },
+  )[0]!.content;
+
+  expect(withDates).toContain("worked out against today");
+  expect(withDates).toContain("the only intervals you");
+  expect(withDates).toContain("which is in 5 days");
+  // A reading of the excerpts, so it sits after them and before the question.
+  expect(withDates.indexOf("END OF NOTES")).toBeLessThan(withDates.indexOf("which is in 5 days"));
+  expect(withDates.indexOf("which is in 5 days")).toBeLessThan(withDates.indexOf("My question:"));
+});
+
+test("datesNamed reads the excerpt, anchored on when the note was captured", () => {
+  // Computed from the excerpt rather than from note_dates, because that table
+  // is only written on capture and the notes that state deadlines are usually
+  // the hand-written ones.
+  const facts = datesNamed(
+    [{
+      path: "Work/iict.md",
+      text: "the print cutoff is 15 september and it all ships in november 2026",
+      score: 9,
+      capturedAt: "2026-09-08T20:20:00+05:30",
+    }],
+    new Date(2026, 8, 10),
+  );
+
+  expect(facts).toContain('"15 september" means 15 September 2026, which is in 5 days');
+  // Month precision survives the whole way to the sentence.
+  expect(facts).toContain('"november 2026" means November 2026, which is in 2 months');
+  expect(facts.join(" ")).not.toContain("Work/iict.md");
+});
+
+test("one day named twice does not read as two deadlines", () => {
+  const facts = datesNamed(
+    [
+      { path: "a.md", text: "due 2026-09-16", score: 5, capturedAt: "2026-09-10T09:00:00+05:30" },
+      { path: "b.md", text: "the 16 september thing", score: 4, capturedAt: "2026-09-10T09:00:00+05:30" },
+    ],
+    new Date(2026, 8, 10),
+  );
+  expect(facts).toHaveLength(1);
+});
+
+test("a note with no capture date is anchored on now rather than dropped", () => {
+  const facts = datesNamed(
+    [{ path: "Now.md", text: "everything has to be done by december", score: 7 }],
+    new Date(2026, 8, 10),
+  );
+  expect(facts).toContain('"by december" means December 2026, which is in 3 months');
 });

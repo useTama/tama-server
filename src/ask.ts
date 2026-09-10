@@ -4,6 +4,7 @@ import type { View } from "./views.ts";
 import { renderPinnedNotes, type PinnedNote } from "./pin.ts";
 import { CANNOT_WRITE, citedPaths, claimedWrite, stripUnsupportedCitations } from "./guard.ts";
 import { detectLanguage, languageLine } from "./language.ts";
+import { describe, mentionedDates, until } from "./dates.ts";
 
 /**
  * Answering questions from the vault: retrieve, frame, stream.
@@ -397,8 +398,11 @@ About when things were written:
   and which way they changed it is information.
 - Age alone is not staleness. A decision made two years ago that nothing has contradicted is still
   their decision. Prefer recency only when the question is about the present.
-- Never invent a date you were not given, and never state an interval you have not worked out. "In
-  January" is safe. "Three weeks ago" is safe only if the arithmetic is right.`;
+- Never invent a date you were not given, and never do date arithmetic yourself. Any interval worth
+  stating is worked out for you and listed under the excerpts. Use those words. If the interval you
+  want is not in that list, name the date instead of subtracting to get one.
+- A date the note gave to the month only stays a month. "November" is "next month", never a number
+  of days, however much more precise a day count would sound.`;
 
 /**
  * How to read the pinned notes, which is the half retrieval cannot supply.
@@ -644,7 +648,59 @@ export type TurnContext = {
    * See language.ts.
    */
   language?: string;
+  /**
+   * Intervals already worked out from the excerpts, so the model is never asked
+   * to subtract. See `datesNamed` and `until` in dates.ts.
+   */
+  dates?: string[];
 };
+
+/**
+ * Cap on the worked-out intervals handed over.
+ *
+ * A note full of dates would otherwise put more arithmetic in the prompt than
+ * note text. Twelve is well past any real answer, and the excess is dropped
+ * quietly, which is acceptable here in a way it is not for a pin: a missing
+ * interval costs a vaguer sentence rather than a wrong one, because the rule is
+ * to name the date instead of subtracting.
+ */
+const MAX_DATE_FACTS = 12;
+
+/**
+ * Every date the excerpts name, worked out against today.
+ *
+ * Computed from the excerpt text rather than read from `note_dates`, which is
+ * deliberate. That table is only written on capture, so a hand-written or
+ * imported note has no rows in it, and the notes that state deadlines are
+ * usually the hand-written ones. Reading the excerpt also means every interval
+ * describes a date the model can actually see, rather than one from a part of
+ * the note it was never shown.
+ *
+ * `capturedAt` is the anchor where there is one, because every relative
+ * expression in a transcript is relative to when it was spoken. A note without
+ * one is being read now, so now is the honest anchor.
+ *
+ * No note path in the line. A `cite: false` audience must never be handed one,
+ * and quoting the phrase the note used anchors it well enough.
+ */
+function datesNamed(chunks: Chunk[], now: Date): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const c of chunks) {
+    for (const m of mentionedDates(c.text, c.capturedAt ?? now)) {
+      // Keyed on the resolved date, not the phrase: two notes saying "next
+      // friday" and "13 november" about the same day should not produce two
+      // lines that look like two deadlines.
+      const key = `${m.at}/${m.precision}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(`"${m.text.trim()}" means ${describe(m)}, which is ${until(m, now)}`);
+      if (out.length >= MAX_DATE_FACTS) return out;
+    }
+  }
+  return out;
+}
 
 function buildMessages(
   question: string,
@@ -700,6 +756,16 @@ function buildMessages(
         "",
         "--- END OF NOTES ---",
         "",
+        // After the notes they came from and before the question, because they
+        // are a reading of those excerpts rather than more of them.
+        ...((extra.dates ?? []).length > 0
+          ? [
+            "Dates those notes name, worked out against today. These are the only intervals you",
+            "may state:",
+            ...(extra.dates ?? []).map((d) => `- ${d}`),
+            "",
+          ]
+          : []),
         // In a group the sender changes every message, so this cannot live in
         // the system prompt: it is data about this turn, and putting it in the
         // cached prefix would attribute one person's message to another.
@@ -800,7 +866,12 @@ export async function* ask(opts: {
   const pins = searched ? opts.pins ?? [] : [];
   const messages = buildMessages(
     question, chunks, opts.speaker, opts.speakerIsOwner, opts.history, opts.summary, opts.now,
-    { pins, searched, language: languageLine(detectLanguage(question)) },
+    {
+      pins,
+      searched,
+      language: languageLine(detectLanguage(question)),
+      dates: datesNamed(chunks, opts.now ?? new Date()),
+    },
   );
 
   let answer = "";
@@ -913,5 +984,5 @@ export async function askOnce(opts: {
 
 export {
   IDENTITY, GROUND_RULES, TEMPORAL_RULES, NO_ASSISTANT_TELLS, CHAT_RULES, PROSE_RULES,
-  CITE_RULES, PIN_RULES, VOICES, renderChunks, buildMessages, surfaceFacts,
+  CITE_RULES, PIN_RULES, VOICES, renderChunks, buildMessages, surfaceFacts, datesNamed,
 };

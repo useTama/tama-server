@@ -12,6 +12,13 @@
     "apiKeyFile is a path relative to this file; setup writes those with mode 0600."
   ],
   "stt":    { "provider": "whisper-cpp", "url": "http://127.0.0.1:8081" },
+  "//server": [
+    "publicBaseUrl is OPTIONAL: where this server answers from somewhere that is not",
+    "this machine. `tama expose` writes it for you. Set it by hand if you put a domain",
+    "or a proxy in front, so `tama-server connect` prints an address a client can reach",
+    "instead of 127.0.0.1. An origin only - no path, no query. http is fine for a tunnel",
+    "or a LAN address; Meta's webhook still requires https."
+  ],
   "server": { "port": 8080, "adminToken": "RUN: openssl rand -hex 24" },
   "notify": {
     "provider": "console",

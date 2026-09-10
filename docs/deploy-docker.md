@@ -363,7 +363,14 @@ tama expose
 That puts this server on your **tailnet** - a private network of your own
 devices - with a real HTTPS address like `https://tama-server.tail1234.ts.net`.
 It installs Tailscale if needed, signs the machine in, serves port 8080, writes
-`publicBaseUrl`, and prints the exact `claude mcp add` line.
+`server.publicBaseUrl`, and prints the exact `claude mcp add` line.
+
+If you put a domain or a proxy in front yourself rather than using `expose`,
+set `server.publicBaseUrl` by hand — otherwise `tama connect` prints
+`http://127.0.0.1:8080` and tells you it is loopback, on a box where neither is
+true. An origin only, no path. http is accepted, because a tunnel and a LAN
+address are both plain http; Meta's webhook still requires https and keeps its
+own key.
 
 | Then this works | Previously |
 |---|---|

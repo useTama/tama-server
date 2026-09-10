@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { loadConfig, configPathFromArgs } from "./config.ts";
+import { loadConfig, configPathFromArgs, publicBaseUrl } from "./config.ts";
 import { openDb } from "./db.ts";
 import { Vault } from "./vault.ts";
 import { Stt } from "./stt.ts";
@@ -197,9 +197,11 @@ if (config.route?.enabled) {
   statusLines.push(`${bold("Route:")}     every ${config.route.everyMinutes}m -> ${config.route.nowNote} ${grey(`(min confidence ${config.route.minConfidence})`)}`);
 }
 if (routes.whatsapp) {
-  const callback = config.whatsapp!.publicBaseUrl
-    ? `${config.whatsapp!.publicBaseUrl}/webhooks/whatsapp`
-    : "/webhooks/whatsapp";
+  // httpsOnly: Meta will not call an http callback, so a server-level address
+  // that happens to be a tunnel is not an answer to "where does the webhook
+  // go". Printing the bare path is the honest "not reachable yet".
+  const base = publicBaseUrl(config, { httpsOnly: true });
+  const callback = base ? `${base}/webhooks/whatsapp` : "/webhooks/whatsapp";
   statusLines.push(`${bold("WhatsApp:")}  ${callback} (${config.whatsapp!.allowedFrom.length} allowed sender${config.whatsapp!.allowedFrom.length === 1 ? "" : "s"})`);
 }
 console.log(card(statusLines, "Server Status", 56, 2));

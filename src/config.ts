@@ -8,7 +8,25 @@ import { ROUTE_DEFAULTS, type RouteConfig } from "./route.ts";
 export type Config = {
   vault: { path: string; inbox: string };
   stt: SttConfig;
-  server: { port: number; adminToken: string };
+  server: {
+    port: number;
+    adminToken: string;
+    /**
+     * Where this server answers from somewhere that is not this machine.
+     *
+     * It lives here rather than under `whatsapp` because it is a property of
+     * the process, not of a transport. It arrived under `whatsapp` - where it
+     * genuinely is one thing, the URL Meta posts to - and was then reused as
+     * the general answer to "where is this server", which left a box with a
+     * domain and no WhatsApp block unable to say its own address.
+     *
+     * http is allowed. A tunnel and a LAN address are both plain http, and
+     * refusing them here would only push people back to guessing. Meta's
+     * callback still requires https, and that requirement stays with the
+     * whatsapp key that needs it.
+     */
+    publicBaseUrl?: string;
+  };
   notify: {
     provider: "console" | "ntfy";
     ntfy: { url: string; topic: string; token?: string };
@@ -74,6 +92,50 @@ export type Config = {
   };
   dataDir: string;
 };
+
+/**
+ * An origin and nothing else: no path, no query, no credentials.
+ *
+ * A base URL with a path silently produces `https://host/tama/webhooks/...`
+ * for one caller and `https://host/tama` + `/mcp` for another, so it is
+ * rejected rather than normalised.
+ */
+function parseBaseUrl(value: unknown, key: string, httpsOnly: boolean): string | undefined {
+  if (!value) return undefined;
+  const allowed = httpsOnly ? ["https:"] : ["https:", "http:"];
+  try {
+    const url = new URL(String(value));
+    if (!allowed.includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error();
+    }
+    return url.origin;
+  } catch {
+    throw new Error(
+      `config: ${key} must be a ${httpsOnly ? "public https://" : "http:// or https://"} origin without credentials, path, query, or fragment`,
+    );
+  }
+}
+
+/**
+ * Where a client somewhere else should point, or nothing if only this machine
+ * can reach the server.
+ *
+ * The `whatsapp` key is still read, because `tama expose` has been writing
+ * there since before `server.publicBaseUrl` existed and an upgrade must not
+ * make a working deployment unreachable. Explicit beats inherited.
+ *
+ * `httpsOnly` is for Meta, which will not call an http callback: better to
+ * report no address than one that cannot work.
+ */
+export function publicBaseUrl(config: Config, opts: { httpsOnly?: boolean } = {}): string | undefined {
+  const candidates = [config.server.publicBaseUrl, config.whatsapp?.publicBaseUrl];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (opts.httpsOnly && !candidate.startsWith("https://")) continue;
+    return candidate;
+  }
+  return undefined;
+}
 
 export function defaultConfigPath(): string {
   return process.env.TAMA_CONFIG ?? (existsSync("tama.config.json") ? resolve("tama.config.json") : resolve(process.env.HOME ?? ".", ".config/tama/tama.config.json"));
@@ -484,16 +546,7 @@ export function loadConfig(path = defaultConfigPath()): Config {
     if (!/^v\d+\.\d+$/.test(graphApiVersion)) {
       throw new Error("config: whatsapp.graphApiVersion must look like v23.0");
     }
-    let publicBaseUrl: string | undefined;
-    if (raw.whatsapp.publicBaseUrl) {
-      try {
-        const url = new URL(String(raw.whatsapp.publicBaseUrl));
-        if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
-        publicBaseUrl = url.origin;
-      } catch {
-        throw new Error("config: whatsapp.publicBaseUrl must be a public https:// origin without credentials, query, or fragment");
-      }
-    }
+    const publicBaseUrl = parseBaseUrl(raw.whatsapp.publicBaseUrl, "whatsapp.publicBaseUrl", true);
     whatsapp = {
       phoneNumberId,
       allowedFrom,
@@ -521,7 +574,14 @@ export function loadConfig(path = defaultConfigPath()): Config {
       language: raw.stt?.language ? String(raw.stt.language) : undefined,
       apiKey: credential(raw.stt),
     },
-    server: { port: raw.server?.port ?? 8080, adminToken: String(raw.server.adminToken) },
+    server: {
+      port: raw.server?.port ?? 8080,
+      adminToken: String(raw.server.adminToken),
+      ...(() => {
+        const url = parseBaseUrl(raw.server?.publicBaseUrl, "server.publicBaseUrl", false);
+        return url ? { publicBaseUrl: url } : {};
+      })(),
+    },
     notify: {
       provider,
       ntfy: {

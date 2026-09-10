@@ -2,7 +2,8 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, resolveSpeaker, MAX_ASK_CHUNKS } from "../src/config.ts";
+import { loadConfig, publicBaseUrl, resolveSpeaker, MAX_ASK_CHUNKS } from "../src/config.ts";
+import { clientAddress } from "../src/connect-cli.ts";
 
 let dir: string;
 
@@ -152,6 +153,75 @@ test("WhatsApp rejects a non-HTTPS public webhook origin", async () => {
     },
   });
   expect(() => loadConfig(path)).toThrow(/publicBaseUrl/);
+});
+
+test("a server with a domain and no WhatsApp can say where it is", async () => {
+  // The failure this key moved to fix. `clientAddress` is fed the resolved
+  // address, and while it was read out of the whatsapp block a box with a
+  // domain and no Cloud API had nowhere to put one - so `connect` printed
+  // http://127.0.0.1:8080 and the caveat about it being loopback, on a machine
+  // where both are wrong, and the plugin installed cleanly and never connected.
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret", publicBaseUrl: "https://tama.example.com/" },
+  });
+  const loaded = loadConfig(path);
+  expect(loaded.server.publicBaseUrl).toBe("https://tama.example.com");
+  expect(publicBaseUrl(loaded)).toBe("https://tama.example.com");
+  expect(clientAddress(publicBaseUrl(loaded), loaded.server.port)).toEqual({
+    url: "https://tama.example.com",
+    loopback: false,
+  });
+});
+
+test("http is allowed at the server level, and still refused for Meta", async () => {
+  // A tunnel and a LAN address are both plain http, and refusing them here
+  // would only send people back to guessing. Meta will not call an http
+  // callback, so httpsOnly reports nothing rather than something unusable.
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret", publicBaseUrl: "http://192.168.0.234:8080" },
+  });
+  const loaded = loadConfig(path);
+  expect(publicBaseUrl(loaded)).toBe("http://192.168.0.234:8080");
+  expect(publicBaseUrl(loaded, { httpsOnly: true })).toBeUndefined();
+});
+
+test("an address tama expose already wrote under whatsapp still resolves", async () => {
+  // Every deployment where expose has run has it there. An upgrade that
+  // stopped reading it would make a working box report itself unreachable.
+  const path = await config({
+    vault: { path: "/vault" }, server: { adminToken: "secret" },
+    whatsapp: {
+      phoneNumberId: "123", allowedFrom: ["919876543210"],
+      accessToken: "a", appSecret: "b", verifyToken: "c",
+      publicBaseUrl: "https://tama.tail1234.ts.net",
+    },
+  });
+  expect(publicBaseUrl(loadConfig(path))).toBe("https://tama.tail1234.ts.net");
+});
+
+test("the server's own address wins over the one under whatsapp", async () => {
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret", publicBaseUrl: "https://new.example.com" },
+    whatsapp: {
+      phoneNumberId: "123", allowedFrom: ["919876543210"],
+      accessToken: "a", appSecret: "b", verifyToken: "c",
+      publicBaseUrl: "https://old.tail1234.ts.net",
+    },
+  });
+  expect(publicBaseUrl(loadConfig(path))).toBe("https://new.example.com");
+});
+
+test("a base URL with a path is refused rather than normalised", async () => {
+  // It would silently become https://host/tama/webhooks/... for one caller and
+  // https://host/tama + /mcp for another.
+  const path = await config({
+    vault: { path: "/vault" },
+    server: { adminToken: "secret", publicBaseUrl: "https://tama.example.com/sub" },
+  });
+  expect(() => loadConfig(path)).toThrow(/server\.publicBaseUrl/);
 });
 
 test("WhatsApp requires an explicit sender allowlist and webhook credentials", async () => {
@@ -353,6 +423,12 @@ test("a whatsapp block holding only publicBaseUrl is refused", async () => {
   // The strictness is correct: a half-configured Cloud API must fail loudly
   // rather than half-run. So this test exists to keep it strict, and
   // docker/tama's writer is what had to change.
+  //
+  // It changed twice. First to refuse writing when the block was absent, which
+  // left `tama expose` printing an apology instead of doing its job. Then, once
+  // the key moved to `server` where it belonged, to write there - the server
+  // block always exists, because server.adminToken is required. This test is
+  // still the reason the writer may not go back to inventing a whatsapp block.
   const path = await config({
     vault: { path: "/vault" },
     server: { adminToken: "secret" },

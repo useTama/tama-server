@@ -25,7 +25,7 @@
  * and the fix is `history -d` or a scoped token, not silence.
  */
 
-import { configPathFromArgs, loadConfig } from "./config.ts";
+import { configPathFromArgs, loadConfig, publicBaseUrl } from "./config.ts";
 import { openDb } from "./db.ts";
 import { mintToken } from "./auth.ts";
 import { resolveView } from "./views.ts";
@@ -111,7 +111,7 @@ export async function runConnect(argv: string[] = Bun.argv): Promise<void> {
     console.log(grey("  The session-recording and note-writing tools refuse a scoped token by design.\n"));
   }
 
-  const { url, loopback } = clientAddress(config.whatsapp?.publicBaseUrl, config.server.port);
+  const { url, loopback } = clientAddress(publicBaseUrl(config), config.server.port);
   const db = openDb(join(config.dataDir, "tama.db"));
   try {
     const { id, token } = mintToken(db, client, audience);

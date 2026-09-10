@@ -57,8 +57,13 @@ tailscale_url() {
   return 0
 }
 
-# Read one top-level-ish value out of the config. sudo, because the wizard
-# writes it 0600 and root-owned.
+# Read one value out of the config. sudo, because the wizard writes it 0600 and
+# root-owned.
+#
+# server first, then whatsapp. The whatsapp fallback is not tidiness: every
+# deployment where `tama expose` already ran has the value there, and an
+# upgrade that stopped reading it would make a working box report itself as
+# unreachable.
 config_value() {
   sudo python3 -c "
 import json,sys
@@ -66,36 +71,30 @@ try:
     c=json.load(open('config/tama.config.json'))
 except Exception:
     sys.exit(0)
-print((c.get('whatsapp') or {}).get('$1') or '')
+print((c.get('server') or {}).get('$1') or (c.get('whatsapp') or {}).get('$1') or '')
 " 2>/dev/null || true
 }
 
-# Write publicBaseUrl without disturbing anything else in the file: it is the
+# Write one value without disturbing anything else in the file: it is the
 # wizard's file and it holds secrets this command has no business rewriting.
 #
-# It refuses to CREATE the whatsapp block, which is the whole reason this is
-# not a one-liner. publicBaseUrl lives inside that block, and loadConfig
-# demands a digits-only phoneNumberId from any whatsapp block that exists at
-# all. So inventing one on an install that has none - every install using the
-# unofficial bridge rather than the Cloud API - turned a config that loaded
-# into one that throws, and index.ts turns that into a restart loop. The
-# command whose job is making the server reachable made it refuse to boot.
+# It writes into the server block, which every loadable config has, because
+# server.adminToken is required. That is the whole point of the key having
+# moved there.
 #
-# The parser is right to be strict: a half-configured Cloud API must fail
-# loudly rather than half-run. The writer was what was wrong.
+# It used to write into whatsapp, and had to refuse whenever that block was
+# absent - every install using the unofficial bridge rather than the Cloud API.
+# loadConfig demands a digits-only phoneNumberId from any whatsapp block that
+# exists at all, so inventing one turned a config that loaded into one that
+# throws, and index.ts turned that into a restart loop: the command whose job
+# is making the server reachable made it refuse to boot. The parser was right
+# to be strict. The key was in the wrong place.
 set_config_value() {
   sudo python3 -c "
 import json, sys
 p='config/tama.config.json'
 c=json.load(open(p))
-if 'whatsapp' not in c:
-    print('config: $1 not written. It belongs to the whatsapp block, and a block')
-    print('  holding only $1 is refused on load, so writing one would stop the')
-    print('  server booting. Nothing here needs it: the URL below is what MCP and')
-    print('  phone pairing use. Run tama setup and configure the WhatsApp Cloud')
-    print('  API first if you want $1 set.')
-    sys.exit(0)
-c['whatsapp']['$1']='$2'
+c.setdefault('server', {})['$1']='$2'
 open(p,'w').write(json.dumps(c,indent=2)+'\n')
 print('config: $1 set to $2')
 " 2>/dev/null || echo "config: could not set $1 (is the config where it should be?)"

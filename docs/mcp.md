@@ -78,12 +78,34 @@ or "intended for public use". A personal daemon on a loopback port with a
 static token is explicitly sufficient, and Home Assistant does the same with
 long-lived tokens. Adding OAuth there would be ceremony that protects nothing.
 
-**That premise is now conditional.** `tama expose --public` puts the server on
-the public internet, where it is exactly the case the mandate is about. Two
-things hold the line in the meantime: a wrong bearer token is throttled per
-caller, and `/health` tells a stranger only that the server is up. Neither is a
-substitute for OAuth, which is #75 — this says what is true today rather than
-implying the loopback argument still covers every deployment.
+**That premise is conditional, and there is now a second answer.**
+`tama expose --public` puts the server on the public internet, which is exactly
+the case the mandate is about — so on that deployment tama speaks OAuth 2.1 as
+well, as its own authorization server on the same origin.
+
+Add a `server.oauth` block and it mounts. Without one, or without a public
+hostname, nothing changes: no endpoints, no login, and the accountless local
+path stays what it was.
+
+```
+GET  /.well-known/oauth-protected-resource     what this resource is, and who authorises for it
+GET  /.well-known/oauth-authorization-server   how to ask
+GET  /oauth/authorize                          the consent screen
+POST /oauth/token                              code + PKCE verifier -> access and refresh tokens
+POST /oauth/register                           dynamic registration, for clients that still use it
+POST /oauth/revoke                             RFC 7009
+```
+
+An access token is 32 random bytes hashed into the same `tokens` table as a
+device token, so it carries a Grant, obeys views and capabilities, appears in
+Devices and dies to the same revocation. It expires in an hour and refreshes by
+rotating both halves in place, so the row is the connection for its whole life
+and revoking the id the owner sees kills the refresh family with it.
+
+Static device tokens are unaffected. The audience column that binds an OAuth
+token to this server is NULL on every device token, which is what "not
+audience-bound" has always meant — the coexistence is one nullable column, not
+a second code path.
 
 One consequence worth knowing if you put your own proxy in front instead of
 using `--public`: the throttle keys on the caller's address, so it needs
@@ -202,16 +224,29 @@ than a config file. Node is not a prerequisite - Claude Desktop ships its own.
 computer.** So a vault on a tailnet, a LAN or `127.0.0.1` is unreachable from
 there whatever the URL says. That used to be the end of the argument.
 
-Half of it has since moved. `tama expose --public DOMAIN` gives the server a
-real hostname with TLS, and a connector can now *reach* it. What it still
-cannot do is authenticate: hosted connectors want OAuth 2.1 with dynamic client
-registration, and this speaks a static bearer token. That is the remaining half
-and it is tracked as #75.
+Both halves have since moved. `tama expose --public DOMAIN` gives the server a
+real hostname with TLS, and a `server.oauth` block gives it an authorization
+server, so a hosted connector can both reach it and authenticate to it.
 
-So the honest state is: reachability solved, authentication not. Until #75
-lands, the `.mcpb` bundle is still the answer for Claude Desktop, and it is a
-better one for anyone whose server does not need to be public — it runs
-locally over stdio, so it reaches whatever you can reach.
+Two corrections to what this section used to say, because the spec moved under
+it. Dynamic client registration is no longer the way in: the 2026-07-28
+revision deprecates it in favour of Client ID Metadata Documents, where the
+`client_id` is an https URL the authorization server dereferences. tama does
+both, because deprecated in a spec is not gone from shipped clients. And the
+metadata document fetch is bounded by an origin allowlist checked before any
+DNS lookup — on the reference EC2 deployment, "fetch a URL the caller supplied"
+is a link-local metadata service one redirect away.
+
+The `.mcpb` bundle is still the better answer for anyone whose server does not
+need to be public. It runs locally over stdio, so it reaches whatever you can
+reach, and it needs none of this.
+
+**Not yet proven against a real connector.** The flow is tested end to end
+against the routes, and the spec surface was built from the current revision
+rather than from memory — but no ChatGPT or Claude connector has completed it.
+Two things are known to be unverified: which protocol revision each vendor
+negotiates on `initialize` (tama still answers 2025-06-18), and whether either
+prefers metadata documents or falls back to registration in practice.
 
 Nothing here makes a public host the recommended shape. It is opt-in, it asks
 before it acts, and the tailnet remains the default for the same reason as

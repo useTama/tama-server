@@ -19,6 +19,17 @@
     "instead of 127.0.0.1. An origin only - no path, no query. http is fine for a tunnel",
     "or a LAN address; Meta's webhook still requires https."
   ],
+  "//server-oauth": [
+    "OPTIONAL, and only meaningful with a public hostname. Adding this block turns on",
+    "OAuth 2.1 so a connector dialled from someone else's servers - ChatGPT, a Claude",
+    "custom connector - can authenticate. Without it there are no OAuth endpoints and",
+    "the local accountless path is unchanged.",
+    "readView/writeView are view names applied to every OAuth grant; absent means the",
+    "owner decides per connection on the consent screen. extraRedirects adds a callback",
+    "for a client that is neither vendor. cimdOrigins are the only origins whose client",
+    "metadata documents will ever be fetched.",
+    "example: \"oauth\": { \"readView\": \"work\", \"extraRedirects\": [], \"cimdOrigins\": [\"https://claude.ai\"] }"
+  ],
   "server": { "port": 8080, "adminToken": "RUN: openssl rand -hex 24" },
   "notify": {
     "provider": "console",

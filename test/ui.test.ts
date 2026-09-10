@@ -56,3 +56,22 @@ test("card formats rounded panels enclosing lines", async () => {
   expect(plain).toContain("Line 2");
 });
 
+test("truncate cuts to a visible width and keeps escape codes intact", async () => {
+  const { truncate, stripAnsi, red } = await import("../src/ui.ts");
+  expect(truncate("abcdefghij", 5)).toBe("abcd…");
+  expect(truncate("abc", 5)).toBe("abc");
+  expect(stripAnsi(truncate(red("abcdefghij"), 5))).toBe("abcd…");
+  // A cut inside a coloured run has to close it, or the rest of the terminal
+  // stays painted.
+  if (process.env.FORCE_COLOR) expect(truncate(red("abcdefghij"), 5)).toEndWith("\x1b[0m");
+});
+
+test("card never draws wider than the layout, and every border lines up", async () => {
+  const { card, stripAnsi, layoutWidth } = await import("../src/ui.ts");
+  const long = "x".repeat(400);
+  const rendered = card([long, "short"], "Title", 56, 2).split("\n");
+  const widths = new Set(rendered.map((line) => stripAnsi(line).length));
+  expect(widths.size).toBe(1);
+  expect([...widths][0]!).toBeLessThanOrEqual(layoutWidth() + 2);
+  expect(stripAnsi(card([long], undefined, 56)).includes("…")).toBe(true);
+});

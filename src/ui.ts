@@ -50,9 +50,46 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
 
+/**
+ * Cuts a string to a visible width, keeping its colour codes.
+ *
+ * Counting bytes would cut a coloured string far too early and could stop
+ * halfway through an escape sequence, which leaves the rest of the terminal
+ * painted, so the escapes are stepped over rather than measured, and a reset is
+ * appended when the cut lands inside one.
+ */
+export function truncate(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (stripAnsi(text).length <= width) return text;
+  let out = "";
+  let visible = 0;
+  let coloured = false;
+  for (const part of text.split(/(\x1b\[[0-9;]*[a-zA-Z])/)) {
+    if (part.startsWith("\x1b")) { out += part; coloured = true; continue; }
+    for (const character of part) {
+      if (visible >= width - 1) return `${out}…${coloured ? "\x1b[0m" : ""}`;
+      out += character;
+      visible += 1;
+    }
+  }
+  return out;
+}
+
 /** Horizontal divider rule in muted grey or plain ASCII. */
 export function divider(length = 56): string {
   return LEVEL === 0 ? "-".repeat(length) : grey("─".repeat(length));
+}
+
+/**
+ * The width every box, rule and footer lays out to.
+ *
+ * Capped at 72 rather than filling the window: a card stretched across a
+ * 200-column terminal is a line of text with two distant borders, and the eye
+ * loses which row it is on. Floored at 40 so a narrow window shrinks the box
+ * instead of wrapping it.
+ */
+export function layoutWidth(): number {
+  return Math.max(40, Math.min(72, (process.stdout.columns ?? 80) - 4));
 }
 
 /**
@@ -81,15 +118,20 @@ export function button(label: string, active = false): string {
  */
 export function card(lines: string[], title?: string, width = 56, indent = 0): string {
   const padLeft = " ".repeat(indent);
-  const minWidth = Math.max(
-    width,
-    title ? stripAnsi(title).length + 8 : 0,
-    ...lines.map((l) => stripAnsi(l).length + 4),
+  // `width` is a minimum, and the content stretches it — but only as far as the
+  // layout, because a box wider than the window wraps and every border lands in
+  // the wrong place. A long vault path gets an ellipsis instead.
+  const minWidth = Math.min(
+    Math.max(width, title ? stripAnsi(title).length + 8 : 0, ...lines.map((l) => stripAnsi(l).length + 4)),
+    Math.max(24, layoutWidth() - 2),
   );
+  const rowLines = lines.map((l) => truncate(l, minWidth - 2));
 
   if (LEVEL === 0) {
-    const top = padLeft + (title ? `+-- ${title} ${"-".repeat(Math.max(0, minWidth - stripAnsi(title).length - 6))}+` : `+${"-".repeat(minWidth)}+`);
-    const rows = lines.map((l) => {
+    // `+-- Title ` is six characters plus the title, and the box is minWidth+2
+    // wide like every row below it, so the filler is what is left of that.
+    const top = padLeft + (title ? `+-- ${title} ${"-".repeat(Math.max(0, minWidth - stripAnsi(title).length - 4))}+` : `+${"-".repeat(minWidth)}+`);
+    const rows = rowLines.map((l) => {
       const pad = Math.max(0, minWidth - stripAnsi(l).length - 2);
       return `${padLeft}| ${l}${" ".repeat(pad)} |`;
     });
@@ -101,7 +143,7 @@ export function card(lines: string[], title?: string, width = 56, indent = 0): s
   const topTitle = title ? `─ ${bold(title)} ` : "─";
   const topFiller = Math.max(0, minWidth - stripAnsi(topTitle).length);
   const top = `${padLeft}${border(`╭${topTitle}${"─".repeat(topFiller)}╮`)}`;
-  const rows = lines.map((l) => {
+  const rows = rowLines.map((l) => {
     const pad = Math.max(0, minWidth - stripAnsi(l).length - 2);
     return `${padLeft}${border("│")} ${l}${" ".repeat(pad)} ${border("│")}`;
   });

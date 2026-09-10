@@ -6,6 +6,7 @@ import { openDb } from "../src/db.ts";
 import { Vault } from "../src/vault.ts";
 import { GrepRetriever } from "../src/retrieval.ts";
 import { handleMcp, MCP_TOOL_NAMES, type McpCaller, type McpDeps } from "../src/mcp.ts";
+import { audienceCaps, OWNER_CAPS } from "../src/grants.ts";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "tama-mcp-"));
@@ -26,8 +27,24 @@ async function fixture() {
   return { root, db, deps, cleanup: async () => { db.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
-const owner: McpCaller = { deviceName: "laptop", mayWrite: true };
-const guest: McpCaller = { deviceName: "group", audience: "315", view: { include: ["Work/**"] }, mayWrite: false };
+const owner: McpCaller = { deviceName: "laptop", grant: { caps: OWNER_CAPS } };
+const guest: McpCaller = {
+  deviceName: "group",
+  audience: "315",
+  grant: { caps: audienceCaps(false), read: { include: ["Work/**"] } },
+};
+/**
+ * The shape that could not be expressed before capabilities: reads one slice of
+ * the vault, writes only into a corner of it, and cannot spend a model call.
+ */
+const agent: McpCaller = {
+  deviceName: "coding agent",
+  grant: {
+    caps: new Set(["read", "write"] as const),
+    read: { include: ["Work/**"] },
+    write: { include: ["Work/**/sessions.md"] },
+  },
+};
 
 function rpc(method: string, params?: unknown, id: unknown = 1) {
   return new Request("http://tama.local/mcp", {
@@ -146,6 +163,58 @@ test("an audience token may read but not write", async () => {
       expect(isError).toBe(true);
       expect(text).toContain("not write");
     }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a scoped agent writes inside its write view and is refused outside it", async () => {
+  // The case this whole mechanism exists for, end to end: reads Work/**, may
+  // only write Work/**/sessions.md. Before capabilities there was no token
+  // that could do both, because writing required having no audience and having
+  // no audience meant reading everything.
+  const { deps, cleanup } = await fixture();
+  try {
+    const allowed = await callText(
+      await handleMcp(rpc("tools/call", { name: "append_note", arguments: { path: "Work/proj/sessions.md", text: "## did a thing\n" } }), agent, deps),
+    );
+    expect(allowed.isError).toBe(false);
+    expect(allowed.text).toContain("Work/proj/sessions.md");
+
+    // Inside what it can read, outside what it can write. The two views are
+    // separate, so being able to see a note is not permission to append to it.
+    const refused = await callText(
+      await handleMcp(rpc("tools/call", { name: "append_note", arguments: { path: "Work/cpa.md", text: "x" } }), agent, deps),
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("Work/**/sessions.md");
+
+    // And it cannot reach outside its read view at all.
+    const unseen = await callText(
+      await handleMcp(rpc("tools/call", { name: "read_note", arguments: { path: "KiksStudios/Clients/a.md" } }), agent, deps),
+    );
+    expect(unseen.isError).toBe(true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("record_session is checked against the path it is about to choose", async () => {
+  // It picks its own filename, so the refusal has to be derived from
+  // sessionPath() before appendSession runs. Checking afterwards would be a
+  // guard reporting on a write it had already allowed.
+  const { deps, cleanup } = await fixture();
+  try {
+    const { text, isError } = await callText(
+      await handleMcp(rpc("tools/call", { name: "record_session", arguments: { project: "tama", summary: "x" } }), agent, deps),
+    );
+    expect(isError).toBe(true);
+    expect(text).toContain("Projects/tama/sessions.md");
+    // Nothing was written on the way to refusing.
+    const after = await callText(
+      await handleMcp(rpc("tools/call", { name: "read_note", arguments: { path: "Projects/tama/sessions.md" } }), owner, deps),
+    );
+    expect(after.isError).toBe(true);
   } finally {
     await cleanup();
   }

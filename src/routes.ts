@@ -38,10 +38,11 @@ import { recordCapture, recordFailure, buildDigest, renderDigest } from "./diges
 import type { Retriever } from "./retrieval.ts";
 import { DEFAULT_MAX_OUTPUT_TOKENS, spendLabel, type Llm } from "./llm.ts";
 import { ask, askOnce, parseSurface, type PromptOptions } from "./ask.ts";
-import { resolveView, type View } from "./views.ts";
+import { resolveView, visible, type View } from "./views.ts";
+import { may, resolveGrant, writeRefusal, type Grant } from "./grants.ts";
 import { asMessages, recall, remember, searchQuery, summarise, type Turn } from "./memory.ts";
 import { summariseSession } from "./session-summary.ts";
-import { appendSession } from "./session.ts";
+import { appendSession, sessionPath } from "./session.ts";
 import { handleMcp, MCP_TOOL_NAMES } from "./mcp.ts";
 import { WhatsAppIntegration, whatsappSource } from "./whatsapp.ts";
 import { renderPairPage, candidateOrigins, forwardedProtocol } from "./pair-page.ts";
@@ -227,7 +228,33 @@ async function doCapture(req: Request, device: string): Promise<Response> {
   });
 }
 
-type CaptureDevice = { id: string; deviceName: string; audience?: string };
+type CaptureDevice = {
+  id: string;
+  deviceName: string;
+  audience?: string;
+  caps?: string;
+  readView?: string;
+  writeView?: string;
+};
+
+/**
+ * The token's own columns folded together with its audience's defaults.
+ *
+ * Kept next to `audienceProfile` because they read the same config and fail the
+ * same way - an audience that has left the config, or a view name that has,
+ * must not silently widen into the owner's access.
+ */
+function grantForDevice(device: CaptureDevice): Grant {
+  const audience = device.audience ? config.audiences?.[device.audience] : undefined;
+  if (device.audience && !audience) {
+    throw new Error(`token names audience ${JSON.stringify(device.audience)}, which is not in the config`);
+  }
+  return resolveGrant(
+    { caps: device.caps, readView: device.readView, writeView: device.writeView },
+    audience ? { view: resolveView(config.views, audience.view), capture: audience.capture } : undefined,
+    (name) => resolveView(config.views, name),
+  );
+}
 
 /**
  * What a caller is allowed to see and how the answer should sound, derived from
@@ -489,7 +516,29 @@ const whatsapp = config.whatsapp
     const device: CaptureDevice | null = isAdmin ? { id: "admin", deviceName: "admin" } : verifyToken(db, bearer);
     if (!device) return json({ error: "unauthorized" }, 401);
 
+    /**
+     * What this caller may do, resolved once for every route below.
+     *
+     * A bad `caps` column or a view name that has since left the config throws
+     * here rather than at the route, and is answered as 403 rather than 500:
+     * the token is intelligible and no longer usable, which is the same
+     * fail-closed rule `audienceProfile` applies to a stale audience.
+     */
+    let grant: Grant;
+    try {
+      grant = grantForDevice(device);
+    } catch (e) {
+      console.error("token refused:", e instanceof Error ? e.message : e);
+      return json({ error: "this device is no longer configured" }, 403);
+    }
+
     if (url.pathname === "/capture" && req.method === "POST") {
+      // Enforced here rather than trusted to the bridge. `audience.capture` is
+      // documented as "never captures into the vault", and until now only the
+      // client honoured it - the same shape of trust this file rejects two
+      // hundred lines up, where the audience is read off the token precisely
+      // because a client could name a different one.
+      if (!may(grant, "capture")) return json({ error: "this device may not capture into the vault" }, 403);
       /**
        * The version gate, and the reason it lives here rather than inside
        * runCapture.
@@ -528,20 +577,14 @@ const whatsapp = config.whatsapp
     // servers, and a personal daemon behind a static token is explicitly
     // sufficient.
     if (url.pathname === "/mcp") {
-      let profile: ReturnType<typeof audienceProfile>;
-      try {
-        profile = audienceProfile(device.audience);
-      } catch (e) {
-        console.error("mcp refused:", e instanceof Error ? e.message : e);
-        return json({ error: "this device is no longer configured" }, 403);
-      }
       return handleMcp(req, {
         deviceName: device.deviceName,
         audience: device.audience,
-        view: profile.view,
-        // An audience reads. A group's token holding a write tool would be the
-        // first way a room could put something into somebody's notes.
-        mayWrite: !device.audience,
+        // The grant is already resolved above, so MCP no longer needs the
+        // persona lookup at all: it wanted a view and a write flag, and both
+        // now come from the token's own columns rather than from whether it
+        // happens to name a chat audience.
+        grant,
       }, {
         onWrite: onWrite,
         retriever,
@@ -600,16 +643,18 @@ const whatsapp = config.whatsapp
       return json({ ok: true, recorded: verdict, question: target.question, retrieved: target.sources });
     }
 
-    // Writing at a chosen path is the owner's own device only. An audience
-    // reads; it has no business adding to the vault, and a group's token
-    // getting a write path would be the first way a room could put something
-    // in someone's notes.
+    // Writing at a chosen path needs the `write` capability, and lands only
+    // where the write view admits. An audience's token has neither by default,
+    // which is the old rule ("a group's token getting a write path would be the
+    // first way a room could put something in someone's notes") arrived at
+    // through a permission rather than through the absence of one.
     if (url.pathname === "/notes" && req.method === "POST") {
-      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      if (!may(grant, "write")) return json({ error: writeRefusal(grant, "") }, 403);
       const b = (await req.json().catch(() => ({}))) as { path?: string; text?: string; mode?: string };
       const relPath = String(b.path ?? "").trim();
       const text = String(b.text ?? "");
       if (!relPath) return json({ error: "path is required" }, 400);
+      if (!visible(relPath, grant.write)) return json({ error: writeRefusal(grant, relPath) }, 403);
       if (!text.trim()) return json({ error: "text is required" }, 400);
       if (Buffer.byteLength(text, "utf8") > MAX_UPLOAD_BYTES) return json({ error: "text too large" }, 413);
 
@@ -647,7 +692,7 @@ const whatsapp = config.whatsapp
     // and the shape is the point: a rendered entry that reads as a diary is
     // what makes "what have I been doing on X" answerable later.
     if (url.pathname === "/sessions" && req.method === "POST") {
-      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      if (!may(grant, "write")) return json({ error: writeRefusal(grant, "") }, 403);
       const b = (await req.json().catch(() => ({}))) as {
         project?: string;
         summary?: string;
@@ -657,6 +702,12 @@ const whatsapp = config.whatsapp
       };
       const project = String(b.project ?? "").trim();
       if (!project) return json({ error: "project is required" }, 400);
+      // The path this will land at is derivable before anything is written,
+      // which is what lets a write view apply to a route that chooses its own
+      // filename. Refusing after appendSession has run would be a check that
+      // reports on a write it did not prevent.
+      const sessionRel = sessionPath(project);
+      if (!visible(sessionRel, grant.write)) return json({ error: writeRefusal(grant, sessionRel) }, 403);
 
       const key = req.headers.get("idempotency-key");
       if (key) {
@@ -704,7 +755,11 @@ const whatsapp = config.whatsapp
      * nothing to say" from "something broke" without parsing a message.
      */
     if (url.pathname === "/sessions/from-transcript" && req.method === "POST") {
-      if (device.audience) return json({ error: "this device may not write notes" }, 403);
+      // Both, because this route writes *and* spends a model call to decide
+      // what to write. A token that may file a session it composed itself is
+      // not thereby allowed to summarise on the owner's key.
+      if (!may(grant, "write")) return json({ error: writeRefusal(grant, "") }, 403);
+      if (!may(grant, "ask")) return json({ error: "this token may not spend a model call" }, 403);
       if (!llm) {
         return json({
           error: "no language model configured, so a transcript cannot be summarised",
@@ -718,6 +773,8 @@ const whatsapp = config.whatsapp
       };
       const project = String(b.project ?? "").trim();
       if (!project) return json({ error: "project is required" }, 400);
+      const transcriptRel = sessionPath(project);
+      if (!visible(transcriptRel, grant.write)) return json({ error: writeRefusal(grant, transcriptRel) }, 403);
       if (!Array.isArray(b.turns) || b.turns.length === 0) {
         return json({ error: "turns is required: the transcript, oldest first" }, 400);
       }
@@ -780,9 +837,15 @@ const whatsapp = config.whatsapp
       }
     }
 
-    // Ask sits behind the same device token as capture. No new auth surface:
-    // anything that can write to the vault can already read it back.
+    // Ask used to sit behind the same device token as capture, on the reasoning
+    // that anything which can write to the vault can already read it back. True
+    // of the token, and it missed the other cost: an answer is a model call on
+    // the owner's key, so this is the one read that spends money. `ask` is
+    // therefore its own capability rather than a consequence of `read` - an
+    // agent allowed to search a hundred times a session is not thereby allowed
+    // to bill a hundred completions.
     if (url.pathname === "/ask" && req.method === "POST") {
+      if (!may(grant, "ask")) return json({ error: "this token may read the notes but not ask questions of them" }, 403);
       const b = (await req.json().catch(() => ({}))) as {
         question?: string;
         stream?: boolean;

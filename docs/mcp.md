@@ -78,18 +78,37 @@ or "intended for public use". A personal daemon on a loopback port with a
 static token is explicitly sufficient, and Home Assistant does the same with
 long-lived tokens. Adding OAuth here would be ceremony that protects nothing.
 
-**A token can be scoped.** Because audiences and views already exist, an MCP
-token can see a slice of the vault:
+**A token can be scoped**, in two directions that are deliberately separate:
+what it may *do*, and where it may read and write.
 
 ```sh
-tama settings          # Audiences -> add -> view: work -> mint its token
+tama-server token agent --read-view work --write-view work-logs
 ```
 
-An agent working in a client repo then gets `Projects/**` and `Work/**` and
-cannot search your job applications. It also cannot write: `append_note` and
-`record_session` refuse a token with an audience, because a scoped reader
-putting entries into someone's notes is a different kind of access than reading
-them.
+That agent searches `Work/**` and cannot find your job applications, appends
+only to `Work/**/sessions.md`, and cannot spend a model call at all. Naming a
+view grants the capability it is a view of, so the common case is two flags.
+
+The four capabilities are `capture`, `read`, `write` and `ask`. They name
+operations rather than routes, because the five tools here sit behind one path
+and "may search, may not append" cannot be said about a URL. `ask` is separate
+from `read` because it is the one read that spends the owner's model budget: an
+agent searching a hundred times a session should not thereby bill a hundred
+completions.
+
+A token with none of these flags is the owner's own device — everything,
+unrestricted — which is what every token minted before capabilities existed
+keeps meaning.
+
+`--as AUDIENCE` is still there and still means a *persona* rather than a
+permission: a voice, a length, whether answers cite. An audience token reads and
+asks and does not write, as before. What changed is that you no longer have to
+invent a chat persona for a coding agent in order to scope it.
+
+A refused write names the prefix it would have accepted, so a model retries
+correctly. A refused *read* never says why — `read_note` answers "no note at
+that path" whether the note is absent, hidden or malformed, because
+distinguishing them would tell a caller which notes exist outside its view.
 
 ## 5. Connecting a client
 

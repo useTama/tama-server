@@ -33,6 +33,8 @@ Nothing in `ask.ts` may be reachable from the capture path.
 | `whisper.ts` | bringing whisper.cpp up locally: model download, per-user service |
 | `ui.ts` | terminal colour, dropped whenever stdout is not a colour-capable tty |
 | `auth.ts` | device tokens (hashed at rest), single-use pairing codes |
+| `grants.ts` | what a token may do (`capture`, `read`, `write`, `ask`) and where, kept separate from the audience it speaks as |
+| `views.ts` | named subsets of the vault, applied during the walk rather than after scoring |
 | `idempotency.ts` | claim, replay, release. A retry must not write a second note |
 | `audio.ts` | ffmpeg to 16 kHz mono, spawned with an argv array reading stdin |
 | `stt.ts` | whisper.cpp client (model stays resident) and the hosted `/audio/transcriptions` shape |

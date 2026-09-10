@@ -282,6 +282,16 @@ export async function handleOAuth(req: Request, url: URL, deps: OAuthDeps): Prom
     }
 
     const granted = usableScopes(redeemed.scope);
+    // Refused rather than minted. A client can ask for only `offline_access`,
+    // which usableScopes correctly drops, and an owner can untick every box -
+    // both leave nothing granted. Minting on an empty set used to produce an
+    // unrestricted owner token, which is the opposite of what was consented to.
+    // parseCaps now refuses that column outright; this is the same refusal said
+    // in OAuth's own vocabulary, so the connector is told why rather than
+    // meeting a 403 on its first tool call.
+    if (granted.length === 0) {
+      return oauthError("invalid_scope", "no capability was granted, so there is no token to issue");
+    }
     // Always issued, rather than only when offline_access was requested. The
     // access token lives an hour; without a refresh token the connector would
     // send the owner back through the consent screen every hour, and a client

@@ -82,7 +82,23 @@ function isCapability(s: string): s is Capability {
 export function parseCaps(raw: string | null | undefined): ReadonlySet<Capability> | undefined {
   if (raw === null || raw === undefined) return undefined;
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return undefined;
+  // Present but empty is an error, not "unrestricted".
+  //
+  // Absent means the owner's own device and has to keep meaning that, because
+  // every token minted before capabilities existed has a NULL column. But a
+  // column that is present and lists nothing is a different statement: it is a
+  // grant of nothing, and returning undefined for it fell through to OWNER_CAPS
+  // in resolveGrant - so a grant of nothing became a grant of everything.
+  //
+  // That is not hypothetical. The OAuth consent path mints with
+  // `serialiseCaps(granted) ?? undefined`, and a client that asks only for
+  // `offline_access` leaves `granted` empty, so consenting to nothing handed a
+  // stranger's servers an unrestricted token over the whole vault. Guarding it
+  // at that call site would leave the trap for the next thing that writes this
+  // column, so it is refused here instead.
+  if (parts.length === 0) {
+    throw new Error("a caps column that is present must list at least one capability; use NULL for unrestricted");
+  }
   for (const p of parts) {
     if (!isCapability(p)) {
       throw new Error(`unknown capability ${JSON.stringify(p)}. known: ${CAPABILITIES.join(", ")}`);

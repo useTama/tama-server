@@ -95,8 +95,17 @@ test("a write view is never inherited from the read view", () => {
 test("caps parse: NULL and empty are unrestricted, a typo is not silently dropped", () => {
   expect(parseCaps(null)).toBeUndefined();
   expect(parseCaps(undefined)).toBeUndefined();
-  expect(parseCaps("")).toBeUndefined();
-  expect(parseCaps("  ,  ")).toBeUndefined();
+
+  // Present-but-empty is refused, and this test used to assert the opposite.
+  //
+  // It looked like harmless tidiness - "no list means no constraint" - and it
+  // was a privilege escalation: parseCaps returned undefined, resolveGrant maps
+  // undefined to OWNER_CAPS, so a grant of NOTHING became a grant of
+  // EVERYTHING. The OAuth consent path reached it for real, by minting with
+  // `serialiseCaps(granted) ?? undefined` when a client asked only for
+  // offline_access.
+  expect(() => parseCaps("")).toThrow(/at least one capability/);
+  expect(() => parseCaps("  ,  ")).toThrow(/at least one capability/);
   expect([...parseCaps("read, write")!]).toEqual(["read", "write"]);
 
   // The `resolveView` rule applied to capabilities: a name nobody recognises

@@ -18,6 +18,7 @@ import { GrepRetriever } from "../src/retrieval.ts";
 import { createRoutes, type RouteDeps } from "../src/routes.ts";
 import type { Stt } from "../src/stt.ts";
 import type { Config } from "../src/config.ts";
+import { parseCaps } from "../src/grants.ts";
 
 const ADMIN = "a".repeat(48);
 const ISSUER = "https://tama.example.com";
@@ -230,6 +231,47 @@ test("a granted token reaches MCP with exactly the scopes ticked", async () => {
     expect((await f.routes.handle(form("/oauth/revoke", { token: "never-existed" }))).status).toBe(200);
     const dead = await f.routes.handle(rpc("tools/list"));
     expect(dead.status).toBe(401);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("granting nothing issues nothing, rather than issuing everything", async () => {
+  // The inversion this exists to prevent: an empty capability set was written
+  // as a NULL-ish `caps` column, NULL means "the owner's own device", and so
+  // consenting to nothing minted an unrestricted token over the whole vault -
+  // to a client dialled from someone else's servers.
+  //
+  // Reachable two ways, and this covers the one a client can drive on its own:
+  // ask for a scope that carries no capability. `offline_access` is a real
+  // scope Claude appends, and it is correctly dropped, which left the granted
+  // set empty.
+  const f = await fixture();
+  try {
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const q = new URLSearchParams({
+      response_type: "code", client_id: "https://claude.ai/oauth/client-metadata",
+      redirect_uri: CALLBACK, code_challenge: challenge, code_challenge_method: "S256", scope: "offline_access",
+    });
+    const html = await (await f.routes.handle(get(`/oauth/authorize?${q}`))).text();
+    const requestId = html.match(/name="request" value="([^"]+)"/)![1]!;
+
+    const redirect = await f.routes.handle(form("/oauth/authorize", {
+      request: requestId, admin: ADMIN, decision: "allow", scope: "offline_access",
+    }));
+
+    // The consent step refuses rather than issuing a code for nothing, so the
+    // dangerous value never reaches the token endpoint at all.
+    const location = new URL(redirect.headers.get("location")!);
+    expect(location.searchParams.get("code")).toBeNull();
+    expect(location.searchParams.get("error")).toBe("access_denied");
+
+    // Belt and braces, at the layer underneath: even if a caller found a way to
+    // park an empty grant, the column itself is now refused. This is the half
+    // that was actually missing - the flow was guarded, the primitive was not,
+    // so the next thing to write a caps column would have met the same trap.
+    expect(() => parseCaps("")).toThrow(/at least one capability/);
   } finally {
     await f.cleanup();
   }

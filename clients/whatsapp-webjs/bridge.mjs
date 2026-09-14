@@ -25,6 +25,8 @@ import qrcode from "qrcode-terminal";
 import { downloadRawMedia } from "./media-download.mjs";
 import { errorDetail } from "./http-error.mjs";
 import { verdictFromCommand, verdictFromReaction } from "./feedback-input.mjs";
+import { noteFromCommand, wasForwarded } from "./note-input.mjs";
+import { capturedAtHeader } from "./capture-time.mjs";
 import { repairSerializedMessageId } from "./message-id.mjs";
 import { stripOurMention } from "./mention.mjs";
 
@@ -397,13 +399,14 @@ async function capture(message) {
     return;
   }
 
+  const capturedAt = capturedAtHeader(message);
   const res = await post("/capture", {
     headers: {
       "content-type": media.mimetype || "audio/ogg",
       // WhatsApp redelivers on reconnect. The message id is stable, so the
       // server's idempotency table collapses a redelivery into one note.
       "idempotency-key": messageId,
-      "x-tama-captured-at": new Date(message.timestamp * 1000).toISOString(),
+      ...(capturedAt ? { "x-tama-captured-at": capturedAt } : {}),
     },
     body: audio,
   });
@@ -424,6 +427,57 @@ async function capture(message) {
   }
   log("capture failed", res.status, body.error ?? "");
   await reply(message, `I couldn't save that voice note: ${body.error ?? `HTTP ${res.status}`}`);
+}
+
+/**
+ * Write text straight to the vault, with no model in the way.
+ *
+ * The JSON half of /capture has existed since the iOS Shortcut and nothing on
+ * WhatsApp ever reached it, so every forwarded plan was answered and then
+ * dropped. Transcription is the only reason the audio path needs a provider;
+ * text already is the note.
+ *
+ * A missing message id degrades instead of refusing, which is the opposite of
+ * what the voice path does. There the id is how the audio gets downloaded at
+ * all, so without it there is nothing to save; here the text is already in
+ * hand and the id only buys idempotency, and losing a thought to protect
+ * against a duplicate of it is the wrong trade.
+ */
+async function captureText(message, text) {
+  const messageId = repairSerializedMessageId(message);
+  if (!messageId) log("capture text", "no idempotency key: WhatsApp supplied no stable message id, so a redelivery would write this note twice");
+
+  const capturedAt = capturedAtHeader(message);
+
+  let res;
+  try {
+    res = await post("/capture", {
+      headers: {
+        "content-type": "application/json",
+        ...(messageId ? { "idempotency-key": messageId } : {}),
+        ...(capturedAt ? { "x-tama-captured-at": capturedAt } : {}),
+      },
+      body: JSON.stringify({ text }),
+    });
+  } catch (error) {
+    // post() gives up after three attempts by throwing. Swallowed rather than
+    // propagated so the caller decides what a lost note costs - which on the
+    // forward path is the reply as well, if this escapes.
+    log("capture text failed", error?.message ?? error);
+    return null;
+  }
+  const body = await res.json().catch(() => ({}));
+
+  if (res.ok) {
+    log("capture text", body.path ?? "(saved, no path in reply)", `${text.length} chars`);
+    // An object rather than the path itself, because the path is the one field
+    // that might be missing from an otherwise fine reply and "" is falsy. A
+    // caller testing the return value would then tell the owner their note was
+    // lost, which is both untrue and an instruction to send it again.
+    return { path: typeof body.path === "string" ? body.path : "" };
+  }
+  log("capture text failed", res.status, body.error ?? "");
+  return null;
 }
 
 async function askQuestion(message, question, audience, who, thread) {
@@ -771,6 +825,34 @@ async function onMessage(message) {
     return sendFeedback(message, chatId, verdict);
   }
 
+  // Before the claim for the same reason the verdict is: the claim handler
+  // reads whatever follows /tama as an audience name, so "/tama note buy milk"
+  // would set this chat up as an audience called "note buy milk".
+  const note = noteFromCommand(text);
+  if (note && isOwner) {
+    // Same rule as the voice path below: nothing captures out of a group. An
+    // audience's token is scoped for reading, and a vault filling with other
+    // people's messages is the failure the group ignore was always about.
+    //
+    // `isGroup` as well as `audience`, because an unclaimed group reaches here
+    // where a voice note never could - the gate above lets "/tama ..." through
+    // so a group can still be claimed. Without this, a note typed in a room
+    // full of people would land in the vault with no sign of where it came
+    // from, and it would do it silently.
+    if (isGroup || audience) {
+      seen("ignored, notes are not captured out of a group");
+      return reply(message, "I only save notes in our own chat. Forward it to me there and I'll keep it.");
+    }
+    if (!note.text) {
+      seen("ignored, a note with nothing in it");
+      return reply(message, "Nothing to save. Put it after the command: /tama note <what to remember>");
+    }
+    seen("capture text");
+    const saved = await captureText(message, note.text);
+    if (!saved) return reply(message, "I couldn't save that note. Send it again?");
+    return reply(message, saved.path ? `Saved to your second brain.\n${saved.path}` : "Saved to your second brain.");
+  }
+
   // Checked before the audience gate, so a group with no audience yet can still
   // be claimed - which is the only moment the command is useful.
   const claim = /^\/tama\b\s*(.*)$/i.exec(text);
@@ -841,6 +923,23 @@ async function onMessage(message) {
   }
 
 
+
+  // A forward is somebody handing you something to keep. Nobody forwards a
+  // message to ask what the weather is, and the alternative is what used to
+  // happen to every plan anyone sent: answered once, then gone the moment the
+  // thread rolled over, because conversation memory is not the vault.
+  //
+  // Saved *and* answered, in that order, and the order is the whole design.
+  // The summary is what makes forwarding to Tama worth doing, but it is a
+  // model call, and capture is the one path that must never need one. So the
+  // vault write completes on its own and the answer is a second, failable
+  // step: a dead provider costs the reply, never the note.
+  if (wasForwarded(message)) {
+    seen("capture text, then ask");
+    const saved = await captureText(message, text);
+    if (!saved) await reply(message, "I couldn't save that to your notes, but I'll still answer it.");
+    return askQuestion(message, text, undefined, undefined, chatId);
+  }
 
   // A leading "?" is stripped rather than required. It was a setting once, and
   // the habit outlives it; asking about the literal question mark would be a

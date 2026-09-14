@@ -27,13 +27,26 @@ and does not know it exists — no `whatsapp` block, no webhook, no app secret.
 |---|---|
 | Voice note | transcribes and saves a note, replies with the path |
 | Voice note in your own self-chat | same |
-| Text in your own self-chat | asks your notes |
+| A forwarded message | saves it as a note, then answers about it |
+| `/tama note <text>` in your own chat | saves exactly that text, replies with the path |
+| `/tama note <text>` in a group | refused, with a line saying where notes work |
+| Other text in your own self-chat | asks your notes |
 | Any text from an allowed contact | asks your notes |
 | Anything in a group | ignored |
 | Anything from a number not on the allowlist | ignored |
 
-Voice note captures, text asks. That mirrors the Cloud API adapter. Plain text
-in your own chat always asks; there is no prefix or scratchpad mode.
+Voice notes and forwards capture; text you typed yourself asks, unless you say
+`/tama note`.
+
+A forward is the one piece of text WhatsApp already labels for you, and nobody
+forwards a message in order to ask a question about it. Before this, forwarding
+somebody's plan got you an answer and nothing else: conversation memory is
+scoped to one chat, folds into a summary after 30 turns, and is deliberately
+never searchable, so the plan was gone by the next conversation.
+
+The note is written first and the answer is a separate step, so a model that is
+down or unconfigured costs you the reply and never the note. Capture still needs
+no key and no account.
 
 ## Setup
 

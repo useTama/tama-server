@@ -30,13 +30,32 @@ and does not know it exists — no `whatsapp` block, no webhook, no app secret.
 | A forwarded message | saves it as a note, then answers about it |
 | `/tama note <text>` in your own chat | saves exactly that text, replies with the path |
 | `/tama note <text>` in a group | refused, with a line saying where notes work |
-| Other text in your own self-chat | asks your notes |
+| Text shaped like a question, in your own chat | asks your notes |
+| Any other typed text in your own chat | saves it as a note, replies with the path |
+| `?` in front of anything | forces a question, however it is shaped |
+| "ok", "thanks", 👍 and the like | asks, never saved |
 | Any text from an allowed contact | asks your notes |
 | Anything in a group | ignored |
 | Anything from a number not on the allowlist | ignored |
 
-Voice notes and forwards capture; text you typed yourself asks, unless you say
-`/tama note`.
+Typing is how most notes actually get made, and until now none of them survived:
+"cap and totebag final tommorow" went to `/ask`, which always returns its best
+match, so it came back as a confident paragraph about a different project and
+the thought was never written down. You only find that out weeks later, looking
+for something you were sure you had saved.
+
+So typed text is now read for its shape. A question mark, a question word
+(`what`, `when`, `why`, `kya`, `kab`, `kaise`), an auxiliary with a subject
+behind it (`is it done`), or a request aimed at the vault (`tell me about iict`)
+all ask. Everything else is kept.
+
+No model decides this, and that is deliberate: capture is the one path that
+needs no account and no key, and a classifier in front of it would let a bad
+afternoon at a provider swallow your thoughts silently. The cost of a rule
+instead of a model is that it sometimes guesses wrong, so it is built to guess
+in the cheap direction. A note read as a question lands where it already landed
+before. A question read as a note is saved and says `Saved` back at you, so you
+can see it happen and just add a `?`.
 
 A forward is the one piece of text WhatsApp already labels for you, and nobody
 forwards a message in order to ask a question about it. Before this, forwarding

@@ -13,8 +13,11 @@
  * violation that can get the account banned. The supported path is the
  * `whatsapp` block in tama.config.json.
  *
- * Routing mirrors the Cloud API adapter: a voice note is a capture and text is
- * a question, including plain text in your own chat with yourself.
+ * Routing no longer mirrors the Cloud API adapter, which still treats every
+ * text message as a question. Here a voice note, a forward, `/tama note` and
+ * any typed line that is not shaped like a question are all captures, and only
+ * the questions reach /ask. The shape test is in `note-input.mjs` and is
+ * deterministic on purpose: capture must not depend on a model.
  */
 
 import { createRequire } from "node:module";
@@ -25,7 +28,7 @@ import qrcode from "qrcode-terminal";
 import { downloadRawMedia } from "./media-download.mjs";
 import { errorDetail } from "./http-error.mjs";
 import { verdictFromCommand, verdictFromReaction } from "./feedback-input.mjs";
-import { noteFromCommand, wasForwarded } from "./note-input.mjs";
+import { looksLikeQuestion, noteFromCommand, wasForwarded, worthKeeping } from "./note-input.mjs";
 import { capturedAtHeader } from "./capture-time.mjs";
 import { repairSerializedMessageId } from "./message-id.mjs";
 import { stripOurMention } from "./mention.mjs";
@@ -944,11 +947,40 @@ async function onMessage(message) {
   // A leading "?" is stripped rather than required. It was a setting once, and
   // the habit outlives it; asking about the literal question mark would be a
   // worse answer than ignoring it.
-  const question = text.startsWith("?") ? text.slice(1).trim() : text;
+  //
+  // Whether it was there is kept, though, because it is now the only way to
+  // say "this is a question" about a line that does not look like one. The
+  // habit stopped being vestigial the moment the shape test below could
+  // disagree with it.
+  const explicitAsk = text.startsWith("?");
+  const question = explicitAsk ? text.slice(1).trim() : text;
   if (!question) {
     seen("ignored, nothing but a question mark");
     return;
   }
+
+  // The last branch with no signal on it. A voice note is audio, a forward is
+  // flagged, a command starts with /tama; typed text in your own chat carried
+  // nothing, so all of it went to /ask and every thought typed rather than
+  // spoken was answered instead of kept. Retrieval always returns its best
+  // match, so "cap and totebag final tommorow" came back as a confident
+  // paragraph about a different project and the note was never written.
+  //
+  // `isGroup` is checked again even though nothing should reach here from a
+  // group, for the same reason the /tama note branch checks it: a capture out
+  // of a room full of people is the one mistake in this file that cannot be
+  // taken back, and it is worth two lines to make it impossible rather than
+  // merely unreachable.
+  if (!explicitAsk && !isGroup && !audience && !looksLikeQuestion(question) && worthKeeping(question)) {
+    seen("capture text");
+    const saved = await captureText(message, question);
+    // Said rather than swallowed, and not followed by an answer: the reply is
+    // the whole correction. Falling through to /ask on a failed save would
+    // reinstate the confident irrelevant paragraph this branch exists to stop.
+    if (!saved) return reply(message, "I couldn't save that note. Send it again?");
+    return reply(message, saved.path ? `Saved to your second brain.\n${saved.path}` : "Saved to your second brain.");
+  }
+
   seen("ask");
   return askQuestion(message, question, undefined, undefined, chatId);
 }
